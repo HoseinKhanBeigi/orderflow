@@ -25,7 +25,7 @@ const MAX_EVENTS = 80;
 let eventCount = 0;
 
 let selectedTf = '10s';
-let selectedSymbol = 'ETHUSDT';
+let selectedSymbol = 'AVAXUSDT';
 let selectedExchange = 'all';
 let dataMode = 'perp'; // perp | spot | compare
 let imbalanceRatio = 3;
@@ -1259,9 +1259,7 @@ function visibleCoins() {
 }
 
 function selectedFootprintCoins() {
-  const coins = visibleCoins();
-  const selected = coins.find((coin) => coin.symbol === selectedSymbol);
-  return selected ? [selected] : coins.slice(0, 1);
+  return visibleCoins();
 }
 
 function syncFootprintSymbolPicker() {
@@ -1432,11 +1430,31 @@ function buildFpGrid() {
       card,
     });
     bindFpCanvas(coin.symbol, canvas);
+    card.addEventListener('pointerdown', () => focusFootprintSymbol(coin.symbol));
   }
   syncFootprintSymbolPicker();
-  const coin = coins[0];
-  $('symbol-label').textContent = coin ? `${coin.label} · ${footprintMarket()}` : '—';
+  syncFootprintFocus();
+  $('symbol-label').textContent = coins.length
+    ? coins.map((c) => c.label).join(' · ')
+    : '—';
   resizeAllFpViews();
+  requestAnimationFrame(resizeAllFpViews);
+}
+
+function focusFootprintSymbol(symbol) {
+  if (!symbol || selectedSymbol === symbol) return;
+  if (!visibleCoins().some((c) => c.symbol === symbol)) return;
+  selectedSymbol = symbol;
+  syncFootprintSymbolPicker();
+  syncFootprintFocus();
+  subscribeFootprint();
+  scheduleDraw(symbol);
+}
+
+function syncFootprintFocus() {
+  for (const [symbol, view] of fpViews) {
+    view.card?.classList.toggle('focus', symbol === selectedSymbol);
+  }
 }
 
 function initChart() {
@@ -1464,9 +1482,7 @@ function initChart() {
     document.getElementById('chart-symbol-select')?.addEventListener('change', (e) => {
       const symbol = e.target.value;
       if (!visibleCoins().some((c) => c.symbol === symbol)) return;
-      // Restore select to this tab's coin; other coins open in a new Chrome tab.
-      e.target.value = selectedSymbol;
-      openCoinBrowserTab(symbol);
+      focusFootprintSymbol(symbol);
     });
   }
   buildFpGrid();
@@ -2399,7 +2415,7 @@ function drawFootprint(symbol = selectedSymbol) {
     }
   }
 
-  if (railW > 0 && symbol === selectedSymbol) {
+  if (railW > 0) {
     drawPassiveRail(ctx, symbol, {
       x0: plotRight,
       railW,
@@ -2730,13 +2746,13 @@ function rebuildChart() {
 }
 
 function subscribeFootprint() {
-  // Subscribe the socket to the one footprint currently on screen.
   if (fpLiveSocket?.readyState !== WebSocket.OPEN) return;
-  const selected = selectedFootprintCoins()[0];
-  if (!selected) return;
+  const coins = selectedFootprintCoins();
+  if (!coins.length) return;
   fpLiveSocket.send(JSON.stringify({
     type: 'sub_footprint',
-    symbol: selected.symbol,
+    symbol: selectedSymbol || coins[0].symbol,
+    symbols: coins.map((c) => c.symbol),
     exchange: selectedExchange,
     market: footprintMarket(),
   }));

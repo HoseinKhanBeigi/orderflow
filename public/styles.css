@@ -72,9 +72,11 @@ body {
 }
 
 .layout.layout-chart-grid {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 0;
   max-width: none;
   margin: 0;
@@ -84,6 +86,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0;
+  flex: 1;
   min-height: 0;
   border: none;
   border-radius: 0;
@@ -105,9 +108,13 @@ body {
 
 .fp-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-auto-rows: minmax(0, 1fr);
   gap: 1px;
   width: 100%;
+  flex: 1;
+  min-height: 0;
   background: var(--border);
 }
 
@@ -115,6 +122,7 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: #0d1117;
   border: none;
   border-radius: 0;
@@ -150,8 +158,9 @@ body {
 .fp-card-canvas {
   position: relative;
   width: 100%;
-  height: min(68vh, 820px);
-  min-height: 460px;
+  flex: 1;
+  min-height: 0;
+  height: auto;
   background: #0d1117;
 }
 
@@ -168,9 +177,13 @@ body {
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2);
 }
 
-@media (max-width: 1100px) {
-  .fp-grid { grid-template-columns: 1fr; }
-  .fp-card-canvas { height: 52vh; min-height: 320px; }
+@media (max-width: 800px) {
+  .fp-grid {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .fp-card { min-height: 280px; }
+  .fp-card-canvas { min-height: 240px; }
 }
 
 .asset-nav {

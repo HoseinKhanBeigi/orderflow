@@ -340,7 +340,7 @@ function broadcast(ev: object): void {
  * Always sent as 1-minute bars — the browser rolls them up to its timeframe.
  */
 interface FootprintSub {
-  symbol: string;
+  symbols: string[];
   exchanges: ExchangeId[];
   market: 'spot' | 'perp';
 }
@@ -354,18 +354,21 @@ wss.on('connection', (socket) => {
   });
 
   socket.on('message', (raw) => {
-    let msg: { type?: string; symbol?: unknown; exchange?: unknown; market?: unknown };
+    let msg: { type?: string; symbol?: unknown; symbols?: unknown; exchange?: unknown; market?: unknown };
     try {
       msg = JSON.parse(String(raw)) as typeof msg;
     } catch {
       return;
     }
     if (msg.type !== 'sub_footprint') return;
-    const symbol = String(msg.symbol ?? '').toUpperCase();
-    if (!coins.some((c) => c.symbol === symbol)) return;
+    const requested = Array.isArray(msg.symbols)
+      ? msg.symbols.map((s) => String(s ?? '').toUpperCase())
+      : [String(msg.symbol ?? '').toUpperCase()];
+    const symbols = [...new Set(requested)].filter((symbol) => coins.some((c) => c.symbol === symbol));
+    if (!symbols.length) return;
     const market = parseMarketParam(typeof msg.market === 'string' ? msg.market : 'perp');
     footprintSubs.set(socket, {
-      symbol,
+      symbols,
       market,
       exchanges: parseFootprintExchanges(typeof msg.exchange === 'string' ? msg.exchange : 'binance', market),
     });
@@ -400,13 +403,15 @@ function sendLiveFootprint(socket: WebSocket): void {
   const sub = footprintSubs.get(socket);
   if (!sub || socket.readyState !== WebSocket.OPEN) return;
   const rec = recorderFor(sub.market);
-  const bars: Array<{ exchange: ExchangeId; bar: ReturnType<typeof toWire> }> = [];
-  for (const exchange of sub.exchanges) {
-    const bar = rec.aggregator.currentBar(sub.symbol, exchange);
-    if (bar) bars.push({ exchange, bar: toWire(bar) });
+  for (const symbol of sub.symbols) {
+    const bars: Array<{ exchange: ExchangeId; bar: ReturnType<typeof toWire> }> = [];
+    for (const exchange of sub.exchanges) {
+      const bar = rec.aggregator.currentBar(symbol, exchange);
+      if (bar) bars.push({ exchange, bar: toWire(bar) });
+    }
+    if (!bars.length) continue;
+    if (!sendSafe(socket, JSON.stringify({ type: 'footprint_live', symbol, market: sub.market, bars }))) return;
   }
-  if (!bars.length) return;
-  sendSafe(socket, JSON.stringify({ type: 'footprint_live', symbol: sub.symbol, market: sub.market, bars }));
 }
 
 const liveFootprintTimer = setInterval(() => {
