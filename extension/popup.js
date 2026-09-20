@@ -6,12 +6,6 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
 }
 
-function bitunixTradeUrl(symbol) {
-  const pair = String(symbol || '').toUpperCase();
-  if (!pair) return '';
-  return `https://www.bitunix.com/contract-trade/${pair}`;
-}
-
 function escapeHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -37,9 +31,9 @@ function render(alerts, origin) {
   `).join('');
 }
 
-async function openCoin(symbol) {
-  const url = bitunixTradeUrl(symbol);
-  if (url) await chrome.tabs.create({ url });
+function openCoin(symbol) {
+  if (!symbol) return;
+  chrome.runtime.sendMessage({ type: 'popup-open', symbol });
 }
 
 chrome.runtime.sendMessage({ type: 'popup-opened' }, (state) => {

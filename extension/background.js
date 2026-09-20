@@ -16,6 +16,21 @@ function bitunixTradeUrl(symbol) {
   return `https://www.bitunix.com/contract-trade/${pair}`;
 }
 
+function dashboardCoinUrl(origin, symbol) {
+  const slug = String(symbol || '').replace(/USDT$/i, '').toLowerCase();
+  const base = String(origin || 'http://localhost:3456').replace(/\/$/, '');
+  if (!slug) return '';
+  return `${base}/${slug}`;
+}
+
+async function openAlertTabs(symbol) {
+  const { dashboardOrigin } = await loadState();
+  const appUrl = dashboardCoinUrl(dashboardOrigin, symbol);
+  const tradeUrl = bitunixTradeUrl(symbol);
+  if (appUrl) await chrome.tabs.create({ url: appUrl });
+  if (tradeUrl) await chrome.tabs.create({ url: tradeUrl });
+}
+
 async function setBadge(unread) {
   const text = unread > 0 ? String(Math.min(unread, 99)) : '';
   await chrome.action.setBadgeText({ text });
@@ -111,11 +126,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (msg?.type === 'popup-open') {
+    openAlertTabs(msg.symbol).then(() => sendResponse({ ok: true }));
+    return true;
+  }
 });
 
 chrome.notifications.onClicked.addListener(async (id) => {
   const { alerts } = await loadState();
   const alert = alerts.find((a) => String(a.id) === String(id));
-  const url = bitunixTradeUrl(alert?.symbol);
-  if (url) await chrome.tabs.create({ url });
+  await openAlertTabs(alert?.symbol);
 });

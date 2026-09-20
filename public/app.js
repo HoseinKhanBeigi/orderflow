@@ -3055,8 +3055,18 @@ function bitunixTradeUrl(symbol) {
   return `https://www.bitunix.com/contract-trade/${pair}`;
 }
 
+function dashboardCoinPath(symbol) {
+  const coin = config?.coins?.find((c) => c.symbol === symbol);
+  const slug = coinSlug(coin) || String(symbol || '').replace(/USDT$/i, '').toLowerCase();
+  return slug ? `/${slug}` : '';
+}
+
 function openAlertSymbol(symbol) {
   if (!symbol) return;
+  const appPath = dashboardCoinPath(symbol);
+  if (appPath && (symbol !== selectedSymbol || location.pathname !== appPath)) {
+    window.open(`${appPath}${location.search}`, '_blank', 'noopener,noreferrer');
+  }
   const url = bitunixTradeUrl(symbol);
   if (url) window.open(url, '_blank', 'noopener,noreferrer');
   document.getElementById('alert-panel')?.classList.add('hidden');
