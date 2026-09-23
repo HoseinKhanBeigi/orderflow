@@ -9,7 +9,7 @@ export interface WatchCoin {
 
 export const DEFAULT_WATCHLIST: WatchCoin[] = [
   // { symbol: 'ETHUSDT', label: 'ETH', minUsd: 5_000, venue: 'crypto' },
-  // { symbol: 'AVAXUSDT', label: 'AVAX', minUsd: 1_000, venue: 'crypto' },
+  { symbol: 'AVAXUSDT', label: 'AVAX', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'NEARUSDT', label: 'NEAR', minUsd: 1_000, venue: 'crypto' },
   // { symbol: 'DOTUSDT', label: 'DOT', minUsd: 1_000, venue: 'crypto' },
   // { symbol: 'SOLUSDT', label: 'SOL', minUsd: 3_000, venue: 'crypto' },
@@ -27,7 +27,7 @@ export const DEFAULT_WATCHLIST: WatchCoin[] = [
   // { symbol: 'TRUMPUSDT', label: 'TRUMP', minUsd: 500, venue: 'crypto' },
   // { symbol: 'CROUSDT', label: 'CRO', minUsd: 1_000, venue: 'crypto' },
   // { symbol: 'EGLDUSDT', label: 'EGLD', minUsd: 1_000, venue: 'crypto' },
-  // { symbol: 'ZKCUSDT', label: 'ZKC', minUsd: 500, venue: 'crypto' },
+  { symbol: 'ZKCUSDT', label: 'ZKC', minUsd: 500, venue: 'crypto' },
   // { symbol: 'TNSRUSDT', label: 'TNSR', minUsd: 500, venue: 'crypto' },
   // { symbol: 'JUPUSDT', label: 'JUP', minUsd: 500, venue: 'crypto' },
   // { symbol: 'ZAMAUSDT', label: 'ZAMA', minUsd: 500, venue: 'crypto' },

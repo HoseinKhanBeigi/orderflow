@@ -1149,6 +1149,28 @@ function setupTabs() {
 
 const CHART_TFS = [1, 5, 15, 30, 45, 60, 120, 240, 1440];
 let chartTfMinutes = 15;
+const FP_COLS_KEY = 'fpGridCols';
+const FP_COLS_MIN = 1;
+const FP_COLS_MAX = 4;
+
+function readFpCols() {
+  const n = Number(localStorage.getItem(FP_COLS_KEY));
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(FP_COLS_MAX, Math.max(FP_COLS_MIN, Math.round(n)));
+}
+
+let fpColsPerRow = readFpCols();
+
+function applyFpCols(cols = fpColsPerRow) {
+  const n = Math.min(FP_COLS_MAX, Math.max(FP_COLS_MIN, Math.round(Number(cols)) || 1));
+  fpColsPerRow = n;
+  localStorage.setItem(FP_COLS_KEY, String(n));
+  const grid = document.getElementById('fp-grid');
+  if (grid) grid.style.setProperty('--fp-cols', String(n));
+  const select = document.getElementById('fp-cols-select');
+  if (select && select.value !== String(n)) select.value = String(n);
+  resizeAllFpViews();
+}
 /** Current in-progress 1m bar per `symbol_exchange_1`, pushed by the server. */
 const footprintStore = {};
 /** Persisted bars from /api/footprint, already rolled up to the active timeframe. */
@@ -1403,6 +1425,7 @@ function buildFpGrid() {
   const coins = selectedFootprintCoins();
   fpViews.clear();
   grid.innerHTML = '';
+  applyFpCols(fpColsPerRow);
   for (const coin of coins) {
     const card = document.createElement('section');
     card.className = 'fp-card';
@@ -1483,6 +1506,9 @@ function initChart() {
       const symbol = e.target.value;
       if (!visibleCoins().some((c) => c.symbol === symbol)) return;
       focusFootprintSymbol(symbol);
+    });
+    document.getElementById('fp-cols-select')?.addEventListener('change', (e) => {
+      applyFpCols(e.target.value);
     });
   }
   buildFpGrid();

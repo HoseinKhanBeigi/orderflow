@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=grid-rows4" />
+  <link rel="stylesheet" href="/styles.css?v=fp-tall" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -42,6 +42,15 @@
             <label class="chart-symbol-picker" for="chart-symbol-select">
               Symbol
               <select id="chart-symbol-select" aria-label="Footprint symbol"></select>
+            </label>
+            <label class="chart-symbol-picker" for="fp-cols-select" title="How many footprint charts to show in each row">
+              Per row
+              <select id="fp-cols-select" aria-label="Charts per row">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+              </select>
             </label>
             <div class="chart-tf-tabs" id="chart-ex-tabs">
               <button class="chart-tf-tab active" data-ex="all" type="button">All</button>
@@ -101,6 +110,6 @@
     </div>
   </footer>
 
-  <script src="/app.js?v=grid4-2" type="module"></script>
+  <script src="/app.js?v=fp-cols" type="module"></script>
 </body>
 </html>
