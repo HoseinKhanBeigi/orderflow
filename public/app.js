@@ -928,7 +928,7 @@ function applyDataMode(mode) {
   const spot = isSpotView();
   $('chart-title').textContent = mode === 'perp' ? 'Order flow footprint' : 'Spot order flow footprint';
   $('chart-hint').textContent =
-    'Cells = executed volume (aggressive). Ladder on the right = passive orders resting on the book, bids left, asks right; hatched pink is size cancelled rather than filled.';
+    'Cells = aggressive fills. Ladder: resting book · solid = consumed (filled) · hatched pink = pulled. Absorption = consumed but price stalled.';
   $('imb-cfg').classList.toggle('hidden', !spot);
   refreshStatus();
   const coins = visibleCoins();
@@ -1198,9 +1198,9 @@ const fpPassiveLedgers = new Map();
 
 /**
  * Turns the stream of resting book marks into per-level passive accounting:
- * how much size is resting, how much was pulled (cancelled) and how much was
- * added back. The book snapshot only carries current size and the last event,
- * so magnitudes are accumulated here from successive snapshots.
+ * resting size, consumed (filled by aggression), pulled (cancelled), and added.
+ * The book snapshot only carries current size and the last event, so magnitudes
+ * are accumulated here from successive snapshots.
  *
  * Idempotent: redrawing with the same marks produces zero deltas.
  */
@@ -1216,6 +1216,8 @@ function updatePassiveLedger(symbol, marks) {
   for (const lv of led.levels.values()) {
     lv.cancelBid *= decay;
     lv.cancelAsk *= decay;
+    lv.consumeBid *= decay;
+    lv.consumeAsk *= decay;
     lv.addBid *= decay;
     lv.addAsk *= decay;
     lv.live = false;
@@ -1227,7 +1229,13 @@ function updatePassiveLedger(symbol, marks) {
     const key = price.toFixed(6);
     let lv = led.levels.get(key);
     if (!lv) {
-      lv = { price, bid: 0, ask: 0, cancelBid: 0, cancelAsk: 0, addBid: 0, addAsk: 0, event: 'NONE', live: false };
+      lv = {
+        price, bid: 0, ask: 0,
+        cancelBid: 0, cancelAsk: 0,
+        consumeBid: 0, consumeAsk: 0,
+        addBid: 0, addAsk: 0,
+        event: 'NONE', live: false,
+      };
       led.levels.set(key, lv);
     }
     const event = String(mark.event ?? '');
@@ -1235,11 +1243,18 @@ function updatePassiveLedger(symbol, marks) {
     const restingAsk = Number(mark.restingAsk) || 0;
     const dBid = restingBid - lv.bid;
     const dAsk = restingAsk - lv.ask;
-    // A drop that no trade can account for is a pulled order, not a fill.
     if (dBid > 0) lv.addBid += dBid;
-    else if (dBid < 0 && event !== 'CONSUME_BID') lv.cancelBid += -dBid;
+    else if (dBid < 0) {
+      const drop = -dBid;
+      if (event === 'CONSUME_BID') lv.consumeBid += drop;
+      else lv.cancelBid += drop;
+    }
     if (dAsk > 0) lv.addAsk += dAsk;
-    else if (dAsk < 0 && event !== 'CONSUME_ASK') lv.cancelAsk += -dAsk;
+    else if (dAsk < 0) {
+      const drop = -dAsk;
+      if (event === 'CONSUME_ASK') lv.consumeAsk += drop;
+      else lv.cancelAsk += drop;
+    }
     lv.bid = restingBid;
     lv.ask = restingAsk;
     lv.event = event;
@@ -1247,7 +1262,7 @@ function updatePassiveLedger(symbol, marks) {
   }
 
   for (const [key, lv] of led.levels) {
-    const residue = lv.cancelBid + lv.cancelAsk + lv.addBid + lv.addAsk;
+    const residue = lv.cancelBid + lv.cancelAsk + lv.consumeBid + lv.consumeAsk + lv.addBid + lv.addAsk;
     if (!lv.live && residue < 1) led.levels.delete(key);
   }
   return led;
@@ -1261,17 +1276,41 @@ function bucketPassiveLedger(led, bucket) {
     const key = p.toFixed(8);
     let row = out.get(key);
     if (!row) {
-      row = { price: p, bid: 0, ask: 0, cancelBid: 0, cancelAsk: 0, addBid: 0, addAsk: 0 };
+      row = {
+        price: p, bid: 0, ask: 0,
+        cancelBid: 0, cancelAsk: 0,
+        consumeBid: 0, consumeAsk: 0,
+        addBid: 0, addAsk: 0,
+      };
       out.set(key, row);
     }
     row.bid += lv.bid;
     row.ask += lv.ask;
     row.cancelBid += lv.cancelBid;
     row.cancelAsk += lv.cancelAsk;
+    row.consumeBid += lv.consumeBid;
+    row.consumeAsk += lv.consumeAsk;
     row.addBid += lv.addBid;
     row.addAsk += lv.addAsk;
   }
   return [...out.values()];
+}
+
+/** Live-bar totals from the passive ledger: consumed vs pulled. */
+function passiveLedgerTotals(symbol) {
+  const led = fpPassiveLedgers.get(symbol);
+  if (!led) return { consumeBid: 0, consumeAsk: 0, cancelBid: 0, cancelAsk: 0 };
+  let consumeBid = 0;
+  let consumeAsk = 0;
+  let cancelBid = 0;
+  let cancelAsk = 0;
+  for (const lv of led.levels.values()) {
+    consumeBid += lv.consumeBid || 0;
+    consumeAsk += lv.consumeAsk || 0;
+    cancelBid += lv.cancelBid || 0;
+    cancelAsk += lv.cancelAsk || 0;
+  }
+  return { consumeBid, consumeAsk, cancelBid, cancelAsk };
 }
 
 function visibleCoins() {
@@ -2118,16 +2157,22 @@ function strategyStoryForBar(allBars, idx) {
 
   if (setup === 'SUPPORT_HOLD') return { badge: 'LONG', line1: 'Held support', line2: 'buyers defended', color: '#22c55e' };
   if (setup === 'RESISTANCE_REJECT') return { badge: 'SHORT', line1: 'Rejected resist', line2: 'sellers capped', color: '#ef4444' };
-  if (setup === 'BREAKOUT_UP') return { badge: 'LONG', line1: 'Broke resistance', line2: 'held above', color: '#22c55e' };
-  if (setup === 'BREAKDOWN') return { badge: 'SHORT', line1: 'Broke support', line2: 'held below', color: '#ef4444' };
-  if (setup === 'FLOW_CONTINUATION' && bias === 'LONG') return { badge: 'LONG', line1: 'Buyers in control', line2: 'price followed', color: '#22c55e' };
-  if (setup === 'FLOW_CONTINUATION' && bias === 'SHORT') return { badge: 'SHORT', line1: 'Sellers in control', line2: 'price followed', color: '#ef4444' };
-  if (absorbed === 'SELLERS') return { badge: bias === 'WAIT' ? 'WAIT' : bias, line1: 'Sellers absorbed', line2: 'price held up', color: '#7dd3fc' };
-  if (absorbed === 'BUYERS') return { badge: bias === 'WAIT' ? 'WAIT' : bias, line1: 'Buyers absorbed', line2: 'price stalled', color: '#fbbf24' };
-  if (win.id === 'AGGRESSIVE_BUYERS') return { badge: 'LONG', line1: 'Buyers in control', line2: 'price followed', color: '#22c55e' };
-  if (win.id === 'AGGRESSIVE_SELLERS') return { badge: 'SHORT', line1: 'Sellers in control', line2: 'price followed', color: '#ef4444' };
-  if (win.id === 'PASSIVE_SELLERS') return { badge: 'WAIT', line1: 'Buyers absorbed', line2: 'price stalled', color: '#fbbf24' };
-  if (win.id === 'PASSIVE_BUYERS') return { badge: 'WAIT', line1: 'Sellers absorbed', line2: 'price held up', color: '#7dd3fc' };
+  if (setup === 'BREAKOUT_UP') return { badge: 'LONG', line1: 'Broke resistance', line2: 'asks consumed', color: '#22c55e' };
+  if (setup === 'BREAKDOWN') return { badge: 'SHORT', line1: 'Broke support', line2: 'bids consumed', color: '#ef4444' };
+  // Efficient consumption: aggression filled resting liquidity AND price followed.
+  if (setup === 'FLOW_CONTINUATION' && bias === 'LONG') {
+    return { badge: 'LONG', line1: 'Asks consumed', line2: 'price followed', color: '#22c55e' };
+  }
+  if (setup === 'FLOW_CONTINUATION' && bias === 'SHORT') {
+    return { badge: 'SHORT', line1: 'Bids consumed', line2: 'price followed', color: '#ef4444' };
+  }
+  // Absorption: aggression hit the book but price stalled (passive defending).
+  if (absorbed === 'SELLERS') return { badge: bias === 'WAIT' ? 'WAIT' : bias, line1: 'Sellers absorbed', line2: 'bids held · little move', color: '#7dd3fc' };
+  if (absorbed === 'BUYERS') return { badge: bias === 'WAIT' ? 'WAIT' : bias, line1: 'Buyers absorbed', line2: 'asks held · little move', color: '#fbbf24' };
+  if (win.id === 'AGGRESSIVE_BUYERS') return { badge: 'LONG', line1: 'Asks consumed', line2: 'price followed', color: '#22c55e' };
+  if (win.id === 'AGGRESSIVE_SELLERS') return { badge: 'SHORT', line1: 'Bids consumed', line2: 'price followed', color: '#ef4444' };
+  if (win.id === 'PASSIVE_SELLERS') return { badge: 'WAIT', line1: 'Buyers absorbed', line2: 'asks held · little move', color: '#fbbf24' };
+  if (win.id === 'PASSIVE_BUYERS') return { badge: 'WAIT', line1: 'Sellers absorbed', line2: 'bids held · little move', color: '#7dd3fc' };
   return { badge: 'WAIT', line1: 'No clear edge', line2: '', color: '#8b949e' };
 }
 
@@ -2222,7 +2267,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 36;
+  const bottomPad = 48;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -2512,8 +2557,8 @@ function drawChartPriceLine(ctx, y, color, label, leftPad, plotRight, labelOffse
 
 /**
  * Live-bar overlay. The resting sizes themselves live in the passive rail, so
- * this only marks the two things that belong on the executed cells: which side
- * is absorbing, and where passive orders were pulled instead of filled.
+ * this only marks executed-side events: consumption (filled), absorption
+ * (filled but price stalled), and pulls (cancelled without a fill).
  */
 function drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, chartH }) {
   const marks = currentLiquidityResponse()?.levels ?? [];
@@ -2535,6 +2580,16 @@ function drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, char
       ctx.fillRect(cellX + cellW - 3, y - rh / 2 + 1, 2, Math.max(2, rh - 2));
     }
 
+    // Consumption: resting size filled by aggressive trades.
+    if (event.startsWith('CONSUME') && rh >= 6) {
+      const askSide = event.includes('ASK');
+      const x0 = askSide ? cellX + cellW - 11 : cellX + 3;
+      const s = Math.min(6, Math.max(3, rh - 3));
+      const y0 = y - s / 2;
+      ctx.fillStyle = askSide ? 'rgba(34, 197, 94, 0.9)' : 'rgba(239, 68, 68, 0.9)';
+      ctx.fillRect(x0, y0, s, s);
+    }
+
     // Passive orders pulled from the book without being traded against.
     if (event.startsWith('WITHDRAW') && rh >= 7) {
       const askSide = event.includes('ASK');
@@ -2552,7 +2607,7 @@ function drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, char
       ctx.lineWidth = 1;
     }
 
-    // Absorption at this level
+    // Absorption at this level (consumed + price not following).
     if (event.startsWith('ABSORPTION')) {
       ctx.strokeStyle = event === 'ABSORPTION_ASK' ? '#fbbf24' : '#60a5fa';
       ctx.lineWidth = 1.5;
@@ -2565,9 +2620,10 @@ function drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, char
 
 /**
  * Resting book ladder pinned to the price axis: passive buyers (bids) grow left
- * from the centre, passive sellers (asks) grow right. Behind each resting bar a
- * hatched extension shows how much size was cancelled at that price recently,
- * so a level that looks thick but keeps getting pulled reads as fake.
+ * from the centre, passive sellers (asks) grow right.
+ * Behind each resting bar:
+ *   - solid green/red extension = size recently consumed (filled)
+ *   - hatched pink extension = size cancelled / pulled (not filled)
  */
 function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH, bucket, livePx }) {
   const marks = currentLiquidityResponse()?.levels ?? [];
@@ -2598,8 +2654,10 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
   ctx.textAlign = 'center';
   ctx.fillStyle = '#7d8794';
   ctx.fillText('RESTING BOOK', mid, topPad - 32);
+  ctx.fillStyle = '#86efac';
+  ctx.fillText('■ consumed', mid - 28, topPad - 8);
   ctx.fillStyle = '#f472b6';
-  ctx.fillText('╱╱ pulled', mid, topPad - 8);
+  ctx.fillText('╱╱ pulled', mid + 32, topPad - 8);
 
   if (!rows.length) {
     ctx.fillStyle = '#5b6572';
@@ -2614,17 +2672,23 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
   let totalAsk = 0;
   let cancelBid = 0;
   let cancelAsk = 0;
+  let consumeBid = 0;
+  let consumeAsk = 0;
   for (const row of rows) {
-    peak = Math.max(peak, row.bid + row.cancelBid, row.ask + row.cancelAsk);
+    peak = Math.max(
+      peak,
+      row.bid + row.cancelBid + row.consumeBid,
+      row.ask + row.cancelAsk + row.consumeAsk,
+    );
     totalBid += row.bid;
     totalAsk += row.ask;
     cancelBid += row.cancelBid;
     cancelAsk += row.cancelAsk;
+    consumeBid += row.consumeBid;
+    consumeAsk += row.consumeAsk;
   }
   if (peak <= 0) peak = 1;
 
-  // Square-root scale: one huge wall would flatten every other level to nothing
-  // on a linear scale, and the smaller levels are exactly what shows structure.
   const wFor = (v) => (v > 0 ? Math.max(1, Math.sqrt(v / peak) * halfW) : 0);
   const barH = Math.max(2, Math.min(rh - 1, 14));
   let topBid = null;
@@ -2635,27 +2699,40 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
     const y0 = y - barH / 2;
 
     const bidW = wFor(row.bid);
+    const bidConsumeW = wFor(row.consumeBid);
+    const bidCancelW = wFor(row.cancelBid);
     if (bidW) {
       ctx.fillStyle = 'rgba(34, 211, 238, 0.62)';
       ctx.fillRect(mid - 1 - bidW, y0, bidW, barH);
       if (!topBid || row.bid > topBid.v) topBid = { v: row.bid, y, w: bidW };
     }
-    if (row.cancelBid > 0) {
-      drawPulledBlock(ctx, mid - 1 - bidW - wFor(row.cancelBid), y0, wFor(row.cancelBid), barH);
+    // Consumed bids sit outside resting (left of bid bar) — solid red (sells hit bids).
+    if (bidConsumeW) {
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.72)';
+      ctx.fillRect(mid - 1 - bidW - bidConsumeW, y0, bidConsumeW, barH);
     }
+    if (bidCancelW) {
+      drawPulledBlock(ctx, mid - 1 - bidW - bidConsumeW - bidCancelW, y0, bidCancelW, barH);
+    }
+
     const askW = wFor(row.ask);
+    const askConsumeW = wFor(row.consumeAsk);
+    const askCancelW = wFor(row.cancelAsk);
     if (askW) {
       ctx.fillStyle = 'rgba(251, 146, 60, 0.62)';
       ctx.fillRect(mid + 1, y0, askW, barH);
       if (!topAsk || row.ask > topAsk.v) topAsk = { v: row.ask, y, w: askW };
     }
-    if (row.cancelAsk > 0) {
-      drawPulledBlock(ctx, mid + 1 + askW, y0, wFor(row.cancelAsk), barH);
+    // Consumed asks sit outside resting (right of ask bar) — solid green (buys hit asks).
+    if (askConsumeW) {
+      ctx.fillStyle = 'rgba(34, 197, 94, 0.72)';
+      ctx.fillRect(mid + 1 + askW, y0, askConsumeW, barH);
+    }
+    if (askCancelW) {
+      drawPulledBlock(ctx, mid + 1 + askW + askConsumeW, y0, askCancelW, barH);
     }
   }
 
-  // Size the single biggest wall on each side, so magnitude is readable without
-  // decoding bar widths.
   ctx.font = 'bold 9px JetBrains Mono, monospace';
   if (topBid) {
     ctx.textAlign = 'left';
@@ -2668,7 +2745,6 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
     ctx.fillText(fmtVolShort(topAsk.v), mid + topAsk.w - 1, topAsk.y);
   }
 
-  // Centre spine + live price notch
   ctx.strokeStyle = '#2a3342';
   ctx.beginPath();
   ctx.moveTo(mid + 0.5, topPad);
@@ -2682,7 +2758,7 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
     }
   }
 
-  // Footer totals — the one-line read of who has size on the book and who is pulling it.
+  // Footer: resting · consumed · pulled
   ctx.font = 'bold 9px JetBrains Mono, monospace';
   const fy = topPad + chartH + 14;
   ctx.textAlign = 'right';
@@ -2691,13 +2767,19 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
   ctx.textAlign = 'left';
   ctx.fillStyle = '#fb923c';
   ctx.fillText(fmtVolShort(totalAsk), mid + 4, fy);
+  if (consumeBid + consumeAsk > 0) {
+    ctx.fillStyle = '#86efac';
+    ctx.textAlign = 'right';
+    ctx.fillText(`■${fmtVolShort(consumeBid)}`, mid - 4, fy + 12);
+    ctx.textAlign = 'left';
+    ctx.fillText(`■${fmtVolShort(consumeAsk)}`, mid + 4, fy + 12);
+  }
   if (cancelBid + cancelAsk > 0) {
-    ctx.font = 'bold 9px JetBrains Mono, monospace';
     ctx.fillStyle = '#f472b6';
     ctx.textAlign = 'right';
-    ctx.fillText(`✕${fmtVolShort(cancelBid)}`, mid - 4, fy + 13);
+    ctx.fillText(`✕${fmtVolShort(cancelBid)}`, mid - 4, fy + 24);
     ctx.textAlign = 'left';
-    ctx.fillText(`✕${fmtVolShort(cancelAsk)}`, mid + 4, fy + 13);
+    ctx.fillText(`✕${fmtVolShort(cancelAsk)}`, mid + 4, fy + 24);
   }
   ctx.restore();
 }
@@ -3034,11 +3116,13 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   const story = strategyStoryForBar(bars, idx);
   if (!story) return;
   const kind =
-    story.line1 === 'Buyers in control' ? { key: 'buyers', side: 'buy' }
-      : story.line1 === 'Sellers in control' ? { key: 'sellers', side: 'sell' }
-        : story.line1 === 'Stop hunt' ? { key: story.line2.includes('low') ? 'hunt-low' : 'hunt-high', side: story.badge === 'LONG' ? 'buy' : 'sell' }
-          : story.line1 === 'Distribution at highs' ? { key: 'distribution', side: 'sell' }
-            : null;
+    story.line1 === 'Asks consumed' ? { key: 'consume-ask', side: 'buy' }
+      : story.line1 === 'Bids consumed' ? { key: 'consume-bid', side: 'sell' }
+        : story.line1 === 'Buyers absorbed' ? { key: 'absorb-buy', side: 'sell' }
+          : story.line1 === 'Sellers absorbed' ? { key: 'absorb-sell', side: 'buy' }
+            : story.line1 === 'Stop hunt' ? { key: story.line2.includes('low') ? 'hunt-low' : 'hunt-high', side: story.badge === 'LONG' ? 'buy' : 'sell' }
+              : story.line1 === 'Distribution at highs' ? { key: 'distribution', side: 'sell' }
+                : null;
   if (!kind) return;
 
   const label = alertLabel(symbol);
