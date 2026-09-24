@@ -69,6 +69,27 @@ export type {
 export { evaluateDailySignal, emptyDailySignal, liquidityContextFromWindow } from './analysis/daily-signal.js';
 export type { DailySignal, DailyBias, DailySetup } from './models/daily-signal.js';
 
+export {
+  PatternRecognitionEngine,
+  PATTERN_ENGINE_VERSION,
+  PATTERN_DEFINITIONS,
+  CANDLE_LABELS,
+  recognizeFromCandles,
+  labelFootprintBar,
+  NextFootprintStatePredictor,
+} from './pattern-recognition/index.js';
+export type {
+  CandleLabel,
+  PatternId,
+  PatternStatus,
+  PatternSnapshot,
+  PatternCandidate,
+  PatternEvent,
+  PatternAlert,
+  LabeledCandle,
+  NextStatePrediction,
+} from './pattern-recognition/index.js';
+
 export * from './models/index.js';
 export * as simulation from './simulation/index.js';
 export * as backtest from './backtest/index.js';

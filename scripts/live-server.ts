@@ -31,6 +31,8 @@ import { coverage, loadBars } from '../src/storage/footprint-store.js';
 import { isStorageEnabled } from '../src/storage/db.js';
 import { rollup } from '../src/footprint/rollup.js';
 import { toWire, type FootprintBar } from '../src/footprint/types.js';
+import { PatternLiveHub, historyPatternView, toCurrentPattern } from '../src/pattern-recognition/index.js';
+import type { NextStatePrediction, PatternCandidate, PatternMarker, PatternSnapshot } from '../src/pattern-recognition/index.js';
 import {
   DEFAULT_IMBALANCE_RATIO,
   parseSpotExchangesEnv,
@@ -102,6 +104,7 @@ const spotRecorder = new FootprintRecorder({
 });
 const spotHub = new SpotFlowEngine(IMBALANCE_RATIO);
 const passiveFeatures = { perp: new PassiveFeatureRecorder(), spot: new PassiveFeatureRecorder() };
+const patternHub = new PatternLiveHub();
 
 function createFeeds(): void {
   perpFeed = new LiveBinanceFeed({
@@ -315,6 +318,16 @@ const server = createServer(async (req, res) => {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ enabled: isStorageEnabled(), bars: [], error: err instanceof Error ? err.message : 'query failed' }));
+      }
+      return;
+    }
+
+    if (req.url === '/api/patterns' && (req.method === 'POST' || req.method === 'PUT')) {
+      try {
+        json(res, recognizePostedBars(await readJsonBody(req)));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'pattern recognize failed' }));
       }
       return;
     }
@@ -560,6 +573,24 @@ liveFootprintTimer.unref?.();
 /** Compact live bars for every coin so the client can run chart-style alerts. */
 function broadcastFootprintTicks(market: 'spot' | 'perp'): void {
   const rec = recorderFor(market);
+  rec.aggregator.closeStale();
+  const closed = rec.aggregator.peekClosed();
+  if (closed.length) {
+    const { alerts, dirty } = patternHub.observeClosed(closed);
+    for (const alert of alerts) {
+      broadcast({ type: 'pattern_alert', market, alert });
+    }
+    for (const symbol of dirty) {
+      const snapshots = patternHub.snapshotsForSymbol(symbol, market);
+      if (!snapshots.length) continue;
+      broadcast({
+        type: 'pattern_snapshot',
+        market,
+        symbol,
+        snapshots: snapshots.map(compactPatternSnapshot),
+      });
+    }
+  }
   const exchanges = market === 'spot' ? SPOT_EXCHANGES : EXCHANGES;
   const bars: Array<{ symbol: string; exchange: ExchangeId; bar: ReturnType<typeof toWire> }> = [];
   for (const coin of coins) {
@@ -719,7 +750,9 @@ async function getFootprintHistory(params: URLSearchParams): Promise<unknown> {
   });
 
   const merged: FootprintBar[] = tf === 1 && exchanges.length === 1 ? rows : rollup(rows, tf);
-  const bars = merged.slice(-limit).map(toWire);
+  const tfBars = merged.slice(-limit);
+  const patternView = historyPatternView(tfBars, tf);
+  const bars = tfBars.map(toWire);
 
   const payload = {
     enabled: true,
@@ -730,6 +763,15 @@ async function getFootprintHistory(params: URLSearchParams): Promise<unknown> {
     retentionDays: RETENTION_DAYS,
     liveFrom,
     bars,
+    patterns: {
+      currentLabel: patternView.snapshot?.currentLabel ?? null,
+      primary: patternView.snapshot?.primaryPattern
+        ? compactCandidate(patternView.snapshot.primaryPattern)
+        : null,
+      currentPattern: toCurrentPattern(patternView.snapshot?.primaryPattern ?? null),
+      nextState: compactNextState(patternView.snapshot?.nextState ?? null),
+      markers: patternView.markers.map(compactMarker),
+    },
   };
   footprintCache.set(key, { at: Date.now(), payload });
   if (footprintCache.size > 200) {
@@ -868,6 +910,122 @@ async function fetchKlinesPaged(
   const merged = new Map<number, [number, string, string, string, string, string]>();
   for (const row of chunks.flat()) merged.set(row[0], row);
   return [...merged.values()].sort((a, b) => a[0] - b[0]).slice(-limit);
+}
+
+function recognizePostedBars(body: unknown): unknown {
+  const rec = (body ?? {}) as {
+    symbol?: string;
+    market?: string;
+    tf?: number;
+    lastIsLive?: boolean;
+    bars?: Array<{
+      t: number; o: number; h: number; l: number; c: number;
+      tb?: number; ts?: number; n?: number; bt?: number; st?: number;
+      lb?: number; ls?: number; lv?: [number, number, number][];
+    }>;
+  };
+  const symbol = String(rec.symbol ?? 'BTCUSDT').toUpperCase();
+  const market = parseMarketParam(typeof rec.market === 'string' ? rec.market : 'perp');
+  const tf = Math.max(1, Math.min(1440, Math.floor(Number(rec.tf) || 15)));
+  const bars: FootprintBar[] = (rec.bars ?? []).slice(-400).map((w) => ({
+    symbol,
+    exchange: 'binance',
+    market,
+    time: w.t,
+    open: w.o,
+    high: w.h,
+    low: w.l,
+    close: w.c,
+    totalBuy: w.tb ?? 0,
+    totalSell: w.ts ?? 0,
+    trades: w.n ?? 0,
+    buyTrades: w.bt,
+    sellTrades: w.st,
+    largestBuy: w.lb,
+    largestSell: w.ls,
+    levels: (w.lv ?? []).map(([price, buy, sell]) => ({ price, buy, sell })),
+  }));
+  const view = historyPatternView(bars, tf, { lastIsLive: Boolean(rec.lastIsLive) });
+  return {
+    symbol,
+    tf,
+    currentLabel: view.snapshot?.currentLabel ?? null,
+    primary: view.snapshot?.primaryPattern ? compactCandidate(view.snapshot.primaryPattern) : null,
+    currentPattern: toCurrentPattern(view.snapshot?.primaryPattern ?? null),
+    nextState: compactNextState(view.snapshot?.nextState ?? null),
+    markers: view.markers.map(compactMarker),
+  };
+}
+
+function compactCandidate(p: PatternCandidate) {
+  return {
+    id: p.id,
+    version: p.patternVersion,
+    direction: p.direction,
+    title: p.title,
+    badge: p.badge,
+    status: p.status,
+    confidence: p.confidence,
+    progress: Math.round(p.progress * 100),
+    startTimestamp: p.startTimestamp,
+    confirmedTimestamp: p.confirmedTimestamp,
+    barsUsed: p.barsUsed,
+    stage: p.stage,
+    totalStages: p.totalStages,
+    matchedLabels: p.matchedLabels,
+    evidence: {
+      labelConfidence: p.evidence.labelConfidence,
+      sweepQuality: p.evidence.sweepQuality,
+      controlShift: p.evidence.controlShift,
+      supportingEvidence: p.evidence.supportingEvidence,
+      stageCompletion: p.evidence.components.stageCompletion,
+    },
+  };
+}
+
+function compactNextState(next: NextStatePrediction | null) {
+  if (!next) return null;
+  return {
+    status: next.status,
+    prediction: next.prediction,
+    probability: next.probability,
+    secondPrediction: next.secondPrediction,
+    secondProbability: next.secondProbability,
+    margin: next.margin,
+    confidence: next.confidence,
+    confidenceScore: next.confidenceScore,
+    sampleCount: next.sampleCount,
+    sequenceDepth: next.sequenceDepth,
+    distribution: next.distribution,
+  };
+}
+
+function compactMarker(m: PatternMarker) {
+  return {
+    t: m.time,
+    badge: m.badge,
+    id: m.patternId,
+    title: m.title,
+    status: m.status,
+    confidence: m.confidence,
+    direction: m.direction,
+    stage: m.stage,
+    totalStages: m.totalStages,
+    progress: Math.round(m.progress * 100),
+    matchedLabels: m.matchedLabels,
+    barsUsed: m.barsUsed,
+  };
+}
+
+function compactPatternSnapshot(snap: PatternSnapshot) {
+  return {
+    timeframe: snap.timeframe,
+    currentLabel: snap.currentLabel,
+    primary: snap.primaryPattern ? compactCandidate(snap.primaryPattern) : null,
+    currentPattern: toCurrentPattern(snap.primaryPattern),
+    nextState: compactNextState(snap.nextState),
+    markers: snap.markers.map(compactMarker),
+  };
 }
 
 function json(res: ServerResponse, data: unknown): void {

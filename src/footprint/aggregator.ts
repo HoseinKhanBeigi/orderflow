@@ -117,6 +117,11 @@ export class FootprintAggregator {
     }
   }
 
+  /** Snapshot of completed bars that have not been drained yet. */
+  peekClosed(): FootprintBar[] {
+    return this.closed.slice();
+  }
+
   /** Returns completed bars and clears the queue. */
   drainClosed(): FootprintBar[] {
     if (!this.closed.length) return [];

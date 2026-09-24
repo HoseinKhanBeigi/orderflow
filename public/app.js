@@ -1175,6 +1175,8 @@ function applyFpCols(cols = fpColsPerRow) {
 const footprintStore = {};
 /** Persisted bars from /api/footprint, already rolled up to the active timeframe. */
 const fpHistoryStore = {};
+/** Pattern markers keyed by historyKey(symbol, tf, exchange). */
+const fpPatternStore = {};
 const fpKlineSeed = {};
 let fpKlineReq = 0;
 let fpHistoryReq = 0;
@@ -1456,6 +1458,12 @@ function bindFpCanvas(symbol, canvas) {
   };
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointermove', (e) => {
+    const view = fpViews.get(symbol);
+    if (!view || view.dragging) return;
+    showPatternTip(symbol, e);
+  });
+  canvas.addEventListener('pointerleave', () => hidePatternTip(symbol));
 }
 
 function buildFpGrid() {
@@ -1475,7 +1483,10 @@ function buildFpGrid() {
         <span class="fp-card-title">${coin.label}</span>
         <span class="fp-card-meta" data-fp-meta>—</span>
       </header>
-      <div class="fp-card-canvas"></div>
+      <div class="fp-card-canvas">
+        <aside class="fp-pattern-panel hidden" data-fp-pattern-panel></aside>
+      </div>
+      <div class="fp-pattern-tip hidden" data-fp-pattern-tip></div>
     `;
     const host = card.querySelector('.fp-card-canvas');
     const canvas = document.createElement('canvas');
@@ -1490,6 +1501,7 @@ function buildFpGrid() {
       dragging: false,
       dragX: 0,
       card,
+      patternHits: [],
     });
     bindFpCanvas(coin.symbol, canvas);
     card.addEventListener('pointerdown', () => focusFootprintSymbol(coin.symbol));
@@ -1674,7 +1686,15 @@ async function loadFootprintHistory() {
       const map = new Map();
       for (const w of data.bars ?? []) map.set(w.t, wireBarToFp(w));
       fpHistoryStore[historyKey(coin.symbol, tf, exchange)] = map;
+      fpPatternStore[historyKey(coin.symbol, tf, exchange)] = {
+        currentLabel: data.patterns?.currentLabel ?? null,
+        primary: data.patterns?.primary ?? null,
+        currentPattern: data.patterns?.currentPattern ?? null,
+        nextState: data.patterns?.nextState ?? null,
+        markers: data.patterns?.markers ?? [],
+      };
       scheduleDraw(coin.symbol);
+      void refreshPatternMarkers(coin.symbol, true);
     } catch {
       /* keep whatever history we already had */
     }
@@ -1748,6 +1768,7 @@ async function seedFromKlines() {
         seed.set(c.time, bar);
       }
       scheduleDraw(coin.symbol);
+      void refreshPatternMarkers(coin.symbol, true);
     } catch {
       /* live 1m rollup still works */
     }
@@ -2201,6 +2222,303 @@ function drawBarStrategyTitle(ctx, story, cx, maxW) {
   ctx.restore();
 }
 
+const PATTERN_LABEL_NAMES = {
+  BUYER_IN_CONTROL: 'Buyer In Control',
+  SELLER_IN_CONTROL: 'Seller In Control',
+  STOP_HUNT_LOW: 'Stop Hunt Low',
+  STOP_HUNT_HIGH: 'Stop Hunt High',
+  BUYER_ABSORBED: 'Buyer Absorbed',
+  SELLER_ABSORBED: 'Seller Absorbed',
+  ASKS_PULLED: 'Asks Pulled',
+  BIDS_PULLED: 'Bids Pulled',
+  UNCLASSIFIED: 'Unclassified',
+  OTHER: 'Other',
+};
+
+const PATTERN_FULL_NAMES = {
+  BR: 'bullish reversal',
+  ER: 'bearish reversal',
+  BC: 'bullish continuation',
+  SC: 'bearish continuation',
+  FB: 'failed bearish reversal',
+  FU: 'failed bullish reversal',
+  BT: 'buyer trap',
+  SR: 'seller trap',
+  BULLISH_LIQUIDITY_REVERSAL: 'bullish reversal',
+  BEARISH_LIQUIDITY_REVERSAL: 'bearish reversal',
+  BULLISH_CONTINUATION: 'bullish continuation',
+  BEARISH_CONTINUATION: 'bearish continuation',
+  FAILED_BEARISH_REVERSAL: 'failed bearish reversal',
+  FAILED_BULLISH_REVERSAL: 'failed bullish reversal',
+  BUYER_TRAP_FORMING: 'buyer trap',
+  SELLER_TRAP_FORMING: 'seller trap',
+};
+
+function patternFullName(marker) {
+  if (!marker) return '';
+  return (
+    PATTERN_FULL_NAMES[marker.badge] ||
+    PATTERN_FULL_NAMES[marker.id] ||
+    String(marker.title || marker.badge || '').toLowerCase()
+  );
+}
+
+function patternStatusLabel(status) {
+  const s = String(status || '').toUpperCase();
+  if (s === 'FORMING' || s === 'PREVIEW') return 'FORMING';
+  if (s === 'CONFIRMED') return 'CONFIRMED';
+  if (s === 'FAILED') return 'FAILED';
+  if (s === 'EXPIRED') return 'EXPIRED';
+  return String(status || '').toUpperCase();
+}
+
+function patternProgressPct(marker) {
+  const n = Number(marker?.progress);
+  if (!Number.isFinite(n)) return null;
+  if (n <= 1) return Math.round(n * 100);
+  return Math.round(n);
+}
+
+function fmtSampleCount(n) {
+  const v = Number(n) || 0;
+  if (v >= 10_000) return `${Math.round(v / 1000)}K`;
+  if (v >= 1000) return `${(v / 1000).toFixed(2).replace(/\.?0+$/, '')}K`;
+  return String(v);
+}
+
+function renderPatternPanel(symbol, shown, labelName) {
+  const view = fpViews.get(symbol);
+  const el = view?.card?.querySelector('[data-fp-pattern-panel]');
+  if (!el) return;
+  const state = fpPatternStore[patternStoreKey(symbol)] ?? {};
+  const current = state.currentPattern;
+  const next = state.nextState;
+  const hasPattern = Boolean(shown?.badge || current?.id);
+  const hasNext = Boolean(next && (next.sampleCount > 0 || next.prediction));
+  if (!hasPattern && !hasNext) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  const name = current?.title
+    || (shown ? (PATTERN_FULL_NAMES[shown.badge] || PATTERN_FULL_NAMES[shown.id] || patternFullName(shown)) : '');
+  const status = patternStatusLabel(current?.status || shown?.status || '');
+  const progress = current?.progress ?? patternProgressPct(shown);
+  const confidence = current?.confidence ?? shown?.confidence;
+  const tone = shown?.direction === 'BEARISH' || current?.id?.includes('BEARISH') || current?.id?.includes('TRAP')
+    ? 'bear'
+    : shown?.direction === 'BULLISH' || current?.id?.includes('BULLISH')
+      ? 'bull'
+      : '';
+  const patternBlock = hasPattern
+    ? `<div class="k">Current pattern</div>
+       <div class="name ${tone}">${escapeHtml(titleCaseName(name) || 'None')}</div>
+       <div class="status">${escapeHtml(status || '—')}</div>
+       <div class="row"><span>Progress</span><strong>${progress == null ? '—' : `${progress}%`}</strong></div>
+       <div class="row"><span>Pattern confidence</span><strong>${confidence == null ? '—' : `${Math.round(confidence)}%`}</strong></div>`
+    : `<div class="k">Current pattern</div>
+       <div class="name dim">None</div>
+       <div class="status dim">${escapeHtml(labelName || 'no sequence')}</div>`;
+
+  let nextBlock;
+  if (!hasNext) {
+    nextBlock = `<div class="k">Next candle</div><div class="name dim">No history yet</div>`;
+  } else if (next.status !== 'PREDICTED') {
+    const topName = next.prediction ? (PATTERN_LABEL_NAMES[next.prediction] || next.prediction) : '—';
+    nextBlock = `<div class="k">Next candle</div>
+      <div class="name dim">No clear state</div>
+      <div class="row"><span>Top</span><strong>${escapeHtml(topName)} ${pct1(next.probability)}</strong></div>
+      <div class="row"><span>Confidence</span><strong>${escapeHtml(next.confidence || 'LOW')}</strong></div>
+      <div class="row"><span>Samples</span><strong>${fmtSampleCount(next.sampleCount)}</strong></div>`;
+  } else {
+    const predName = PATTERN_LABEL_NAMES[next.prediction] || next.prediction;
+    const rest = Object.entries(next.distribution || {})
+      .filter(([k]) => k !== next.prediction)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([k, p]) => `<div class="row dim"><span>${escapeHtml(PATTERN_LABEL_NAMES[k] || k)}</span><strong>${pct1(p)}</strong></div>`)
+      .join('');
+    nextBlock = `<div class="k">Next candle</div>
+      <div class="name ${tone}">${escapeHtml(predName)}</div>
+      <div class="row"><span>Probability</span><strong>${pct1(next.probability)}</strong></div>
+      ${rest}
+      <div class="row"><span>Prediction confidence</span><strong>${escapeHtml(next.confidence || 'LOW')}</strong></div>
+      <div class="row"><span>Samples</span><strong>${fmtSampleCount(next.sampleCount)}</strong></div>`;
+  }
+  el.innerHTML = `${patternBlock}<div class="split"></div>${nextBlock}`;
+}
+
+function titleCaseName(name) {
+  if (!name) return '';
+  return String(name).replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function pct1(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return '—';
+  const pct = n <= 1 ? n * 100 : n;
+  return `${Math.round(pct)}%`;
+}
+
+function patternHudText(marker) {
+  const name = patternFullName(marker);
+  const st = patternStatusLabel(marker.status);
+  const statusBit = name.includes('still forming') ? '' : `  ${st}`;
+  return `${name}${statusBit}  ${Math.round(marker.confidence ?? 0)}%`;
+}
+
+function patternStoreKey(symbol, tf = chartTfMinutes, exchange = selectedExchange) {
+  return historyKey(symbol, tf, exchange);
+}
+
+function patternMarkersFor(symbol) {
+  return fpPatternStore[patternStoreKey(symbol)]?.markers ?? [];
+}
+
+function drawPatternBadge(ctx, marker, cx, y) {
+  const text = patternFullName(marker);
+  if (!text) return { x: cx - 16, y: y - 10, w: 32, h: 18 };
+  const confirmed = marker.status === 'CONFIRMED';
+  const forming = marker.status === 'FORMING' || marker.status === 'PREVIEW';
+  const color = marker.direction === 'BULLISH' ? '#4ade80' : marker.direction === 'BEARISH' ? '#fb923c' : '#94a3b8';
+  ctx.save();
+  ctx.font = '600 10px Inter, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = Math.min(148, Math.max(72, Math.ceil(ctx.measureText(text).width) + 10));
+  const h = 16;
+  const x = cx - w / 2;
+  ctx.globalAlpha = confirmed ? 1 : forming ? 0.88 : 0.6;
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(x, y - h / 2, w, h);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + 0.5, y - h / 2 + 0.5, w - 1, h - 1);
+  ctx.fillStyle = color;
+  ctx.fillText(text, cx, y + 0.5, w - 8);
+  ctx.restore();
+  return { x, y: y - h / 2, w, h };
+}
+
+function showPatternTip(symbol, event) {
+  const view = fpViews.get(symbol);
+  const tip = view?.card?.querySelector('[data-fp-pattern-tip]');
+  if (!view || !tip) return;
+  const rect = view.canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const hit = (view.patternHits ?? []).find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+  if (!hit?.marker) {
+    tip.classList.add('hidden');
+    return;
+  }
+  const m = hit.marker;
+  const seq = (m.matchedLabels ?? []).map((l) => PATTERN_LABEL_NAMES[l] || l).join(' → ');
+  const status = patternStatusLabel(m.status);
+  tip.classList.remove('hidden');
+  tip.innerHTML = `<strong>${escapeHtml(patternFullName(m) || m.title || m.id)}</strong>
+    <span>Status: ${escapeHtml(status)}</span>
+    <span>Progress: ${patternProgressPct(m) ?? '—'}%</span>
+    <span>Pattern confidence: ${Math.round(m.confidence ?? 0)}%</span>
+    <span>Sequence: ${escapeHtml(seq)}</span>
+    <span>Bars: ${m.barsUsed ?? '—'} · ${m.stage ?? '?'}/${m.totalStages ?? '?'}</span>`;
+  const host = view.card?.querySelector('.fp-card-canvas');
+  const maxX = (host?.clientWidth ?? 200) - 220;
+  tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+  tip.style.top = `${Math.max(8, y + 14)}px`;
+}
+
+function hidePatternTip(symbol) {
+  const view = fpViews.get(symbol);
+  view?.card?.querySelector('[data-fp-pattern-tip]')?.classList.add('hidden');
+}
+
+function applyPatternSnapshot(ev) {
+  if (!ev?.symbol || (ev.market && ev.market !== footprintMarket())) return;
+  const tfName = tfShort(chartTfMinutes);
+  const row = (ev.snapshots ?? []).find((s) => s.timeframe === tfName);
+  if (!row) return;
+  const key = patternStoreKey(ev.symbol);
+  const prev = fpPatternStore[key] ?? { markers: [] };
+  const incoming = row.markers ?? [];
+  const confirmedIncoming = incoming.filter((m) => m.status === 'CONFIRMED');
+  const rest = (prev.markers ?? []).filter((m) => {
+    if (m.status !== 'CONFIRMED') return false;
+    return !confirmedIncoming.some((c) => c.id === m.id && c.t === m.t);
+  });
+  fpPatternStore[key] = {
+    currentLabel: row.currentLabel ?? prev.currentLabel,
+    primary: row.primary ?? prev.primary,
+    currentPattern: row.currentPattern ?? prev.currentPattern,
+    nextState: row.nextState ?? prev.nextState,
+    markers: [...rest, ...incoming],
+  };
+  scheduleDraw(ev.symbol);
+}
+
+function ingestPatternAlert(alert) {
+  if (!alert?.symbol) return;
+  const bearish = /BEARISH|BUYER_TRAP|FAILED_BULLISH/.test(alert.patternId || '');
+  if (!canFireAlert(`${alert.symbol}:${alert.patternId}:${alert.type}:${alert.timestamp}`, 60_000)) return;
+  pushFpAlert({
+    id: `pat-${alert.symbol}-${alert.patternId}-${alert.timestamp}`,
+    symbol: alert.symbol,
+    kind: (alert.type || 'pattern').replace('PATTERN_', '').toLowerCase(),
+    side: bearish ? 'sell' : 'buy',
+    title: alert.message || `${alert.patternId} ${alert.status}`,
+    detail: `${alert.patternId} · ${alert.status} · ${alert.timeframe}`,
+    at: alert.timestamp || Date.now(),
+  });
+}
+
+const patternRefreshAt = {};
+
+function fpBarToWire(bar) {
+  const lv = [];
+  if (bar.levels) {
+    for (const lvRow of bar.levels.values()) lv.push([lvRow.price, lvRow.buy, lvRow.sell]);
+  }
+  return {
+    t: bar.time, o: bar.open, h: bar.high, l: bar.low, c: bar.close,
+    tb: bar.totalBuy ?? 0, ts: bar.totalSell ?? 0, n: 0,
+    lv,
+  };
+}
+
+async function refreshPatternMarkers(symbol, force = false) {
+  const now = Date.now();
+  if (!force && now - (patternRefreshAt[symbol] ?? 0) < 8_000) return;
+  patternRefreshAt[symbol] = now;
+  const bars = footprintBars(symbol);
+  if (bars.length < 3) return;
+  const lastIsLive = bars[bars.length - 1]?.time === fpCandleTime(Date.now(), chartTfMinutes);
+  try {
+    const data = await fetch('/api/patterns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        tf: chartTfMinutes,
+        market: footprintMarket(),
+        lastIsLive,
+        bars: bars.slice(-300).map(fpBarToWire),
+      }),
+    }).then((r) => r.json());
+    if (!data || data.error) return;
+    fpPatternStore[patternStoreKey(symbol)] = {
+      currentLabel: data.currentLabel ?? null,
+      primary: data.primary ?? null,
+      currentPattern: data.currentPattern ?? null,
+      nextState: data.nextState ?? null,
+      markers: data.markers ?? [],
+    };
+    scheduleDraw(symbol);
+  } catch {
+    /* live chart still works without markers */
+  }
+}
+
 function drawBattleHud(ctx, leftPad, plotRight, symbol = selectedSymbol) {
   ctx.font = 'bold 10px JetBrains Mono, monospace';
   ctx.textAlign = 'left';
@@ -2338,13 +2656,17 @@ function drawFootprint(symbol = selectedSymbol) {
     ctx.fillText(fmtPriceAxis(p), W - 4, y);
   }
 
-  ctx.font = '8px Inter, sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#8b949e';
-  if (view.panBars >= 0.15) {
-    ctx.fillText('drag / scroll · Latest jumps to live', leftPad + 2, 8);
-  } else {
-    ctx.fillText('Stop hunt · distribution · vacuum', leftPad + 2, 8);
+  const patternState = fpPatternStore[patternStoreKey(symbol)] ?? {};
+  const primary = patternState.primary;
+  const latestMarker = [...(patternState.markers ?? [])].sort((a, b) => (b.t ?? 0) - (a.t ?? 0))[0];
+  const shown = primary?.badge ? primary : latestMarker;
+  const labelName = PATTERN_LABEL_NAMES[patternState.currentLabel] || patternState.currentLabel || '';
+  renderPatternPanel(symbol, shown, labelName);
+
+  view.patternHits = [];
+  const patternByTime = new Map();
+  for (const marker of patternMarkersFor(symbol)) {
+    if (marker?.t != null) patternByTime.set(marker.t, marker);
   }
 
   for (let i = 0; i < visible.length; i++) {
@@ -2359,6 +2681,11 @@ function drawFootprint(symbol = selectedSymbol) {
       drawBarStrategyTitle(ctx, strategyStoryForBar(bars, startIdx + i), cx, barWidth - 4);
     } else {
       drawBarStrategyTitle(ctx, { badge: 'NOW', line1: 'This candle', line2: 'still forming', color: '#60a5fa' }, cx, barWidth - 4);
+    }
+    const marker = patternByTime.get(bar.time);
+    if (marker) {
+      const hit = drawPatternBadge(ctx, marker, cx, 54);
+      view.patternHits.push({ ...hit, marker });
     }
     const poc = levels.reduce((best, lv) => (lv.buy + lv.sell > best.vol ? { vol: lv.buy + lv.sell, price: lv.price } : best), { vol: 0, price: 0 });
 
@@ -2508,9 +2835,21 @@ function drawFootprint(symbol = selectedSymbol) {
   const meta = view.card?.querySelector('[data-fp-meta]');
   if (meta) {
     const px = livePx || lastBar?.close || 0;
+    const nxt = patternState.nextState;
+    const cur = patternState.currentPattern;
+    const pat = cur
+      ? `${cur.title} ${Math.round(cur.progress ?? 0)}%`
+      : shown?.badge
+        ? titleCaseName(patternFullName(shown))
+        : labelName
+          ? `no sequence · ${labelName}`
+          : 'no sequence';
+    const nextBit = nxt?.prediction
+      ? ` · next ${PATTERN_LABEL_NAMES[nxt.prediction] || nxt.prediction} ${pct1(nxt.probability)}`
+      : '';
     meta.textContent = story?.line1
-      ? `${fmtPriceAxis(px)} · ${story.line1}`
-      : fmtPriceAxis(px);
+      ? `${fmtPriceAxis(px)} · ${story.line1} · ${pat}${nextBit}`
+      : `${fmtPriceAxis(px)} · ${pat}${nextBit}`;
   }
   ctx.lineWidth = 1;
 }
@@ -2903,6 +3242,7 @@ function applyLiveFootprint(ev) {
     noteLivePrice(ev.symbol, bar.c);
   }
   evaluateSymbolAlerts(ev.symbol);
+  void refreshPatternMarkers(ev.symbol);
   scheduleDraw(ev.symbol);
 }
 
@@ -3482,6 +3822,12 @@ function connectLiveSocket() {
         break;
       case 'footprint_tick':
         applyFootprintTick(ev);
+        break;
+      case 'pattern_snapshot':
+        applyPatternSnapshot(ev);
+        break;
+      case 'pattern_alert':
+        ingestPatternAlert(ev.alert);
         break;
       case 'spot_flow':
         ingestSpotFlow(ev.snapshot);
