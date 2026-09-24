@@ -3151,6 +3151,7 @@ function setupAlertUi() {
   const toasts = document.getElementById('alert-toasts');
   bell?.addEventListener('click', (e) => {
     e.stopPropagation();
+    document.getElementById('watchlist-panel')?.classList.add('hidden');
     panel?.classList.toggle('hidden');
   });
   clearBtn?.addEventListener('click', () => {
@@ -3171,6 +3172,147 @@ function setupAlertUi() {
   document.addEventListener('click', (e) => {
     if (!panel || panel.classList.contains('hidden')) return;
     if (panel.contains(e.target) || bell?.contains(e.target)) return;
+    panel.classList.add('hidden');
+  });
+}
+
+// ═══════ Watchlist editor ═══════
+
+let watchlistUiBound = false;
+let watchlistCatalog = [];
+let watchlistDraft = new Set();
+let watchlistTab = 'crypto';
+let watchlistLocked = false;
+
+async function loadWatchlistPanel() {
+  const data = await fetch('/api/watchlist').then((r) => r.json());
+  watchlistCatalog = data.catalog ?? [];
+  watchlistDraft = new Set(data.active ?? []);
+  watchlistLocked = Boolean(data.lockedByEnv);
+  const hint = document.getElementById('watchlist-hint');
+  const saveBtn = document.getElementById('watchlist-save');
+  if (watchlistLocked) {
+    if (hint) hint.textContent = 'Locked by SYMBOLS env — unset it to edit from the UI.';
+    if (saveBtn) saveBtn.disabled = true;
+  } else {
+    if (hint) hint.textContent = 'Toggle coins, then Save. Live feeds reconnect automatically.';
+    if (saveBtn) saveBtn.disabled = false;
+  }
+  renderWatchlistGrid();
+}
+
+function renderWatchlistGrid() {
+  const grid = document.getElementById('watchlist-grid');
+  if (!grid) return;
+  const rows = watchlistCatalog.filter((c) =>
+    watchlistTab === 'equity' ? c.venue === 'equity' : c.venue !== 'equity',
+  );
+  grid.innerHTML = rows
+    .map((coin) => {
+      const on = watchlistDraft.has(coin.symbol);
+      return `<label class="watchlist-chip ${on ? 'on' : ''} ${coin.venue === 'equity' ? 'equity' : ''}">
+        <input type="checkbox" data-wl-symbol="${coin.symbol}" ${on ? 'checked' : ''} ${watchlistLocked ? 'disabled' : ''} />
+        ${coin.label}
+      </label>`;
+    })
+    .join('');
+  const status = document.getElementById('watchlist-status');
+  if (status) status.textContent = `${watchlistDraft.size} selected`;
+}
+
+async function saveWatchlistFromUi() {
+  const status = document.getElementById('watchlist-status');
+  const saveBtn = document.getElementById('watchlist-save');
+  if (watchlistLocked) return;
+  if (watchlistDraft.size < 1) {
+    if (status) status.textContent = 'Pick at least one coin';
+    return;
+  }
+  if (saveBtn) saveBtn.disabled = true;
+  if (status) status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/watchlist', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: [...watchlistDraft] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    config.coins = data.coins ?? [];
+    config.catalog = watchlistCatalog;
+    if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
+      selectedSymbol = config.coins[0]?.symbol ?? selectedSymbol;
+    }
+    initChart();
+    seedFootprintKlines();
+    subscribeFootprint();
+    scheduleDraw();
+    if (status) {
+      status.textContent = data.restartRequired
+        ? 'Saved — restart pnpm run ui for live feeds'
+        : 'Saved — feeds reconnected';
+    }
+  } catch (err) {
+    if (status) status.textContent = err instanceof Error ? err.message : 'Save failed';
+  } finally {
+    if (saveBtn && !watchlistLocked) saveBtn.disabled = false;
+  }
+}
+
+function setupWatchlistUi() {
+  if (watchlistUiBound) return;
+  watchlistUiBound = true;
+  const btn = document.getElementById('watchlist-btn');
+  const panel = document.getElementById('watchlist-panel');
+  const closeBtn = document.getElementById('watchlist-close');
+  const grid = document.getElementById('watchlist-grid');
+  const tabs = document.getElementById('watchlist-tabs');
+
+  btn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('alert-panel')?.classList.add('hidden');
+    const opening = panel?.classList.contains('hidden');
+    panel?.classList.toggle('hidden');
+    if (opening) void loadWatchlistPanel();
+  });
+  closeBtn?.addEventListener('click', () => panel?.classList.add('hidden'));
+  tabs?.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-wl-tab]');
+    if (!tab) return;
+    watchlistTab = tab.dataset.wlTab;
+    tabs.querySelectorAll('[data-wl-tab]').forEach((b) => b.classList.toggle('active', b === tab));
+    renderWatchlistGrid();
+  });
+  grid?.addEventListener('change', (e) => {
+    const input = e.target.closest('input[data-wl-symbol]');
+    if (!input || watchlistLocked) return;
+    const symbol = input.dataset.wlSymbol;
+    if (input.checked) watchlistDraft.add(symbol);
+    else watchlistDraft.delete(symbol);
+    renderWatchlistGrid();
+  });
+  document.getElementById('watchlist-all')?.addEventListener('click', () => {
+    if (watchlistLocked) return;
+    for (const coin of watchlistCatalog) {
+      if (watchlistTab === 'equity' ? coin.venue === 'equity' : coin.venue !== 'equity') {
+        watchlistDraft.add(coin.symbol);
+      }
+    }
+    renderWatchlistGrid();
+  });
+  document.getElementById('watchlist-none')?.addEventListener('click', () => {
+    if (watchlistLocked) return;
+    for (const coin of watchlistCatalog) {
+      if (watchlistTab === 'equity' ? coin.venue === 'equity' : coin.venue !== 'equity') {
+        watchlistDraft.delete(coin.symbol);
+      }
+    }
+    renderWatchlistGrid();
+  });
+  document.getElementById('watchlist-save')?.addEventListener('click', () => void saveWatchlistFromUi());
+  document.addEventListener('click', (e) => {
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (panel.contains(e.target) || btn?.contains(e.target)) return;
     panel.classList.add('hidden');
   });
 }
@@ -3243,6 +3385,7 @@ async function init() {
   setupTabs();
   setupDataMode();
   setupAlertUi();
+  setupWatchlistUi();
   setupCoinRouting();
   try {
     config = await fetch('/api/config').then((r) => r.json());
@@ -3351,6 +3494,19 @@ function connectLiveSocket() {
       case 'overview':
         updateOverview(ev.coins, ev.market === 'spot' ? 'spot' : 'perp');
         break;
+      case 'watchlist': {
+        if (Array.isArray(ev.coins)) {
+          config.coins = ev.coins;
+          if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
+            selectedSymbol = config.coins[0]?.symbol ?? selectedSymbol;
+          }
+          initChart();
+          seedFootprintKlines();
+          subscribeFootprint();
+          scheduleDraw();
+        }
+        break;
+      }
       default:
         break;
     }

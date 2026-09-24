@@ -24,7 +24,7 @@ export function openReconnectingJsonSocket(opts: JsonSocketOptions): () => void 
 
     ws.on('open', () => {
       if (stopped || opts.isStopped()) {
-        ws.close();
+        safeCloseWebSocket(ws);
         return;
       }
       opts.onConnection?.(true, opts.label);
@@ -64,7 +64,14 @@ export function openReconnectingJsonSocket(opts: JsonSocketOptions): () => void 
     };
 
     ws.on('close', retry);
-    ws.on('error', () => ws.close());
+    // Swallow close-while-connecting so feed restarts don't crash the process.
+    ws.on('error', () => {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+    });
   };
 
   connect();
@@ -73,8 +80,30 @@ export function openReconnectingJsonSocket(opts: JsonSocketOptions): () => void 
     stopped = true;
     clearInterval(pingTimer);
     clearTimeout(reconnectTimer);
-    socket?.removeAllListeners();
-    socket?.close();
+    const ws = socket;
     socket = null;
+    safeCloseWebSocket(ws);
   };
+}
+
+/** Close without crashing when the socket never finished opening. */
+export function safeCloseWebSocket(ws: WebSocket | null | undefined): void {
+  if (!ws) return;
+  try {
+    ws.removeAllListeners('message');
+    ws.removeAllListeners('open');
+    ws.removeAllListeners('close');
+    ws.removeAllListeners('ping');
+    ws.removeAllListeners('pong');
+    // Keep a no-op error listener — closing a CONNECTING socket emits an error.
+    ws.removeAllListeners('error');
+    ws.on('error', () => {});
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.terminate();
+    } else if (ws.readyState !== WebSocket.CLOSED) {
+      ws.close();
+    }
+  } catch {
+    /* ignore */
+  }
 }

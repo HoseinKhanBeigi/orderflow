@@ -1,10 +1,22 @@
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { LiveBinanceFeed } from '../src/live/live-feed.js';
-import { DEFAULT_WATCHLIST, EQUITY_PERP_WATCHLIST } from '../src/live/watchlist.js';
+import {
+  EQUITY_PERP_CATALOG,
+  FULL_WATCHLIST_CATALOG,
+  WATCHLIST_CATALOG,
+  resolveWatchlist,
+  type WatchCoin,
+} from '../src/live/watchlist.js';
+import {
+  ACTIVE_WATCHLIST_PATH,
+  loadActiveSymbols,
+  saveActiveSymbols,
+  symbolsFromEnv,
+} from '../src/live/active-watchlist.js';
 import { DEFAULT_CONFIG } from '../src/config/defaults.js';
 import {
   EXCHANGE_LABELS,
@@ -41,22 +53,16 @@ const PUBLIC = join(__dirname, '../public');
 const PORT = Number(process.env.PORT ?? 3456);
 const DEFAULT_VIEW = (process.env.MARKET ?? 'perp').toLowerCase() === 'spot' ? 'spot' : 'perp';
 
-const extra = (process.env.SYMBOLS ?? '')
-  .split(',')
-  .map((s) => s.trim().toUpperCase())
-  .filter(Boolean);
+/** Live set of coins the feeds + API currently expose. Mutated when UI saves. */
+let coins: WatchCoin[] = [];
+let cryptoCoins: WatchCoin[] = [];
+const watchlistLockedByEnv = Boolean(symbolsFromEnv());
 
-const coins = extra.length
-  ? extra.map((symbol) => {
-      const known = [...DEFAULT_WATCHLIST, ...EQUITY_PERP_WATCHLIST].find((c) => c.symbol === symbol);
-      return {
-        symbol,
-        label: known?.label ?? symbol.replace(/USDT$/, ''),
-        minUsd: known?.minUsd ?? 1_000,
-        venue: known?.venue ?? ('crypto' as const),
-      };
-    })
-  : [...DEFAULT_WATCHLIST, ...EQUITY_PERP_WATCHLIST];
+async function bootWatchlist(): Promise<void> {
+  const symbols = await loadActiveSymbols();
+  coins = resolveWatchlist(symbols);
+  cryptoCoins = coins.filter((c) => c.venue === 'crypto');
+}
 
 const EXCHANGES = parseExchangesEnv();
 const SPOT_EXCHANGES = parseSpotExchangesEnv();
@@ -70,7 +76,6 @@ const ENGINE_TRADE_VENUES = (process.env.ENGINE_TRADE_VENUES ?? 'binance')
   .filter((id): id is ExchangeId => isExchangeId(id));
 const ENGINE_TRADE_FALLBACK = (process.env.ENGINE_TRADE_FALLBACK ?? 'bybit').trim().toLowerCase();
 const ENGINE_TRADE_FALLBACK_MS = Number(process.env.ENGINE_TRADE_FALLBACK_MS ?? 20_000);
-const cryptoCoins = coins.filter((c) => c.venue === 'crypto');
 const IMBALANCE_RATIO = Number(process.env.SPOT_IMBALANCE_RATIO ?? DEFAULT_IMBALANCE_RATIO) || DEFAULT_IMBALANCE_RATIO;
 
 const MIME: Record<string, string> = {
@@ -83,26 +88,8 @@ const MIME: Record<string, string> = {
 
 const RETENTION_DAYS = Number(process.env.FOOTPRINT_RETENTION_DAYS ?? 30);
 
-const perpFeed = new LiveBinanceFeed({
-  coins,
-  market: 'perp',
-  summaryMs: 2_000,
-  exchanges: EXCHANGES,
-  engineTradeVenues: ENGINE_TRADE_VENUES,
-  engineTradeFallback: isExchangeId(ENGINE_TRADE_FALLBACK) ? ENGINE_TRADE_FALLBACK : undefined,
-  engineTradeFallbackMs: ENGINE_TRADE_FALLBACK_MS,
-});
-
-const spotFeed = new LiveBinanceFeed({
-  coins: cryptoCoins,
-  market: 'spot',
-  summaryMs: 2_000,
-  exchanges: SPOT_EXCHANGES,
-  engineTradeVenues: ENGINE_TRADE_VENUES,
-  engineTradeFallback: isExchangeId(ENGINE_TRADE_FALLBACK) ? ENGINE_TRADE_FALLBACK : undefined,
-  engineTradeFallbackMs: ENGINE_TRADE_FALLBACK_MS,
-});
-
+let perpFeed: LiveBinanceFeed;
+let spotFeed: LiveBinanceFeed;
 const perpRecorder = new FootprintRecorder({
   market: 'perp',
   retentionDays: RETENTION_DAYS,
@@ -116,13 +103,92 @@ const spotRecorder = new FootprintRecorder({
 const spotHub = new SpotFlowEngine(IMBALANCE_RATIO);
 const passiveFeatures = { perp: new PassiveFeatureRecorder(), spot: new PassiveFeatureRecorder() };
 
-perpFeed.onAnyTrade((trade, exchange) => {
-  perpRecorder.ingest(trade, exchange);
-});
-spotFeed.onAnyTrade((trade, exchange) => {
-  if (!spotHub.ingestTrade(trade, exchange)) return;
-  spotRecorder.ingest(trade, exchange);
-});
+function createFeeds(): void {
+  perpFeed = new LiveBinanceFeed({
+    coins,
+    market: 'perp',
+    summaryMs: 2_000,
+    exchanges: EXCHANGES,
+    engineTradeVenues: ENGINE_TRADE_VENUES,
+    engineTradeFallback: isExchangeId(ENGINE_TRADE_FALLBACK) ? ENGINE_TRADE_FALLBACK : undefined,
+    engineTradeFallbackMs: ENGINE_TRADE_FALLBACK_MS,
+  });
+  spotFeed = new LiveBinanceFeed({
+    coins: cryptoCoins,
+    market: 'spot',
+    summaryMs: 2_000,
+    exchanges: SPOT_EXCHANGES,
+    engineTradeVenues: ENGINE_TRADE_VENUES,
+    engineTradeFallback: isExchangeId(ENGINE_TRADE_FALLBACK) ? ENGINE_TRADE_FALLBACK : undefined,
+    engineTradeFallbackMs: ENGINE_TRADE_FALLBACK_MS,
+  });
+  perpFeed.onAnyTrade((trade, exchange) => {
+    perpRecorder.ingest(trade, exchange);
+  });
+  spotFeed.onAnyTrade((trade, exchange) => {
+    if (!spotHub.ingestTrade(trade, exchange)) return;
+    spotRecorder.ingest(trade, exchange);
+  });
+  perpFeed.on((ev) => {
+    if (ev.type === 'summary') {
+      spotHub.setFuturesWindow(ev.summary.symbol, ev.summary.windows['1m'] as WindowSnapshot);
+    }
+    if (ev.type === 'passive_liquidity') {
+      passiveFeatures.perp.record(ev.symbol, ev.snapshot.timestamp, ev.snapshot.features);
+    }
+    broadcast({ ...ev, market: 'perp' });
+  });
+  spotFeed.on((ev) => {
+    if (ev.type === 'passive_liquidity') {
+      passiveFeatures.spot.record(ev.symbol, ev.snapshot.timestamp, ev.snapshot.features);
+    }
+    if (ev.type === 'book') {
+      spotHub.ingestBook({
+        symbol: ev.symbol,
+        marketType: 'spot',
+        timestamp: Date.now(),
+        bids: ev.bids,
+        asks: ev.asks,
+      });
+    }
+    if (ev.type === 'summary') {
+      spotHub.ingestBinanceWindow(ev.summary.symbol, ev.summary.windows['1m'] as WindowSnapshot);
+    }
+    broadcast({ ...ev, market: 'spot' });
+  });
+}
+
+/** Stop old sockets and open feeds for the current `coins` set. */
+let feedRestartChain: Promise<void> = Promise.resolve();
+
+function restartFeeds(reason = 'watchlist'): void {
+  feedRestartChain = feedRestartChain
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        perpFeed?.stop();
+      } catch {
+        /* ignore */
+      }
+      try {
+        spotFeed?.stop();
+      } catch {
+        /* ignore */
+      }
+      // Let in-flight CONNECTING sockets finish emitting before we open new ones.
+      await new Promise((r) => setTimeout(r, 50));
+      createFeeds();
+      perpFeed.start();
+      spotFeed.start();
+      console.log(`  Feeds restarted (${reason}): ${coins.map((c) => c.label).join(' · ') || '(none)'}`);
+      broadcast({
+        type: 'watchlist',
+        coins,
+        active: coins.map((c) => c.symbol),
+        reason,
+      });
+    });
+}
 
 function passiveEngineFor(params: URLSearchParams): PassiveLiquidityEngine | null {
   const symbol = (params.get('symbol') ?? coins[0]?.symbol ?? 'BTCUSDT').toUpperCase();
@@ -131,6 +197,22 @@ function passiveEngineFor(params: URLSearchParams): PassiveLiquidityEngine | nul
   const feed = market === 'spot' ? spotFeed : perpFeed;
   if (!feed.coins.some((c) => c.symbol === symbol)) return null;
   return feed.engine.getSymbol(symbol, market).passiveLiquidity;
+}
+
+function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
 const server = createServer(async (req, res) => {
@@ -248,9 +330,61 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.url === '/api/watchlist' || req.url?.startsWith('/api/watchlist?')) {
+      if (req.method === 'GET') {
+        json(res, {
+          catalog: FULL_WATCHLIST_CATALOG,
+          crypto: WATCHLIST_CATALOG,
+          equity: EQUITY_PERP_CATALOG,
+          active: coins.map((c) => c.symbol),
+          coins,
+          lockedByEnv: watchlistLockedByEnv,
+          path: ACTIVE_WATCHLIST_PATH,
+        });
+        return;
+      }
+      if (req.method === 'PUT' || req.method === 'POST') {
+        if (watchlistLockedByEnv) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'Watchlist is locked by SYMBOLS env. Unset SYMBOLS to edit from the UI.',
+          }));
+          return;
+        }
+        try {
+          const body = (await readJsonBody(req)) as { symbols?: string[]; active?: string[] };
+          const next = await saveActiveSymbols(body.symbols ?? body.active ?? []);
+          coins = resolveWatchlist(next);
+          cryptoCoins = coins.filter((c) => c.venue === 'crypto');
+          // Drop footprint subs for symbols that are no longer active.
+          for (const [socket, sub] of footprintSubs) {
+            const kept = sub.symbols.filter((symbol) => coins.some((c) => c.symbol === symbol));
+            if (!kept.length) footprintSubs.delete(socket);
+            else sub.symbols = kept;
+          }
+          restartFeeds('watchlist-save');
+          json(res, {
+            ok: true,
+            active: coins.map((c) => c.symbol),
+            coins,
+            restartRequired: false,
+            message: 'Saved. Live feeds reconnected to the new watchlist.',
+          });
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'save failed' }));
+        }
+        return;
+      }
+      res.writeHead(405);
+      res.end();
+      return;
+    }
+
     if (req.url === '/api/config') {
     json(res, {
       coins,
+      catalog: FULL_WATCHLIST_CATALOG,
       crypto: coins.filter((c) => c.venue === 'crypto'),
       stocks: coins.filter((c) => c.venue === 'equity'),
       market: DEFAULT_VIEW,
@@ -262,6 +396,10 @@ const server = createServer(async (req, res) => {
       imbalanceRatio: IMBALANCE_RATIO,
       port: PORT,
       history: { enabled: isStorageEnabled(), retentionDays: RETENTION_DAYS },
+      watchlist: {
+        lockedByEnv: watchlistLockedByEnv,
+        path: ACTIVE_WATCHLIST_PATH,
+      },
       tiers: DEFAULT_CONFIG.largeTradeThresholds,
       relative: {
         large: DEFAULT_CONFIG.relative.largePercentile,
@@ -441,38 +579,6 @@ const footprintTickTimer = setInterval(() => {
 }, Number(process.env.FOOTPRINT_TICK_MS ?? 1000));
 footprintTickTimer.unref?.();
 
-perpFeed.on((ev) => {
-  if (ev.type === 'summary') {
-    spotHub.setFuturesWindow(ev.summary.symbol, ev.summary.windows['1m'] as WindowSnapshot);
-  }
-  if (ev.type === 'passive_liquidity') {
-    passiveFeatures.perp.record(ev.symbol, ev.snapshot.timestamp, ev.snapshot.features);
-  }
-  broadcast({ ...ev, market: 'perp' });
-});
-spotFeed.on((ev) => {
-  if (ev.type === 'passive_liquidity') {
-    passiveFeatures.spot.record(ev.symbol, ev.snapshot.timestamp, ev.snapshot.features);
-  }
-  if (ev.type === 'book') {
-    spotHub.ingestBook({
-      symbol: ev.symbol,
-      marketType: 'spot',
-      timestamp: Date.now(),
-      bids: ev.bids,
-      asks: ev.asks,
-    });
-  }
-  if (ev.type === 'summary') {
-    spotHub.ingestBinanceWindow(ev.summary.symbol, ev.summary.windows['1m'] as WindowSnapshot);
-  }
-  broadcast({ ...ev, market: 'spot' });
-});
-perpFeed.start();
-spotFeed.start();
-perpRecorder.start();
-spotRecorder.start();
-
 const spotFlowTimer = setInterval(() => {
   const now = Date.now();
   for (const coin of cryptoCoins) {
@@ -499,10 +605,21 @@ const oiTimer = setInterval(() => {
 }, 30_000);
 oiTimer.unref?.();
 
-void buildSimulator().catch((err) => {
-  console.error('  Simulator bundle failed:', err instanceof Error ? err.message : err);
-  console.error('  Dashboard will still start; /lab.html needs a successful bundle.');
-}).finally(() => {
+async function main(): Promise<void> {
+  await bootWatchlist();
+  createFeeds();
+  perpFeed.start();
+  spotFeed.start();
+  perpRecorder.start();
+  spotRecorder.start();
+
+  try {
+    await buildSimulator();
+  } catch (err) {
+    console.error('  Simulator bundle failed:', err instanceof Error ? err.message : err);
+    console.error('  Dashboard will still start; /lab.html needs a successful bundle.');
+  }
+
   server.listen(PORT, () => {
     const crypto = coins.filter((c) => c.venue === 'crypto');
     const equity = coins.filter((c) => c.venue === 'equity');
@@ -511,13 +628,24 @@ void buildSimulator().catch((err) => {
     console.log(`  Backtest lab: http://localhost:${PORT}/lab.html`);
     console.log(`  Exchanges (perp): ${EXCHANGES.map((id) => EXCHANGE_LABELS[id]).join(' · ')}`);
     console.log(`  Exchanges (spot): ${SPOT_EXCHANGES.map((id) => EXCHANGE_LABELS[id]).join(' · ')}`);
+    console.log(`  Active watchlist: ${coins.map((c) => c.label).join(' · ') || '(none)'}`);
     console.log(`  Crypto perp + spot footprint: ${crypto.map((c) => c.label).join(' · ')}`);
-    console.log(`  TradFi perp (Binance): ${equity.map((c) => c.label).join(' · ')}`);
+    console.log(`  TradFi perp (Binance): ${equity.map((c) => c.label).join(' · ') || '—'}`);
     console.log(
       `  Footprint history: ${isStorageEnabled() ? `Postgres · ${RETENTION_DAYS}d retention` : 'disabled (set DATABASE_URL)'}`,
     );
+    if (watchlistLockedByEnv) {
+      console.log(`  Watchlist locked by SYMBOLS env`);
+    } else {
+      console.log(`  Edit coins in UI (Watchlist) → saved to data/active-watchlist.json`);
+    }
     console.log(`  SpaceX is not listed on Binance.\n`);
   });
+}
+
+void main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
 
 function parseExchangeParam(raw: string | null): ExchangeId {

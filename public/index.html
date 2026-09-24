@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-consume" />
+  <link rel="stylesheet" href="/styles.css?v=fp-wl-fix" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -17,11 +17,33 @@
       </div>
       <div id="status" class="status connecting">Connecting…</div>
       <div id="symbol-label" class="symbol-label">—</div>
+      <button type="button" class="alert-bell" id="watchlist-btn" title="Choose watchlist coins">
+        Watchlist
+      </button>
       <button type="button" class="alert-bell" id="alert-bell" title="Footprint alerts">
         Alerts <span class="alert-bell-count" id="alert-count">0</span>
       </button>
     </div>
   </header>
+
+  <div class="alert-panel hidden" id="watchlist-panel" aria-live="polite">
+    <div class="alert-panel-head">
+      <strong>Watchlist coins</strong>
+      <button type="button" class="alert-panel-clear" id="watchlist-close">Close</button>
+    </div>
+    <p class="watchlist-hint" id="watchlist-hint">Toggle coins, then Save. Live feeds reconnect automatically.</p>
+    <div class="watchlist-tabs" id="watchlist-tabs">
+      <button type="button" class="chart-tf-tab active" data-wl-tab="crypto">Crypto</button>
+      <button type="button" class="chart-tf-tab" data-wl-tab="equity">TradFi</button>
+    </div>
+    <div class="watchlist-grid" id="watchlist-grid"></div>
+    <div class="watchlist-actions">
+      <button type="button" class="chart-tf-tab" id="watchlist-all">All</button>
+      <button type="button" class="chart-tf-tab" id="watchlist-none">None</button>
+      <span class="watchlist-status" id="watchlist-status"></span>
+      <button type="button" class="watchlist-save" id="watchlist-save">Save</button>
+    </div>
+  </div>
 
   <div class="alert-panel hidden" id="alert-panel" aria-live="polite">
     <div class="alert-panel-head">
@@ -111,6 +133,6 @@
     </div>
   </footer>
 
-  <script src="/app.js?v=fp-consume" type="module"></script>
+  <script src="/app.js?v=fp-wl-fix" type="module"></script>
 </body>
 </html>

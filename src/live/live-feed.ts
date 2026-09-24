@@ -15,6 +15,7 @@ import { isVolatileWindow } from '../analysis/alerts.js';
 import type { PassiveLiquiditySnapshot } from '../models/passive-liquidity.js';
 import type { BinanceAggTrade, BinanceForceOrder, BinanceTrade } from '../exchange/types.js';
 import { DEFAULT_WATCHLIST, minUsdFor, type WatchCoin } from './watchlist.js';
+import { safeCloseWebSocket } from './json-socket.js';
 import { VenueTradeFan } from './venue-trades.js';
 
 export interface LiveFeedConfig {
@@ -274,8 +275,7 @@ export class LiveBinanceFeed {
 
   private closeSockets(): void {
     for (const ws of this.sockets.splice(0)) {
-      ws.removeAllListeners();
-      ws.close();
+      safeCloseWebSocket(ws);
     }
   }
 
@@ -343,7 +343,15 @@ export class LiveBinanceFeed {
       }, 2_000);
     });
 
-    ws.on('error', () => ws.close());
+    ws.on('error', () => {
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          safeCloseWebSocket(ws);
+        }
+      } catch {
+        /* ignore */
+      }
+    });
   }
 
   private onSocketMessage(raw: WebSocket.RawData): void {

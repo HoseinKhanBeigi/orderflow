@@ -13,7 +13,7 @@
  *   INTERVAL_MS=10000 pnpm briefing
  */
 import { LiveBinanceFeed } from '../src/live/live-feed.js';
-import { DEFAULT_WATCHLIST, EQUITY_PERP_WATCHLIST, minUsdFor } from '../src/live/watchlist.js';
+import { FULL_WATCHLIST_CATALOG, minUsdFor } from '../src/live/watchlist.js';
 import { FootprintAggregator } from '../src/footprint/aggregator.js';
 import { briefingToJson, briefingToText, buildBriefing, estimateTokens } from '../src/agent/index.js';
 import type { FootprintBar } from '../src/footprint/types.js';
@@ -24,7 +24,7 @@ const FORMAT = (process.env.FORMAT ?? 'text').toLowerCase();
 const INTERVAL_MS = Number(process.env.INTERVAL_MS ?? 15_000);
 const MAX_HISTORY_BARS = 60;
 
-const known = [...DEFAULT_WATCHLIST, ...EQUITY_PERP_WATCHLIST].find((c) => c.symbol === SYMBOL);
+const known = FULL_WATCHLIST_CATALOG.find((c) => c.symbol === SYMBOL);
 const coin = {
   symbol: SYMBOL,
   label: known?.label ?? SYMBOL.replace(/USDT$/, ''),
