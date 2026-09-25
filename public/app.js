@@ -1483,9 +1483,7 @@ function buildFpGrid() {
         <span class="fp-card-title">${coin.label}</span>
         <span class="fp-card-meta" data-fp-meta>—</span>
       </header>
-      <div class="fp-card-canvas">
-        <aside class="fp-pattern-panel hidden" data-fp-pattern-panel></aside>
-      </div>
+      <div class="fp-card-canvas"></div>
       <div class="fp-pattern-tip hidden" data-fp-pattern-tip></div>
     `;
     const host = card.querySelector('.fp-card-canvas');
@@ -2279,76 +2277,6 @@ function patternProgressPct(marker) {
   return Math.round(n);
 }
 
-function fmtSampleCount(n) {
-  const v = Number(n) || 0;
-  if (v >= 10_000) return `${Math.round(v / 1000)}K`;
-  if (v >= 1000) return `${(v / 1000).toFixed(2).replace(/\.?0+$/, '')}K`;
-  return String(v);
-}
-
-function renderPatternPanel(symbol, shown, labelName) {
-  const view = fpViews.get(symbol);
-  const el = view?.card?.querySelector('[data-fp-pattern-panel]');
-  if (!el) return;
-  const state = fpPatternStore[patternStoreKey(symbol)] ?? {};
-  const current = state.currentPattern;
-  const next = state.nextState;
-  const hasPattern = Boolean(shown?.badge || current?.id);
-  const hasNext = Boolean(next && (next.sampleCount > 0 || next.prediction));
-  if (!hasPattern && !hasNext) {
-    el.classList.add('hidden');
-    el.innerHTML = '';
-    return;
-  }
-  el.classList.remove('hidden');
-  const name = current?.title
-    || (shown ? (PATTERN_FULL_NAMES[shown.badge] || PATTERN_FULL_NAMES[shown.id] || patternFullName(shown)) : '');
-  const status = patternStatusLabel(current?.status || shown?.status || '');
-  const progress = current?.progress ?? patternProgressPct(shown);
-  const confidence = current?.confidence ?? shown?.confidence;
-  const tone = shown?.direction === 'BEARISH' || current?.id?.includes('BEARISH') || current?.id?.includes('TRAP')
-    ? 'bear'
-    : shown?.direction === 'BULLISH' || current?.id?.includes('BULLISH')
-      ? 'bull'
-      : '';
-  const patternBlock = hasPattern
-    ? `<div class="k">Current pattern</div>
-       <div class="name ${tone}">${escapeHtml(titleCaseName(name) || 'None')}</div>
-       <div class="status">${escapeHtml(status || '—')}</div>
-       <div class="row"><span>Progress</span><strong>${progress == null ? '—' : `${progress}%`}</strong></div>
-       <div class="row"><span>Pattern confidence</span><strong>${confidence == null ? '—' : `${Math.round(confidence)}%`}</strong></div>`
-    : `<div class="k">Current pattern</div>
-       <div class="name dim">None</div>
-       <div class="status dim">${escapeHtml(labelName || 'no sequence')}</div>`;
-
-  let nextBlock;
-  if (!hasNext) {
-    nextBlock = `<div class="k">Next candle</div><div class="name dim">No history yet</div>`;
-  } else if (next.status !== 'PREDICTED') {
-    const topName = next.prediction ? (PATTERN_LABEL_NAMES[next.prediction] || next.prediction) : '—';
-    nextBlock = `<div class="k">Next candle</div>
-      <div class="name dim">No clear state</div>
-      <div class="row"><span>Top</span><strong>${escapeHtml(topName)} ${pct1(next.probability)}</strong></div>
-      <div class="row"><span>Confidence</span><strong>${escapeHtml(next.confidence || 'LOW')}</strong></div>
-      <div class="row"><span>Samples</span><strong>${fmtSampleCount(next.sampleCount)}</strong></div>`;
-  } else {
-    const predName = PATTERN_LABEL_NAMES[next.prediction] || next.prediction;
-    const rest = Object.entries(next.distribution || {})
-      .filter(([k]) => k !== next.prediction)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 4)
-      .map(([k, p]) => `<div class="row dim"><span>${escapeHtml(PATTERN_LABEL_NAMES[k] || k)}</span><strong>${pct1(p)}</strong></div>`)
-      .join('');
-    nextBlock = `<div class="k">Next candle</div>
-      <div class="name ${tone}">${escapeHtml(predName)}</div>
-      <div class="row"><span>Probability</span><strong>${pct1(next.probability)}</strong></div>
-      ${rest}
-      <div class="row"><span>Prediction confidence</span><strong>${escapeHtml(next.confidence || 'LOW')}</strong></div>
-      <div class="row"><span>Samples</span><strong>${fmtSampleCount(next.sampleCount)}</strong></div>`;
-  }
-  el.innerHTML = `${patternBlock}<div class="split"></div>${nextBlock}`;
-}
-
 function titleCaseName(name) {
   if (!name) return '';
   return String(name).replace(/\b\w/g, (c) => c.toUpperCase());
@@ -2661,7 +2589,6 @@ function drawFootprint(symbol = selectedSymbol) {
   const latestMarker = [...(patternState.markers ?? [])].sort((a, b) => (b.t ?? 0) - (a.t ?? 0))[0];
   const shown = primary?.badge ? primary : latestMarker;
   const labelName = PATTERN_LABEL_NAMES[patternState.currentLabel] || patternState.currentLabel || '';
-  renderPatternPanel(symbol, shown, labelName);
 
   view.patternHits = [];
   const patternByTime = new Map();
