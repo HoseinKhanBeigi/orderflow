@@ -2025,6 +2025,24 @@ function fpBarWinner(bar) {
   return { id: 'BALANCED', short: '', color: '#8b949e' };
 }
 
+/**
+ * Upside fight is buyers vs asks. Downside fight is sellers vs bids.
+ * One label per bar: the side that actually won that candle.
+ */
+function barBattleLabel(bar) {
+  const vol = (bar.totalBuy ?? 0) + (bar.totalSell ?? 0);
+  if (vol <= 0) return null;
+  const abs = barAbsorbed(bar);
+  if (abs === 'BUYERS') return { text: 'Buyers absorbed', color: '#fbbf24' };
+  if (abs === 'SELLERS') return { text: 'Sellers absorbed', color: '#60a5fa' };
+  const win = fpBarWinner(bar);
+  if (win.id === 'AGGRESSIVE_BUYERS') return { text: 'Asks consumed', color: '#22c55e' };
+  if (win.id === 'AGGRESSIVE_SELLERS') return { text: 'Bids consumed', color: '#ef4444' };
+  if (win.id === 'PASSIVE_SELLERS') return { text: 'Buyers absorbed', color: '#fbbf24' };
+  if (win.id === 'PASSIVE_BUYERS') return { text: 'Sellers absorbed', color: '#60a5fa' };
+  return null;
+}
+
 function barAbsorbed(bar) {
   const vol = (bar.totalBuy ?? 0) + (bar.totalSell ?? 0);
   const delta = (bar.totalBuy ?? 0) - (bar.totalSell ?? 0);
@@ -2193,6 +2211,21 @@ function strategyStoryForBar(allBars, idx) {
   if (win.id === 'PASSIVE_SELLERS') return { badge: 'WAIT', line1: 'Buyers absorbed', line2: 'asks held · little move', color: '#fbbf24' };
   if (win.id === 'PASSIVE_BUYERS') return { badge: 'WAIT', line1: 'Sellers absorbed', line2: 'bids held · little move', color: '#7dd3fc' };
   return { badge: 'WAIT', line1: 'No clear edge', line2: '', color: '#8b949e' };
+}
+
+function drawBarBattleLabel(ctx, battle, cx, y, maxW) {
+  if (!battle?.text) return;
+  ctx.save();
+  ctx.font = '600 9px Inter, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+  ctx.lineJoin = 'round';
+  ctx.strokeText(battle.text, cx, y, maxW);
+  ctx.fillStyle = battle.color;
+  ctx.fillText(battle.text, cx, y, maxW);
+  ctx.restore();
 }
 
 function drawBarStrategyTitle(ctx, story, cx, maxW) {
@@ -2513,7 +2546,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 48;
+  const bottomPad = 64;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -2738,6 +2771,7 @@ function drawFootprint(symbol = selectedSymbol) {
       ctx.fillStyle = delta >= 0 ? '#4ade80' : '#f87171';
       ctx.fillText(`${delta >= 0 ? '+' : '-'}${fmtVolShort(Math.abs(delta))}`, x + barWidth / 2, topPad + chartH + 28);
     }
+    drawBarBattleLabel(ctx, barBattleLabel(bar), cx, topPad + chartH + 46, barWidth - 2);
   }
 
   if (railW > 0) {
