@@ -22,6 +22,9 @@ export { DefenseEngine } from './liquidity/defense-engine.js';
 export { PassiveFlowEngine } from './passive-flow/passive-flow-engine.js';
 export { FlowWinnerEngine } from './flow-battle/flow-winner-engine.js';
 export { MarketBattleEngine, analyzeMarketBattle, emptyMarketBattle } from './market-battle/index.js';
+export { MarketFuelEngine } from './market-fuel/index.js';
+export type { MarketFuelInput } from './market-fuel/index.js';
+export type { MarketFuelSnapshot, FuelState, FuelDataStatus } from './models/market-fuel.js';
 export type { MarketBattleInput } from './market-battle/index.js';
 export { AggressiveFlowEngine } from './aggressive-flow/index.js';
 export type {
@@ -76,6 +79,7 @@ export {
   CANDLE_LABELS,
   recognizeFromCandles,
   labelFootprintBar,
+  classifyCandleStructure,
   NextFootprintStatePredictor,
 } from './pattern-recognition/index.js';
 export type {
@@ -88,6 +92,10 @@ export type {
   PatternAlert,
   LabeledCandle,
   NextStatePrediction,
+  CandleClassification,
+  ControlState,
+  DominantLiquidityEvent,
+  SpecialEventType,
 } from './pattern-recognition/index.js';
 
 export * from './models/index.js';

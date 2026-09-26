@@ -24,6 +24,7 @@ import { MovePotentialEngine } from '../movement/move-potential-engine.js';
 import { PassiveFlowEngine } from '../passive-flow/passive-flow-engine.js';
 import { FlowWinnerEngine } from '../flow-battle/flow-winner-engine.js';
 import { MarketBattleEngine } from '../market-battle/engine.js';
+import { MarketFuelEngine } from '../market-fuel/engine.js';
 import { AggressiveFlowEngine } from '../aggressive-flow/engine.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
@@ -90,6 +91,7 @@ export class SymbolEngine {
   readonly liquidityResponse: LiquidityResponseEngine;
   readonly passiveLiquidity: PassiveLiquidityEngine;
   readonly marketBattle: MarketBattleEngine;
+  readonly marketFuel: MarketFuelEngine;
   readonly aggressiveFlow: AggressiveFlowEngine;
 
   private readonly listeners = new Set<EngineListener>();
@@ -149,6 +151,7 @@ export class SymbolEngine {
       config.liquidityResponse.percentileBands,
     );
     this.marketBattle = new MarketBattleEngine();
+    this.marketFuel = new MarketFuelEngine(config.marketFuel);
     this.aggressiveFlow = new AggressiveFlowEngine(
       config.marketBattle,
       60_000,
@@ -542,6 +545,21 @@ export class SymbolEngine {
       aggressiveFlow,
     });
 
+    const marketFuel = this.marketFuel.snapshot({
+      symbol: this.symbol,
+      window,
+      now,
+      aggressiveFlow,
+      forcedBuyVolume: agg.forcedBuyVolume,
+      forcedSellVolume: agg.forcedSellVolume,
+      liquidationFeed: this.marketType === 'perp' ? 'live' : 'not_expected',
+      buyBurst,
+      sellBurst,
+      tradeDataMissing,
+      tradeStale: tradeDataLowConfidence,
+      sampleConfidence: conf,
+    });
+
     const snap: WindowSnapshot = {
       symbol: this.symbol,
       marketType: this.marketType,
@@ -592,6 +610,7 @@ export class SymbolEngine {
       passiveLiquidity,
       netAggression,
       marketBattle,
+      marketFuel,
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
         book: this.book,

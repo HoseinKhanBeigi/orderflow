@@ -105,6 +105,16 @@ function supportingEvidence(
     pushNeg(conflicts, sellerCtrl?.aggressiveBuyPower);
   }
 
+  const last = candles[candles.length - 1];
+  if (def.direction === 'BULLISH') {
+    pushPos(scores, last?.upsideFuel);
+    if ((last?.upsideFuelVelocity ?? 0) > 0) pushPos(scores, last?.upsideFuel);
+  }
+  if (def.direction === 'BEARISH') {
+    pushPos(scores, last?.downsideFuel);
+    if ((last?.downsideFuelVelocity ?? 0) > 0) pushPos(scores, last?.downsideFuel);
+  }
+
   const supporting = scores.length ? clamp(0.85 + 0.3 * mean(scores), 0.75, 1.15) : 1;
   const conflict = conflicts.length ? clamp(1 - 0.35 * mean(conflicts), 0.55, 1) : 1;
   const sweepQuality = huntLow?.sweepQuality ?? huntHigh?.sweepQuality ?? null;

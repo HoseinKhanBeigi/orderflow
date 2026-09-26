@@ -182,6 +182,55 @@ export interface AggressivePowerWeights {
   deltaCvdContribution: number;
 }
 
+/**
+ * Starting weights for MarketFuel. They sum to 1 in the defaults.
+ * They are a transparent mix of existing normalized scores, not a
+ * fitted model of how price moves.
+ */
+export interface MarketFuelWeights {
+  aggressivePower: number;
+  velocity: number;
+  tradeIntensity: number;
+  largeStrength: number;
+  acceleration: number;
+  liquidation: number;
+  inferredStop: number;
+}
+
+export interface MarketFuelConfig {
+  weights: MarketFuelWeights;
+  /** How long a new fuel state must hold before it replaces the previous one. */
+  statePersistMs: number;
+  /** Score used when a burst is treated as inferred stop-like flow. Below a measured print. */
+  inferredStopScore: number;
+}
+
+/**
+ * Structured candle classification gates.
+ * Dominance thresholds are calibratable — not market truths.
+ */
+export interface CandleClassificationConfig {
+  /** Minimum normalized score for a liquidity behavior to be a headline candidate. */
+  minimumDominanceScore: number;
+  /** Candidate must beat the second-strongest behavior by at least this margin. */
+  minimumDominanceMargin: number;
+  /** Prefer relative significance when a rolling percentile is available. */
+  minimumDominancePercentile: number;
+  /** Score → state buckets (exclusive upper bounds except extreme). */
+  stateBuckets: {
+    low: number;
+    normal: number;
+    elevated: number;
+    strong: number;
+  };
+  /** Minimum control confidence to elevate control above liquidity for display. */
+  strongControlConfidence: number;
+  /** Minimum special-event confidence to win the compact headline. */
+  strongSpecialEventConfidence: number;
+  /** Liquidity states allowed as headline when they are dominant. */
+  headlineLiquidityStates: Array<'STRONG' | 'EXTREME'>;
+}
+
 export interface MarketBattleConfig {
   aggressiveWeights: AggressivePowerWeights;
   /** Same semantics as footprint chart imbalance ratio. */
@@ -356,6 +405,8 @@ export interface EngineConfig {
   movePotential: MovePotentialConfig;
   flowBattle: FlowBattleConfig;
   marketBattle: MarketBattleConfig;
+  marketFuel: MarketFuelConfig;
+  candleClassification: CandleClassificationConfig;
   liquidityResponse: LiquidityResponseConfig;
   passiveLiquidity: PassiveLiquidityConfig;
   historicalBaselineSamples: number;

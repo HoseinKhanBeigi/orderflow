@@ -78,7 +78,7 @@ describe('pattern recognition — sequences', () => {
     expect(snap.primaryPattern?.progress).toBe(1);
     expect(snap.primaryPattern?.stage).toBe(4);
     expect(snap.primaryPattern?.totalStages).toBe(4);
-    expect(snap.primaryPattern?.patternVersion).toBe('BULLISH_LIQUIDITY_REVERSAL:v1');
+    expect(snap.primaryPattern?.patternVersion).toBe('BULLISH_LIQUIDITY_REVERSAL:v2');
     expect(snap.primaryPattern?.direction).toBe('BULLISH');
     expect(snap.primaryPattern?.confidence).toBeGreaterThan(50);
   });

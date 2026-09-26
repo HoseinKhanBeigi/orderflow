@@ -206,6 +206,35 @@ export const DEFAULT_CONFIG: EngineConfig = {
     maxTradeStaleMs: 180_000,
   },
 
+  marketFuel: {
+    weights: {
+      aggressivePower: 0.34,
+      velocity: 0.16,
+      tradeIntensity: 0.12,
+      largeStrength: 0.12,
+      acceleration: 0.1,
+      liquidation: 0.1,
+      inferredStop: 0.06,
+    },
+    statePersistMs: 1_500,
+    inferredStopScore: 62,
+  },
+
+  candleClassification: {
+    minimumDominanceScore: 70,
+    minimumDominanceMargin: 15,
+    minimumDominancePercentile: 70,
+    stateBuckets: {
+      low: 25,
+      normal: 50,
+      elevated: 70,
+      strong: 85,
+    },
+    strongControlConfidence: 0.55,
+    strongSpecialEventConfidence: 0.55,
+    headlineLiquidityStates: ['STRONG', 'EXTREME'],
+  },
+
   liquidityResponse: {
     bandPct: 0.25,
     bands: [0.05, 0.1, 0.25, 0.5, 1.0],

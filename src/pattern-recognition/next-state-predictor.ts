@@ -1,7 +1,21 @@
 import { clamp } from '../core/integrity.js';
+import type { SpecialEventType } from './candle-classification-types.js';
+import {
+  CONTROL_STATES,
+  DOMINANT_LIQUIDITY_EVENTS,
+  DimensionTransitionTable,
+  SPECIAL_EVENT_PREDICT_VALUES,
+  controlToken,
+  liquidityToken,
+  specialEventToken,
+  type SpecialEventPredictValue,
+} from './dimension-transition-table.js';
 import type { LabeledCandle } from './pattern-types.js';
 import type {
   CandleLabel,
+  ControlState,
+  DimensionPrediction,
+  DominantLiquidityEvent,
   NextStatePrediction,
   PatternId,
   PredictorOptions,
@@ -22,6 +36,7 @@ const DISPLAY_TOP = 4;
 
 export class NextFootprintStatePredictor {
   readonly table = new TransitionTable();
+  readonly dimensions = new DimensionTransitionTable();
   readonly evaluation = new PredictionEvaluation();
   private readonly pending = new Map<string, NextStatePrediction>();
   readonly options: Required<PredictorOptions>;
@@ -45,6 +60,12 @@ export class NextFootprintStatePredictor {
     contextLabels: readonly string[];
     nextLabel: string;
     patternId?: PatternId | null;
+    contextControls?: readonly string[];
+    nextControl?: string;
+    contextSpecialEvents?: readonly string[];
+    nextSpecialEvent?: string;
+    contextLiquidityEvents?: readonly string[];
+    nextLiquidityEvent?: string;
   }): void {
     const key = streamKey(input.symbol, input.timeframe);
     const pending = this.pending.get(key);
@@ -63,6 +84,7 @@ export class NextFootprintStatePredictor {
       input.patternId,
       this.options.maxDepth,
     );
+    this.observeDimensions(input);
   }
 
   /** Train from a finalized tape. Pair i-1 → i never inspects i+1. */
@@ -70,15 +92,29 @@ export class NextFootprintStatePredictor {
     for (let i = 1; i < candles.length; i++) {
       const ctx = candles.slice(0, i);
       const first = ctx[0];
+      const next = candles[i]!;
       if (!first) continue;
       this.table.observe(
         first.symbol,
         first.timeframe,
         ctx.map((c) => c.label),
-        candles[i]!.label,
+        next.label,
         patternAt?.[i - 1] ?? null,
         this.options.maxDepth,
       );
+      this.observeDimensions({
+        symbol: first.symbol,
+        timeframe: first.timeframe,
+        patternId: patternAt?.[i - 1] ?? null,
+        contextControls: ctx.map((c) => controlToken(c.classification?.primaryState.control ?? 'UNCLEAR')),
+        nextControl: controlToken(next.classification?.primaryState.control ?? 'UNCLEAR'),
+        contextSpecialEvents: ctx.map((c) => specialEventToken(c.classification?.specialEvent.type ?? null)),
+        nextSpecialEvent: specialEventToken(next.classification?.specialEvent.type ?? null),
+        contextLiquidityEvents: ctx.map((c) =>
+          liquidityToken(c.classification?.liquidityBehavior.dominantEvent ?? 'NONE'),
+        ),
+        nextLiquidityEvent: liquidityToken(next.classification?.liquidityBehavior.dominantEvent ?? 'NONE'),
+      });
     }
   }
 
@@ -88,13 +124,17 @@ export class NextFootprintStatePredictor {
     contextLabels: readonly string[];
     patternId?: PatternId | null;
     remember?: boolean;
+    contextControls?: readonly string[];
+    contextSpecialEvents?: readonly string[];
+    contextLiquidityEvents?: readonly string[];
   }): NextStatePrediction {
     const labels = input.contextLabels.map(normalizeLabel);
+    const dims = this.dimensionPredictions(input, labels);
     const empty = emptyPrediction(input.patternId ?? null);
-    if (!labels.length) return empty;
+    if (!labels.length) return { ...empty, ...dims };
 
     const picked = this.pickCounts(input.symbol, input.timeframe, labels, input.patternId ?? null);
-    if (!picked || picked.counts.total <= 0) return empty;
+    if (!picked || picked.counts.total <= 0) return { ...empty, ...dims };
 
     const ranked = rankDistribution(picked.counts.byLabel, picked.counts.total);
     const top = ranked[0];
@@ -129,6 +169,7 @@ export class NextFootprintStatePredictor {
       sequenceDepth: picked.depth,
       patternId: picked.patternId,
       distribution: toDisplayDistribution(ranked),
+      ...dims,
     };
 
     if (input.remember !== false) {
@@ -139,9 +180,174 @@ export class NextFootprintStatePredictor {
 
   reset(symbol?: string, timeframe?: string): void {
     this.table.clear(symbol, timeframe);
+    this.dimensions.clear(symbol, timeframe);
     if (symbol && timeframe) this.pending.delete(streamKey(symbol, timeframe));
     else this.pending.clear();
     if (!symbol) this.evaluation.reset();
+  }
+
+  private dimensionPredictions(
+    input: {
+      symbol: string;
+      timeframe: string;
+      patternId?: PatternId | null;
+      contextControls?: readonly string[];
+      contextSpecialEvents?: readonly string[];
+      contextLiquidityEvents?: readonly string[];
+    },
+    labels: CandleLabel[],
+  ): Pick<NextStatePrediction, 'nextControl' | 'nextSpecialEvent' | 'nextDominantLiquidity'> {
+    return {
+      nextControl: this.predictDimension(
+        input.symbol,
+        input.timeframe,
+        'control',
+        input.contextControls ?? labels,
+        CONTROL_STATES as unknown as string[],
+        input.patternId ?? null,
+      ) as DimensionPrediction<ControlState>,
+      nextSpecialEvent: this.predictDimension(
+        input.symbol,
+        input.timeframe,
+        'specialEvent',
+        input.contextSpecialEvents ?? labels,
+        SPECIAL_EVENT_PREDICT_VALUES as unknown as string[],
+        input.patternId ?? null,
+      ) as DimensionPrediction<SpecialEventType | 'NONE'>,
+      nextDominantLiquidity: this.predictDimension(
+        input.symbol,
+        input.timeframe,
+        'liquidity',
+        input.contextLiquidityEvents ?? labels,
+        DOMINANT_LIQUIDITY_EVENTS as unknown as string[],
+        input.patternId ?? null,
+      ) as DimensionPrediction<DominantLiquidityEvent>,
+    };
+  }
+
+  private observeDimensions(input: {
+    symbol: string;
+    timeframe: string;
+    patternId?: PatternId | null;
+    contextControls?: readonly string[];
+    nextControl?: string;
+    contextSpecialEvents?: readonly string[];
+    nextSpecialEvent?: string;
+    contextLiquidityEvents?: readonly string[];
+    nextLiquidityEvent?: string;
+  }): void {
+    if (input.contextControls?.length && input.nextControl) {
+      this.dimensions.observe(
+        input.symbol,
+        input.timeframe,
+        'control',
+        input.contextControls,
+        input.nextControl,
+        input.patternId,
+        this.options.maxDepth,
+      );
+    }
+    if (input.contextSpecialEvents?.length && input.nextSpecialEvent) {
+      this.dimensions.observe(
+        input.symbol,
+        input.timeframe,
+        'specialEvent',
+        input.contextSpecialEvents,
+        input.nextSpecialEvent,
+        input.patternId,
+        this.options.maxDepth,
+      );
+    }
+    if (input.contextLiquidityEvents?.length && input.nextLiquidityEvent) {
+      this.dimensions.observe(
+        input.symbol,
+        input.timeframe,
+        'liquidity',
+        input.contextLiquidityEvents,
+        input.nextLiquidityEvent,
+        input.patternId,
+        this.options.maxDepth,
+      );
+    }
+  }
+
+  private predictDimension(
+    symbol: string,
+    timeframe: string,
+    dimension: 'control' | 'specialEvent' | 'liquidity',
+    context: readonly string[],
+    alphabet: readonly string[],
+    patternId: PatternId | null,
+  ): DimensionPrediction<string> {
+    const empty: DimensionPrediction<string> = {
+      status: 'NO_CLEAR_PREDICTION',
+      prediction: null,
+      probability: 0,
+      secondPrediction: null,
+      secondProbability: 0,
+      margin: 0,
+      sampleCount: 0,
+      distribution: {},
+    };
+    if (!context.length) return empty;
+
+    const maxD = Math.min(this.options.maxDepth, context.length);
+    let best: { total: number; byValue: Map<string, number>; depth: number } | null = null;
+    for (let d = maxD; d >= 1; d--) {
+      if (patternId) {
+        const cond = this.dimensions.lookup(symbol, timeframe, dimension, context, d, patternId);
+        if (cond.total >= this.options.minimumSampleCount) {
+          best = { ...cond, depth: d };
+          break;
+        }
+      }
+      const uncond = this.dimensions.lookup(symbol, timeframe, dimension, context, d, null);
+      if (uncond.total >= this.options.minimumSampleCount) {
+        best = { ...uncond, depth: d };
+        break;
+      }
+      if (uncond.total > (best?.total ?? 0)) best = { ...uncond, depth: d };
+    }
+    if (!best || best.total <= 0) return empty;
+
+    const ranked = [...alphabet]
+      .map((value) => ({
+        value,
+        n: best!.byValue.get(value) ?? 0,
+        p: (best!.byValue.get(value) ?? 0) / best!.total,
+      }))
+      .filter((r) => r.n > 0)
+      .sort((a, b) => b.p - a.p || a.value.localeCompare(b.value));
+
+    const top = ranked[0];
+    const second = ranked[1];
+    const topP = top?.p ?? 0;
+    const secondP = second?.p ?? 0;
+    const margin = topP - secondP;
+    const clear =
+      best.total >= this.options.minimumSampleCount &&
+      topP >= this.options.minimumTopProbability &&
+      margin >= this.options.minimumPredictionMargin &&
+      top != null;
+
+    const distribution: Partial<Record<string | 'OTHER', number>> = {};
+    let other = 0;
+    ranked.forEach((row, i) => {
+      if (i < DISPLAY_TOP) distribution[row.value] = round4(row.p);
+      else other += row.p;
+    });
+    if (other > 0) distribution.OTHER = round4(other);
+
+    return {
+      status: clear ? 'PREDICTED' : 'NO_CLEAR_PREDICTION',
+      prediction: top?.value ?? null,
+      probability: round4(topP),
+      secondPrediction: second?.value ?? null,
+      secondProbability: round4(secondP),
+      margin: round4(margin),
+      sampleCount: best.total,
+      distribution,
+    };
   }
 
   private pickCounts(
@@ -161,7 +367,8 @@ export class NextFootprintStatePredictor {
       if (uncond.total >= minN) return { counts: uncond, depth: d, patternId: null };
     }
 
-    let best: { counts: ReturnType<TransitionTable['lookup']>; depth: number; patternId: PatternId | null } | null = null;
+    let best: { counts: ReturnType<TransitionTable['lookup']>; depth: number; patternId: PatternId | null } | null =
+      null;
     for (let d = maxD; d >= 1; d--) {
       const uncond = this.table.lookup(symbol, timeframe, labels, d, null);
       if (uncond.total > (best?.counts.total ?? 0)) best = { counts: uncond, depth: d, patternId: null };
@@ -273,3 +480,5 @@ export function toCurrentPattern(candidate: {
     preview,
   };
 }
+
+export type { SpecialEventPredictValue };

@@ -3,6 +3,8 @@ import type {
   LabeledCandle,
   PatternCandidate,
   PatternDefinition,
+  PatternFailWhen,
+  PatternStageDef,
   PatternStatus,
 } from './pattern-types.js';
 import { requiredStageCount } from './pattern-definitions.js';
@@ -27,6 +29,7 @@ export interface WindowMatch {
 /**
  * Try to match `def` against a window that MUST end on the last candle.
  * Optional / repeat stages are consumed greedily; unmatched labels abort the window.
+ * Stages may match control / liquidity / specialEvent dimensions independently.
  */
 export function matchPatternWindow(
   def: PatternDefinition,
@@ -89,7 +92,7 @@ export function matchLooksFailed(
   if (previous.status !== 'FORMING' && previous.status !== 'PREVIEW') return false;
   if (!def.failWhen) return false;
   if (previous.stage < def.failWhen.minStage) return false;
-  if (!def.failWhen.labels.includes(last.label)) return false;
+  if (!failWhenMatches(def.failWhen, last)) return false;
   if (!nextMatch) return true;
   if (nextMatch.candidate.stage < previous.stage) return true;
   if (nextMatch.candidate.startTimestamp > previous.startTimestamp && nextMatch.candidate.stage < previous.stage) {
@@ -126,7 +129,7 @@ function matchStages(def: PatternDefinition, candles: LabeledCandle[]): RawMatch
     let before: LabeledCandle | undefined;
     if (stage.optionalBefore?.length && i < candles.length) {
       const c = candles[i]!;
-      if (stage.optionalBefore.includes(c.label) && !stage.labels.includes(c.label)) {
+      if (stage.optionalBefore.includes(c.label) && !candleMatchesStage(c, stage)) {
         before = c;
         i += 1;
         i = skipUnclassified(candles, i);
@@ -134,7 +137,7 @@ function matchStages(def: PatternDefinition, candles: LabeledCandle[]): RawMatch
     }
 
     const captured: LabeledCandle[] = [];
-    while (i < candles.length && captured.length < maxR && labelsMatch(stage.labels, candles[i]!.label)) {
+    while (i < candles.length && captured.length < maxR && candleMatchesStage(candles[i]!, stage)) {
       captured.push(candles[i]!);
       i += 1;
       if (!stage.repeat) break;
@@ -165,8 +168,59 @@ function skipUnclassified(candles: LabeledCandle[], i: number): number {
   return i;
 }
 
-function labelsMatch(allowed: CandleLabel[], label: CandleLabel): boolean {
-  return allowed.includes(label);
+/**
+ * Dimensional AND: every specified dimension on the stage must match.
+ * Flat `labels` remain as a legacy fallback when classification dims are missing.
+ */
+export function candleMatchesStage(candle: LabeledCandle, stage: PatternStageDef): boolean {
+  const cls = candle.classification;
+  const hasDim = !!(stage.control?.length || stage.liquidity?.length || stage.specialEvent?.length);
+  const hasLabels = !!(stage.labels?.length);
+
+  if (!hasDim && !hasLabels) return false;
+
+  if (stage.control?.length) {
+    const control = cls?.primaryState.control;
+    if (control && stage.control.includes(control)) {
+      // ok
+    } else if (hasLabels && stage.labels!.includes(candle.label) && stage.control.includes(candle.label as never)) {
+      // flat fallback
+    } else {
+      return false;
+    }
+  }
+
+  if (stage.liquidity?.length) {
+    const event = cls?.liquidityBehavior.dominantEvent;
+    const byDim = event != null && stage.liquidity.includes(event);
+    const byLabel =
+      hasLabels && stage.labels!.some((l) => candle.label === l && stage.liquidity!.includes(l as never));
+    if (!byDim && !byLabel) return false;
+  }
+
+  if (stage.specialEvent?.length) {
+    const type = cls?.specialEvent.type;
+    const byDim = type != null && stage.specialEvent.includes(type);
+    const byLabel =
+      hasLabels && stage.labels!.some((l) => candle.label === l && stage.specialEvent!.includes(l as never));
+    if (!byDim && !byLabel) return false;
+  }
+
+  if (!hasDim && hasLabels) {
+    return stage.labels!.includes(candle.label);
+  }
+
+  return true;
+}
+
+function failWhenMatches(fail: PatternFailWhen, candle: LabeledCandle): boolean {
+  const cls = candle.classification;
+  if (fail.labels?.length && fail.labels.includes(candle.label)) return true;
+  if (fail.control?.length && cls && fail.control.includes(cls.primaryState.control)) return true;
+  if (fail.specialEvent?.length && cls?.specialEvent.type && fail.specialEvent.includes(cls.specialEvent.type)) {
+    return true;
+  }
+  return false;
 }
 
 function countRequiredHits(def: PatternDefinition, hits: StageHit[]): number {
@@ -283,4 +337,9 @@ function specificityOf(id: PatternCandidate['id']): number {
     default:
       return 0;
   }
+}
+
+/** @deprecated Prefer candleMatchesStage. */
+export function labelsMatch(allowed: CandleLabel[], label: CandleLabel): boolean {
+  return allowed.includes(label);
 }

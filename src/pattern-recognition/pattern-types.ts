@@ -1,7 +1,24 @@
 import type { FootprintBar } from '../footprint/types.js';
+import type {
+  CandleClassification,
+  ControlState,
+  DominantLiquidityEvent,
+  SpecialEventType,
+} from './candle-classification-types.js';
+
+export type {
+  CandleClassification,
+  ControlState,
+  DominantLiquidityEvent,
+  SpecialEventType,
+  LiquidityBehaviorState,
+  OutcomeType,
+  OutcomeDirection,
+  ClassificationDataQuality,
+} from './candle-classification-types.js';
 
 /** Engine contract version — bump when matching or scoring semantics change. */
-export const PATTERN_ENGINE_VERSION = 'pattern-recognition/v1.1.0';
+export const PATTERN_ENGINE_VERSION = 'pattern-recognition/v1.2.0';
 
 export const CANDLE_LABELS = [
   'BUYER_IN_CONTROL',
@@ -16,8 +33,8 @@ export const CANDLE_LABELS = [
 ] as const;
 
 /**
- * Primary behavioral alphabet produced by the existing candle-label heuristics.
- * Pattern matching consumes these; it does not recompute flow / liquidity.
+ * Backward-compatible flat alphabet for transitions / display.
+ * Source of truth is `LabeledCandle.classification` (control / liquidity / special / outcome).
  */
 export type CandleLabel =
   | 'BUYER_IN_CONTROL'
@@ -47,8 +64,17 @@ export type PatternStatus = 'FORMING' | 'CONFIRMED' | 'FAILED' | 'EXPIRED' | 'PR
 export type PatternAlertType = 'PATTERN_FORMING' | 'PATTERN_CONFIRMED' | 'PATTERN_FAILED';
 
 export interface PatternStageDef {
-  /** Labels that satisfy this stage. */
-  labels: CandleLabel[];
+  /**
+   * Legacy flat labels (matches `candle.label` / primaryDisplayLabel).
+   * Prefer dimensional matchers when available.
+   */
+  labels?: CandleLabel[];
+  /** Match control layer (AND with other dimensional fields when set). */
+  control?: ControlState[];
+  /** Match dominant liquidity event. */
+  liquidity?: DominantLiquidityEvent[];
+  /** Match special event type. */
+  specialEvent?: SpecialEventType[];
   /** Stage may be skipped. */
   optional?: boolean;
   /** Stage may consume consecutive matching candles. */
@@ -64,7 +90,9 @@ export interface PatternStageDef {
 export interface PatternFailWhen {
   /** Required stages already matched before a fail label can kill the instance. */
   minStage: number;
-  labels: CandleLabel[];
+  labels?: CandleLabel[];
+  control?: ControlState[];
+  specialEvent?: SpecialEventType[];
 }
 
 export interface PatternDefinition {
@@ -102,8 +130,11 @@ export interface LabeledCandle {
   low: number;
   close: number;
   volume: number;
+  /** Display / legacy flat label derived from structured classification. */
   label: CandleLabel;
   labelConfidence: number | null;
+  /** Structured CONTROL / LIQUIDITY / SPECIAL / OUTCOME layers. */
+  classification: CandleClassification;
   aggressiveBuyPower: number | null;
   aggressiveSellPower: number | null;
   passiveBuyerDefense: number | null;
@@ -119,6 +150,13 @@ export interface LabeledCandle {
   bidSurvival: number | null;
   askSurvival: number | null;
   sweepQuality: number | null;
+  /** Stored so later studies can condition next-label odds on fuel. Optional. */
+  upsideFuel?: number | null;
+  downsideFuel?: number | null;
+  fuelImbalance?: number | null;
+  fuelState?: string | null;
+  upsideFuelVelocity?: number | null;
+  downsideFuelVelocity?: number | null;
 }
 
 export interface ConfidenceComponents {
@@ -244,8 +282,20 @@ export interface PatternEngineOptions {
 export type NextStateStatus = 'PREDICTED' | 'NO_CLEAR_PREDICTION';
 export type PredictionConfidenceBand = 'LOW' | 'MODERATE' | 'HIGH';
 
+export interface DimensionPrediction<T extends string> {
+  status: NextStateStatus;
+  prediction: T | null;
+  probability: number;
+  secondPrediction: T | null;
+  secondProbability: number;
+  margin: number;
+  sampleCount: number;
+  distribution: Partial<Record<T | 'OTHER', number>>;
+}
+
 export interface NextStatePrediction {
   status: NextStateStatus;
+  /** Legacy flat primaryDisplayLabel prediction. */
   prediction: CandleLabel | null;
   probability: number;
   secondPrediction: CandleLabel | null;
@@ -257,6 +307,10 @@ export interface NextStatePrediction {
   sequenceDepth: number;
   patternId: PatternId | null;
   distribution: Partial<Record<CandleLabel | 'OTHER', number>>;
+  /** Dimensional transition forecasts from historical counts only. */
+  nextControl?: DimensionPrediction<ControlState>;
+  nextSpecialEvent?: DimensionPrediction<SpecialEventType | 'NONE'>;
+  nextDominantLiquidity?: DimensionPrediction<DominantLiquidityEvent>;
 }
 
 export interface CurrentPatternView {

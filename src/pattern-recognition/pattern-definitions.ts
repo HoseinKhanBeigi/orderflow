@@ -1,7 +1,11 @@
 import type { PatternDefinition } from './pattern-types.js';
 
-export const PATTERN_LIBRARY_VERSION = 1;
+export const PATTERN_LIBRARY_VERSION = 2;
 
+/**
+ * Pattern stages query structured dimensions (control / liquidity / specialEvent)
+ * independently. Flat `labels` remain as a fallback for fixtures that only set `label`.
+ */
 export const PATTERN_DEFINITIONS: PatternDefinition[] = [
   {
     id: 'BULLISH_LIQUIDITY_REVERSAL',
@@ -14,14 +18,19 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     specificity: 80,
     supersedes: ['SELLER_TRAP_FORMING'],
     minFormingStages: 2,
-    failWhen: { minStage: 2, labels: ['SELLER_IN_CONTROL', 'BUYER_ABSORBED'] },
+    failWhen: {
+      minStage: 2,
+      control: ['SELLER_IN_CONTROL'],
+      specialEvent: ['BUYER_ABSORBED'],
+      labels: ['SELLER_IN_CONTROL', 'BUYER_ABSORBED'],
+    },
     stages: [
-      { labels: ['SELLER_IN_CONTROL'], repeat: true },
-      { labels: ['BIDS_PULLED'], optional: true },
-      { labels: ['STOP_HUNT_LOW'] },
-      { labels: ['BIDS_PULLED'], optional: true },
-      { labels: ['SELLER_ABSORBED'] },
-      { labels: ['BUYER_IN_CONTROL'] },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'], repeat: true },
+      { liquidity: ['BIDS_PULLED'], labels: ['BIDS_PULLED'], optional: true },
+      { specialEvent: ['STOP_HUNT_LOW'], labels: ['STOP_HUNT_LOW'] },
+      { liquidity: ['BIDS_PULLED'], labels: ['BIDS_PULLED'], optional: true },
+      { specialEvent: ['SELLER_ABSORBED'], labels: ['SELLER_ABSORBED'] },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'] },
     ],
   },
   {
@@ -35,14 +44,19 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     specificity: 80,
     supersedes: ['BUYER_TRAP_FORMING'],
     minFormingStages: 2,
-    failWhen: { minStage: 2, labels: ['BUYER_IN_CONTROL', 'SELLER_ABSORBED'] },
+    failWhen: {
+      minStage: 2,
+      control: ['BUYER_IN_CONTROL'],
+      specialEvent: ['SELLER_ABSORBED'],
+      labels: ['BUYER_IN_CONTROL', 'SELLER_ABSORBED'],
+    },
     stages: [
-      { labels: ['BUYER_IN_CONTROL'], repeat: true },
-      { labels: ['ASKS_PULLED'], optional: true },
-      { labels: ['STOP_HUNT_HIGH'] },
-      { labels: ['ASKS_PULLED'], optional: true },
-      { labels: ['BUYER_ABSORBED'] },
-      { labels: ['SELLER_IN_CONTROL'] },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'], repeat: true },
+      { liquidity: ['ASKS_PULLED'], labels: ['ASKS_PULLED'], optional: true },
+      { specialEvent: ['STOP_HUNT_HIGH'], labels: ['STOP_HUNT_HIGH'] },
+      { liquidity: ['ASKS_PULLED'], labels: ['ASKS_PULLED'], optional: true },
+      { specialEvent: ['BUYER_ABSORBED'], labels: ['BUYER_ABSORBED'] },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'] },
     ],
   },
   {
@@ -55,11 +69,16 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     maxBars: 6,
     specificity: 50,
     minFormingStages: 2,
-    failWhen: { minStage: 2, labels: ['SELLER_IN_CONTROL', 'BUYER_ABSORBED'] },
+    failWhen: {
+      minStage: 2,
+      control: ['SELLER_IN_CONTROL'],
+      specialEvent: ['BUYER_ABSORBED'],
+      labels: ['SELLER_IN_CONTROL', 'BUYER_ABSORBED'],
+    },
     stages: [
-      { labels: ['BUYER_IN_CONTROL'], repeat: true },
-      { labels: ['ASKS_PULLED'], repeat: true },
-      { labels: ['BUYER_IN_CONTROL'], repeat: true },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'], repeat: true },
+      { liquidity: ['ASKS_PULLED'], labels: ['ASKS_PULLED'], repeat: true },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'], repeat: true },
     ],
   },
   {
@@ -72,11 +91,16 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     maxBars: 6,
     specificity: 50,
     minFormingStages: 2,
-    failWhen: { minStage: 2, labels: ['BUYER_IN_CONTROL', 'SELLER_ABSORBED'] },
+    failWhen: {
+      minStage: 2,
+      control: ['BUYER_IN_CONTROL'],
+      specialEvent: ['SELLER_ABSORBED'],
+      labels: ['BUYER_IN_CONTROL', 'SELLER_ABSORBED'],
+    },
     stages: [
-      { labels: ['SELLER_IN_CONTROL'], repeat: true },
-      { labels: ['BIDS_PULLED'], repeat: true },
-      { labels: ['SELLER_IN_CONTROL'], repeat: true },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'], repeat: true },
+      { liquidity: ['BIDS_PULLED'], labels: ['BIDS_PULLED'], repeat: true },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'], repeat: true },
     ],
   },
   {
@@ -89,11 +113,11 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     maxBars: 5,
     specificity: 70,
     minFormingStages: 2,
-    failWhen: { minStage: 2, labels: ['SELLER_IN_CONTROL'] },
+    failWhen: { minStage: 2, control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'] },
     stages: [
-      { labels: ['STOP_HUNT_HIGH'] },
-      { labels: ['SELLER_IN_CONTROL'], repeat: true },
-      { labels: ['BUYER_IN_CONTROL'] },
+      { specialEvent: ['STOP_HUNT_HIGH'], labels: ['STOP_HUNT_HIGH'] },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'], repeat: true },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'] },
     ],
   },
   {
@@ -106,11 +130,11 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     maxBars: 5,
     specificity: 70,
     minFormingStages: 2,
-    failWhen: { minStage: 2, labels: ['BUYER_IN_CONTROL'] },
+    failWhen: { minStage: 2, control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'] },
     stages: [
-      { labels: ['STOP_HUNT_LOW'] },
-      { labels: ['BUYER_IN_CONTROL'], repeat: true },
-      { labels: ['SELLER_IN_CONTROL'] },
+      { specialEvent: ['STOP_HUNT_LOW'], labels: ['STOP_HUNT_LOW'] },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'], repeat: true },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'] },
     ],
   },
   {
@@ -124,13 +148,13 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     specificity: 40,
     completesOnMatch: false,
     minFormingStages: 3,
-    failWhen: { minStage: 2, labels: ['BUYER_IN_CONTROL'] },
+    failWhen: { minStage: 2, control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'] },
     stages: [
-      { labels: ['BUYER_IN_CONTROL'], repeat: true },
-      { labels: ['ASKS_PULLED'], optional: true },
-      { labels: ['STOP_HUNT_HIGH'] },
-      { labels: ['ASKS_PULLED'], optional: true },
-      { labels: ['BUYER_ABSORBED'] },
+      { control: ['BUYER_IN_CONTROL'], labels: ['BUYER_IN_CONTROL'], repeat: true },
+      { liquidity: ['ASKS_PULLED'], labels: ['ASKS_PULLED'], optional: true },
+      { specialEvent: ['STOP_HUNT_HIGH'], labels: ['STOP_HUNT_HIGH'] },
+      { liquidity: ['ASKS_PULLED'], labels: ['ASKS_PULLED'], optional: true },
+      { specialEvent: ['BUYER_ABSORBED'], labels: ['BUYER_ABSORBED'] },
     ],
   },
   {
@@ -144,13 +168,13 @@ export const PATTERN_DEFINITIONS: PatternDefinition[] = [
     specificity: 40,
     completesOnMatch: false,
     minFormingStages: 3,
-    failWhen: { minStage: 2, labels: ['SELLER_IN_CONTROL'] },
+    failWhen: { minStage: 2, control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'] },
     stages: [
-      { labels: ['SELLER_IN_CONTROL'], repeat: true },
-      { labels: ['BIDS_PULLED'], optional: true },
-      { labels: ['STOP_HUNT_LOW'] },
-      { labels: ['BIDS_PULLED'], optional: true },
-      { labels: ['SELLER_ABSORBED'] },
+      { control: ['SELLER_IN_CONTROL'], labels: ['SELLER_IN_CONTROL'], repeat: true },
+      { liquidity: ['BIDS_PULLED'], labels: ['BIDS_PULLED'], optional: true },
+      { specialEvent: ['STOP_HUNT_LOW'], labels: ['STOP_HUNT_LOW'] },
+      { liquidity: ['BIDS_PULLED'], labels: ['BIDS_PULLED'], optional: true },
+      { specialEvent: ['SELLER_ABSORBED'], labels: ['SELLER_ABSORBED'] },
     ],
   },
 ];

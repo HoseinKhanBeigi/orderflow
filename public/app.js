@@ -575,6 +575,7 @@ function updateUi() {
   if (isSpotView()) return;
   if (!lastSummary || lastSummary.symbol !== selectedSymbol) return;
   const w = windowData(lastSummary, selectedTf);
+  renderMarketFuel(lastSummary);
   if (!w) return;
 
   const meta = STATE_META[w.state] ?? { title: w.state, help: '' };
@@ -640,6 +641,25 @@ function updateUi() {
   renderFlowBattle(w);
   renderCompare(lastSummary);
   renderLiquidityResponse();
+}
+
+function renderMarketFuel(summary) {
+  const el = document.getElementById('market-fuel');
+  if (!el) return;
+  const fuel = summary?.windows?.['1m']?.marketFuel ?? summary?.windows?.['10s']?.marketFuel ?? null;
+  if (!fuel || fuel.dataStatus === 'NO_DATA' || fuel.upsideFuel == null) {
+    el.textContent = 'Fuel —';
+    return;
+  }
+  const up = Math.round(fuel.upsideFuel);
+  const down = Math.round(fuel.downsideFuel ?? 0);
+  const imb = Math.round(fuel.fuelImbalance ?? up - down);
+  const dir = imb >= 8 ? 'BUY' : imb <= -8 ? 'SELL' : 'BALANCED';
+  const upArrow = (fuel.upsideFuelVelocity ?? 0) > 1 ? '↑' : (fuel.upsideFuelVelocity ?? 0) < -1 ? '↓' : '·';
+  const downArrow = (fuel.downsideFuelVelocity ?? 0) > 1 ? '↑' : (fuel.downsideFuelVelocity ?? 0) < -1 ? '↓' : '·';
+  const organic = fuel.organicUpsideFuel == null ? '' : ` · organic ${Math.round(fuel.organicUpsideFuel)}`;
+  const forced = fuel.forcedUpsideFuel == null ? '' : ` · forced ${Math.round(fuel.forcedUpsideFuel)}`;
+  el.textContent = `Fuel UP ${up} ${upArrow}  DOWN ${down} ${downArrow}  ${imb >= 0 ? '+' : ''}${imb} ${dir}${organic}${forced}`;
 }
 
 function battleLabel(s) {
@@ -2126,16 +2146,10 @@ function barVacuumKind(bar, prior) {
   return null;
 }
 
-function absorptionReversalKind(bar, next) {
+function absorptionReversalKind(bar) {
   const abs = barAbsorbed(bar);
-  if (abs === 'SELLERS') {
-    const reversed = bar.close >= bar.open || (next && next.close > bar.close);
-    if (reversed) return 'SELLER';
-  }
-  if (abs === 'BUYERS') {
-    const reversed = bar.close <= bar.open || (next && next.close < bar.close);
-    if (reversed) return 'BUYER';
-  }
+  if (abs === 'SELLERS' && bar.close >= bar.open) return 'SELLER';
+  if (abs === 'BUYERS' && bar.close <= bar.open) return 'BUYER';
   return null;
 }
 
@@ -2148,89 +2162,206 @@ function stopHuntKind(bar, prior) {
   if (range <= 0) return null;
   const closePos = (bar.close - bar.low) / range;
   const band = Math.max((resistance - support) * 0.08, atr * 0.35);
-  // Sweep highs → reverse down
   if (bar.high >= resistance + band * 0.2 && bar.close < resistance && closePos <= 0.42) return 'HIGH';
-  // Sweep lows → reverse up
   if (bar.low <= support - band * 0.2 && bar.close > support && closePos >= 0.58) return 'LOW';
   return null;
 }
 
-/** Distribution near highs: liquidity taken above resistance, buyers fade, reverse down. */
-function distributionAtHighsKind(bar, next, prior) {
-  const location = barLocationFromPrior(bar, prior);
-  if (location !== 'AT_RESISTANCE' && location !== 'ABOVE_RESISTANCE') return null;
-  const { resistance } = priorSwingLevels(prior);
+/** Vacuum stretch score 0–100 — only extreme stretches clear the dominance gate. */
+function vacuumStretchScore(bar, prior) {
+  const atr = recentBarAtr(prior, bar);
   const range = bar.high - bar.low;
-  if (resistance == null || range <= 0) return null;
-  const closePos = (bar.close - bar.low) / range;
-  const absorbed = barAbsorbed(bar);
-  const grabbed = bar.high >= resistance && closePos <= 0.48;
-  const buyersFaded =
-    absorbed === 'BUYERS'
-    || ((bar.totalBuy ?? 0) >= (bar.totalSell ?? 0) * 0.9 && bar.close <= bar.open);
-  const reversed = bar.close < bar.open || (next && next.close < bar.close);
-  if (grabbed && buyersFaded && reversed) return 'DISTRIBUTION';
-  return null;
+  const stretch = atr > 0 ? range / atr : 1;
+  return Math.max(0, Math.min(100, 40 + (stretch - 1) * 35));
 }
 
+const LIQ_DOMINANCE_SCORE = 70;
+const LIQ_DOMINANCE_MARGIN = 15;
+
+/**
+ * Layered candle story (CONTROL / LIQUIDITY / SPECIAL / OUTCOME).
+ * Compact headline priority: special → control → extreme dominant liquidity.
+ * No next-bar lookahead.
+ */
 function strategyStoryForBar(allBars, idx) {
   const bar = allBars[idx];
   const prior = allBars.slice(Math.max(0, idx - 20), idx);
-  const next = allBars[idx + 1];
   const win = fpBarWinner(bar);
   const absorbed = barAbsorbed(bar);
   const location = barLocationFromPrior(bar, prior);
-  const vol = (bar.totalBuy ?? 0) + (bar.totalSell ?? 0);
-  const deltaPct = vol > 0 ? ((bar.totalBuy ?? 0) - (bar.totalSell ?? 0)) / vol : 0;
-  let score = 0;
-  if (absorbed === 'SELLERS') score += 20;
-  else if (absorbed === 'BUYERS') score -= 20;
-  else score += Math.max(-28, Math.min(28, deltaPct * 40));
-  if (location === 'AT_SUPPORT') score += 18;
-  else if (location === 'AT_RESISTANCE') score -= 18;
-  else if (location === 'ABOVE_RESISTANCE') score += 14;
-  else if (location === 'BELOW_SUPPORT') score -= 14;
-  const bias = Math.abs(score) < 12 ? 'WAIT' : score > 0 ? 'LONG' : 'SHORT';
-  let setup = 'MID_RANGE';
-  if (location === 'AT_SUPPORT' && (absorbed === 'SELLERS' || score > 0)) setup = 'SUPPORT_HOLD';
-  else if (location === 'AT_RESISTANCE' && (absorbed === 'BUYERS' || score < 0)) setup = 'RESISTANCE_REJECT';
-  else if (location === 'ABOVE_RESISTANCE' && score > 0) setup = 'BREAKOUT_UP';
-  else if (location === 'BELOW_SUPPORT' && score < 0) setup = 'BREAKDOWN';
-  else if (location === 'MID_RANGE' && Math.abs(score) >= 28) setup = 'FLOW_CONTINUATION';
-
-  const hunt = stopHuntKind(bar, prior);
-  if (hunt === 'HIGH') return { badge: 'SHORT', line1: 'Stop hunt', line2: 'swept high · reverse', color: '#e879f9' };
-  if (hunt === 'LOW') return { badge: 'LONG', line1: 'Stop hunt', line2: 'swept low · reverse', color: '#e879f9' };
-
-  const dist = distributionAtHighsKind(bar, next, prior);
-  if (dist) return { badge: 'SHORT', line1: 'Distribution at highs', line2: 'liq grabbed · reverse', color: '#c084fc' };
-
-  const rev = absorptionReversalKind(bar, next);
-  if (rev === 'SELLER') return { badge: 'LONG', line1: 'Sellers absorbed', line2: 'then reversed up', color: '#7dd3fc' };
-  if (rev === 'BUYER') return { badge: 'SHORT', line1: 'Buyers absorbed', line2: 'then reversed down', color: '#fbbf24' };
+  const move = bar.close - bar.open;
+  const range = Math.max(bar.high - bar.low, 1e-9);
+  const bodyFrac = Math.abs(move) / range;
   const vac = barVacuumKind(bar, prior);
-  if (vac === 'UPSIDE') return { badge: 'LONG', line1: 'Asks pulled', line2: 'price ran up', color: '#22d3ee' };
-  if (vac === 'DOWNSIDE') return { badge: 'SHORT', line1: 'Bids pulled', line2: 'price dumped', color: '#fb923c' };
+  const stretch = vacuumStretchScore(bar, prior);
 
-  if (setup === 'SUPPORT_HOLD') return { badge: 'LONG', line1: 'Held support', line2: 'buyers defended', color: '#22c55e' };
-  if (setup === 'RESISTANCE_REJECT') return { badge: 'SHORT', line1: 'Rejected resist', line2: 'sellers capped', color: '#ef4444' };
-  if (setup === 'BREAKOUT_UP') return { badge: 'LONG', line1: 'Broke resistance', line2: 'asks consumed', color: '#22c55e' };
-  if (setup === 'BREAKDOWN') return { badge: 'SHORT', line1: 'Broke support', line2: 'bids consumed', color: '#ef4444' };
-  // Efficient consumption: aggression filled resting liquidity AND price followed.
-  if (setup === 'FLOW_CONTINUATION' && bias === 'LONG') {
-    return { badge: 'LONG', line1: 'Asks consumed', line2: 'price followed', color: '#22c55e' };
+  // CONTROL
+  let control = 'UNCLEAR';
+  if (win.id === 'AGGRESSIVE_BUYERS') control = 'BUYER_IN_CONTROL';
+  else if (win.id === 'AGGRESSIVE_SELLERS') control = 'SELLER_IN_CONTROL';
+  else if (win.id === 'PASSIVE_BUYERS' || win.id === 'PASSIVE_SELLERS' || win.id === 'BALANCED') control = 'BALANCED';
+
+  // SPECIAL EVENT
+  let special = null;
+  const hunt = stopHuntKind(bar, prior);
+  if (hunt === 'HIGH') special = 'STOP_HUNT_HIGH';
+  else if (hunt === 'LOW') special = 'STOP_HUNT_LOW';
+  else if (location === 'AT_SUPPORT' && (absorbed === 'SELLERS' || win.id === 'PASSIVE_BUYERS' || win.id === 'AGGRESSIVE_BUYERS')) {
+    special = 'HELD_SUPPORT';
+  } else if (location === 'AT_RESISTANCE' && (absorbed === 'BUYERS' || win.id === 'PASSIVE_SELLERS' || win.id === 'AGGRESSIVE_SELLERS')) {
+    special = 'REJECTED_RESISTANCE';
+  } else if (absorbed === 'SELLERS' || win.id === 'PASSIVE_BUYERS') special = 'SELLER_ABSORBED';
+  else if (absorbed === 'BUYERS' || win.id === 'PASSIVE_SELLERS') special = 'BUYER_ABSORBED';
+
+  // LIQUIDITY — heuristic pull only; never forced as headline without dominance.
+  let askPull = vac === 'UPSIDE' ? stretch : 0;
+  let bidPull = vac === 'DOWNSIDE' ? stretch : 0;
+  // Consumption proxy from battle shares (display only; not book accounting).
+  const battle = barBattlePercents(bar);
+  let askConsume = 0;
+  let bidConsume = 0;
+  if (battle) {
+    const asks = battle.find((r) => r.text === 'Asks');
+    const bids = battle.find((r) => r.text === 'Bids');
+    askConsume = asks?.pct ?? 0;
+    bidConsume = bids?.pct ?? 0;
   }
-  if (setup === 'FLOW_CONTINUATION' && bias === 'SHORT') {
-    return { badge: 'SHORT', line1: 'Bids consumed', line2: 'price followed', color: '#ef4444' };
+  const liqCandidates = [
+    { event: 'ASKS_PULLED', score: askPull },
+    { event: 'BIDS_PULLED', score: bidPull },
+    { event: 'ASKS_CONSUMED', score: askConsume },
+    { event: 'BIDS_CONSUMED', score: bidConsume },
+  ].sort((a, b) => b.score - a.score);
+  const topLiq = liqCandidates[0];
+  const secondLiq = liqCandidates[1];
+  const liqDominant =
+    topLiq &&
+    topLiq.score >= LIQ_DOMINANCE_SCORE &&
+    topLiq.score - (secondLiq?.score ?? 0) >= LIQ_DOMINANCE_MARGIN
+      ? topLiq.event
+      : 'NONE';
+
+  // OUTCOME (same candle only)
+  let outcome = 'NEUTRAL';
+  let outcomeDir = move > 0 ? 'UP' : move < 0 ? 'DOWN' : 'NONE';
+  if (special === 'STOP_HUNT_LOW' || special === 'STOP_HUNT_HIGH') {
+    outcome = 'REVERSAL';
+    outcomeDir = special === 'STOP_HUNT_LOW' ? 'UP' : 'DOWN';
+  } else if (special === 'BUYER_ABSORBED' || special === 'SELLER_ABSORBED') {
+    outcome = bodyFrac < 0.3 ? 'NO_FOLLOW_THROUGH' : 'PRICE_FAILED';
+  } else if (
+    (control === 'BUYER_IN_CONTROL' && move > 0) ||
+    (control === 'SELLER_IN_CONTROL' && move < 0)
+  ) {
+    outcome = bodyFrac >= 0.3 ? 'PRICE_FOLLOWED' : 'CONTINUATION';
   }
-  // Absorption: aggression hit the book but price stalled (passive defending).
-  if (absorbed === 'SELLERS') return { badge: bias === 'WAIT' ? 'WAIT' : bias, line1: 'Sellers absorbed', line2: 'bids held · little move', color: '#7dd3fc' };
-  if (absorbed === 'BUYERS') return { badge: bias === 'WAIT' ? 'WAIT' : bias, line1: 'Buyers absorbed', line2: 'asks held · little move', color: '#fbbf24' };
-  if (win.id === 'AGGRESSIVE_BUYERS') return { badge: 'LONG', line1: 'Asks consumed', line2: 'price followed', color: '#22c55e' };
-  if (win.id === 'AGGRESSIVE_SELLERS') return { badge: 'SHORT', line1: 'Bids consumed', line2: 'price followed', color: '#ef4444' };
-  if (win.id === 'PASSIVE_SELLERS') return { badge: 'WAIT', line1: 'Buyers absorbed', line2: 'asks held · little move', color: '#fbbf24' };
-  if (win.id === 'PASSIVE_BUYERS') return { badge: 'WAIT', line1: 'Sellers absorbed', line2: 'bids held · little move', color: '#7dd3fc' };
-  return { badge: 'WAIT', line1: 'No clear edge', line2: '', color: '#8b949e' };
+
+  const detail = {
+    control,
+    liquidity: liqDominant,
+    special,
+    outcome,
+    outcomeDir,
+    askPull,
+    bidPull,
+    askConsume,
+    bidConsume,
+  };
+
+  // Headline priority: special → control → extreme liquidity
+  if (special === 'STOP_HUNT_HIGH') {
+    return { badge: 'SHORT', line1: 'Stop hunt high', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail };
+  }
+  if (special === 'STOP_HUNT_LOW') {
+    return { badge: 'LONG', line1: 'Stop hunt low', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail };
+  }
+  if (special === 'HELD_SUPPORT') {
+    return { badge: 'LONG', line1: 'Held support', line2: 'buyers defended', color: '#22c55e', detail };
+  }
+  if (special === 'REJECTED_RESISTANCE') {
+    return { badge: 'SHORT', line1: 'Rejected resist', line2: 'sellers capped', color: '#ef4444', detail };
+  }
+  if (special === 'SELLER_ABSORBED') {
+    return { badge: biasFromControl(control, 'WAIT'), line1: 'Sellers absorbed', line2: 'bids held', color: '#7dd3fc', detail };
+  }
+  if (special === 'BUYER_ABSORBED') {
+    return { badge: biasFromControl(control, 'WAIT'), line1: 'Buyers absorbed', line2: 'asks held', color: '#fbbf24', detail };
+  }
+
+  if (control === 'BUYER_IN_CONTROL') {
+    const sub = liqDominant !== 'NONE' && topLiq.score >= 85
+      ? liqHeadline(liqDominant)
+      : outcomeLine(outcome, outcomeDir);
+    return { badge: 'LONG', line1: 'Buyer in control', line2: sub, color: '#22c55e', detail };
+  }
+  if (control === 'SELLER_IN_CONTROL') {
+    const sub = liqDominant !== 'NONE' && topLiq.score >= 85
+      ? liqHeadline(liqDominant)
+      : outcomeLine(outcome, outcomeDir);
+    return { badge: 'SHORT', line1: 'Seller in control', line2: sub, color: '#ef4444', detail };
+  }
+
+  if (liqDominant !== 'NONE' && topLiq.score >= 85) {
+    const badge = liqDominant.includes('ASK') ? 'LONG' : 'SHORT';
+    return {
+      badge,
+      line1: liqHeadline(liqDominant),
+      line2: outcomeLine(outcome, outcomeDir),
+      color: badge === 'LONG' ? '#22d3ee' : '#fb923c',
+      detail,
+    };
+  }
+
+  return { badge: 'WAIT', line1: 'No clear edge', line2: '', color: '#8b949e', detail };
+}
+
+function biasFromControl(control, fallback) {
+  if (control === 'BUYER_IN_CONTROL') return 'LONG';
+  if (control === 'SELLER_IN_CONTROL') return 'SHORT';
+  return fallback;
+}
+
+function outcomeLine(outcome, dir) {
+  if (outcome === 'PRICE_FOLLOWED') return dir === 'UP' ? 'price followed up' : dir === 'DOWN' ? 'price followed down' : 'price followed';
+  if (outcome === 'REVERSAL') return dir === 'UP' ? 'reversed up' : dir === 'DOWN' ? 'reversed down' : 'reversal';
+  if (outcome === 'CONTINUATION') return 'continuation';
+  if (outcome === 'NO_FOLLOW_THROUGH') return 'no follow-through';
+  if (outcome === 'PRICE_FAILED') return 'price failed';
+  if (outcome === 'PENDING') return 'pending';
+  return '';
+}
+
+function liqHeadline(event) {
+  switch (event) {
+    case 'ASKS_PULLED': return 'Asks pulled';
+    case 'BIDS_PULLED': return 'Bids pulled';
+    case 'ASKS_CONSUMED': return 'Asks consumed';
+    case 'BIDS_CONSUMED': return 'Bids consumed';
+    case 'ASKS_REPLENISHED': return 'Asks replenished';
+    case 'BIDS_REPLENISHED': return 'Bids replenished';
+    case 'ASKS_SURVIVING': return 'Asks surviving';
+    case 'BIDS_SURVIVING': return 'Bids surviving';
+    default: return '';
+  }
+}
+
+/** Detailed multi-layer tooltip text for a story. */
+function strategyStoryTooltip(story) {
+  if (!story?.detail) return '';
+  const d = story.detail;
+  const lines = [
+    `CONTROL  ${fmtToken(d.control)}`,
+    `LIQUIDITY  ${fmtToken(d.liquidity)}`,
+    `  ask consumed ${Math.round(d.askConsume)}  pulled ${Math.round(d.askPull)}`,
+    `  bid consumed ${Math.round(d.bidConsume)}  pulled ${Math.round(d.bidPull)}`,
+    `SPECIAL  ${fmtToken(d.special || 'NONE')}`,
+    `OUTCOME  ${fmtToken(d.outcome)}${d.outcomeDir && d.outcomeDir !== 'NONE' ? ' ' + d.outcomeDir : ''}`,
+  ];
+  return lines.join('\n');
+}
+
+function fmtToken(v) {
+  return String(v || 'NONE').replace(/_/g, ' ').toLowerCase();
 }
 
 function drawBarBattlePercents(ctx, rows, cx, y0, maxW) {
@@ -2289,6 +2420,13 @@ const PATTERN_LABEL_NAMES = {
   SELLER_ABSORBED: 'Seller Absorbed',
   ASKS_PULLED: 'Asks Pulled',
   BIDS_PULLED: 'Bids Pulled',
+  ASKS_CONSUMED: 'Asks Consumed',
+  BIDS_CONSUMED: 'Bids Consumed',
+  HELD_SUPPORT: 'Held Support',
+  REJECTED_RESISTANCE: 'Rejected Resistance',
+  BALANCED: 'Balanced',
+  UNCLEAR: 'Unclear',
+  NONE: 'None',
   UNCLASSIFIED: 'Unclassified',
   OTHER: 'Other',
 };
@@ -2835,9 +2973,14 @@ function drawFootprint(symbol = selectedSymbol) {
     const nextBit = nxt?.prediction
       ? ` · next ${PATTERN_LABEL_NAMES[nxt.prediction] || nxt.prediction} ${pct1(nxt.probability)}`
       : '';
+    const fuel = lastSummary?.windows?.['1m']?.marketFuel ?? lastSummary?.windows?.['10s']?.marketFuel;
+    const fuelBit = fuel?.upsideFuel == null
+      ? ''
+      : ` · fuel ${Math.round(fuel.upsideFuel)}/${Math.round(fuel.downsideFuel ?? 0)} ${String(fuel.state || '').replace(/_/g, ' ').toLowerCase()}`;
     meta.textContent = story?.line1
-      ? `${fmtPriceAxis(px)} · ${story.line1} · ${pat}${nextBit}`
-      : `${fmtPriceAxis(px)} · ${pat}${nextBit}`;
+      ? `${fmtPriceAxis(px)} · ${story.line1}${story.line2 ? ` · ${story.line2}` : ''} · ${pat}${nextBit}${fuelBit}`
+      : `${fmtPriceAxis(px)} · ${pat}${nextBit}${fuelBit}`;
+    meta.title = strategyStoryTooltip(story) || '';
   }
   ctx.lineWidth = 1;
 }
@@ -3448,9 +3591,15 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
       : story.line1 === 'Bids consumed' ? { key: 'consume-bid', side: 'sell' }
         : story.line1 === 'Buyers absorbed' ? { key: 'absorb-buy', side: 'sell' }
           : story.line1 === 'Sellers absorbed' ? { key: 'absorb-sell', side: 'buy' }
-            : story.line1 === 'Stop hunt' ? { key: story.line2.includes('low') ? 'hunt-low' : 'hunt-high', side: story.badge === 'LONG' ? 'buy' : 'sell' }
-              : story.line1 === 'Distribution at highs' ? { key: 'distribution', side: 'sell' }
-                : null;
+            : story.line1 === 'Stop hunt low' || (story.line1 === 'Stop hunt' && story.line2?.includes('low'))
+              ? { key: 'hunt-low', side: 'buy' }
+              : story.line1 === 'Stop hunt high' || (story.line1 === 'Stop hunt' && story.line2?.includes('high'))
+                ? { key: 'hunt-high', side: 'sell' }
+                : story.line1 === 'Held support' ? { key: 'held-support', side: 'buy' }
+                  : story.line1 === 'Rejected resist' ? { key: 'reject-resist', side: 'sell' }
+                    : story.detail?.special === 'STOP_HUNT_LOW' ? { key: 'hunt-low', side: 'buy' }
+                      : story.detail?.special === 'STOP_HUNT_HIGH' ? { key: 'hunt-high', side: 'sell' }
+                        : null;
   if (!kind) return;
 
   const label = alertLabel(symbol);

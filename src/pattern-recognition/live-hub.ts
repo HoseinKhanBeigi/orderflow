@@ -2,6 +2,7 @@ import { RingBuffer } from '../core/ring-buffer.js';
 import { rollup } from '../footprint/rollup.js';
 import type { FootprintBar } from '../footprint/types.js';
 import { labelFootprintBar } from './candle-label-adapter.js';
+import { controlToken, liquidityToken, specialEventToken } from './dimension-transition-table.js';
 import {
   PATTERN_TF_MINUTES,
   completedTfBar,
@@ -119,14 +120,28 @@ export class PatternLiveHub {
           contextLabels: priorLabels.map((c) => c.label),
           nextLabel: candle.label,
           patternId: prevSnap?.primaryPattern?.id ?? null,
+          contextControls: priorLabels.map((c) => controlToken(c.classification?.primaryState.control ?? 'UNCLEAR')),
+          nextControl: controlToken(candle.classification.primaryState.control),
+          contextSpecialEvents: priorLabels.map((c) => specialEventToken(c.classification?.specialEvent.type ?? null)),
+          nextSpecialEvent: specialEventToken(candle.classification.specialEvent.type),
+          contextLiquidityEvents: priorLabels.map((c) =>
+            liquidityToken(c.classification?.liquidityBehavior.dominantEvent ?? 'NONE'),
+          ),
+          nextLiquidityEvent: liquidityToken(candle.classification.liquidityBehavior.dominantEvent),
         });
       }
       const snap = this.engine.ingest(candle);
+      const labeled = this.engine.labels(symbol, tfName);
       snap.nextState = this.predictor.predict({
         symbol,
         timeframe: tfName,
-        contextLabels: this.engine.labels(symbol, tfName).map((c) => c.label),
+        contextLabels: labeled.map((c) => c.label),
         patternId: snap.primaryPattern?.id ?? null,
+        contextControls: labeled.map((c) => controlToken(c.classification?.primaryState.control ?? 'UNCLEAR')),
+        contextSpecialEvents: labeled.map((c) => specialEventToken(c.classification?.specialEvent.type ?? null)),
+        contextLiquidityEvents: labeled.map((c) =>
+          liquidityToken(c.classification?.liquidityBehavior.dominantEvent ?? 'NONE'),
+        ),
       });
       this.lastSnap.set(snapKey, snap);
       alerts.push(...snap.alerts);
@@ -149,12 +164,18 @@ export class PatternLiveHub {
       const candle = labelFootprintBar(forming, priorTf, minutesToTimeframe(tf));
       const tfName = minutesToTimeframe(tf);
       const snap = this.engine.ingest(candle, { preview: true });
+      const labeled = this.engine.labels(symbol, tfName);
       snap.nextState = this.predictor.predict({
         symbol,
         timeframe: tfName,
-        contextLabels: this.engine.labels(symbol, tfName).map((c) => c.label),
+        contextLabels: labeled.map((c) => c.label),
         patternId: snap.primaryPattern?.id ?? null,
         remember: false,
+        contextControls: labeled.map((c) => controlToken(c.classification?.primaryState.control ?? 'UNCLEAR')),
+        contextSpecialEvents: labeled.map((c) => specialEventToken(c.classification?.specialEvent.type ?? null)),
+        contextLiquidityEvents: labeled.map((c) =>
+          liquidityToken(c.classification?.liquidityBehavior.dominantEvent ?? 'NONE'),
+        ),
       });
       this.lastSnap.set(`${symbol}|${market}|${tfName}`, snap);
     }

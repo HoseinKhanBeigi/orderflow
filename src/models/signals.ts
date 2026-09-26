@@ -5,6 +5,7 @@ import type { LiquidityResponseSnapshot } from './liquidity-response.js';
 import type { PassiveLiquiditySnapshot } from './passive-liquidity.js';
 import type { NetAggressionSnapshot } from './net-aggression.js';
 import type { MarketBattleSnapshot } from './market-battle.js';
+import type { MarketFuelSnapshot } from './market-fuel.js';
 
 export interface AbsorptionResult {
   detected: boolean;
@@ -86,6 +87,8 @@ export interface WindowSnapshot {
   netAggression: NetAggressionSnapshot;
   /** Aggressive vs passive battles composed from existing engines. */
   marketBattle: MarketBattleSnapshot;
+  /** Active / forced executable pressure. Does not include resting liquidity. */
+  marketFuel: MarketFuelSnapshot;
 }
 
 export interface MultiWindowSnapshot {
