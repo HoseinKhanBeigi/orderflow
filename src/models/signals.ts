@@ -6,6 +6,7 @@ import type { PassiveLiquiditySnapshot } from './passive-liquidity.js';
 import type { NetAggressionSnapshot } from './net-aggression.js';
 import type { MarketBattleSnapshot } from './market-battle.js';
 import type { MarketFuelSnapshot } from './market-fuel.js';
+import type { TradeDecisionSnapshot } from './trade-decision.js';
 
 export interface AbsorptionResult {
   detected: boolean;
@@ -89,6 +90,8 @@ export interface WindowSnapshot {
   marketBattle: MarketBattleSnapshot;
   /** Active / forced executable pressure. Does not include resting liquidity. */
   marketFuel: MarketFuelSnapshot;
+  /** Simple LONG / SHORT / WAIT decision from attack + defense + price confirm. */
+  tradeDecision: TradeDecisionSnapshot;
 }
 
 export interface MultiWindowSnapshot {

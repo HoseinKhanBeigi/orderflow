@@ -25,6 +25,10 @@ import { PassiveFlowEngine } from '../passive-flow/passive-flow-engine.js';
 import { FlowWinnerEngine } from '../flow-battle/flow-winner-engine.js';
 import { MarketBattleEngine } from '../market-battle/engine.js';
 import { MarketFuelEngine } from '../market-fuel/engine.js';
+import {
+  evaluateTradeDecision,
+  emptyTradeDecisionWait,
+} from '../trade-decision/index.js';
 import { AggressiveFlowEngine } from '../aggressive-flow/engine.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
@@ -611,6 +615,7 @@ export class SymbolEngine {
       netAggression,
       marketBattle,
       marketFuel,
+      tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
         book: this.book,
@@ -623,6 +628,8 @@ export class SymbolEngine {
         dataQualityScore: conf,
       }),
     };
+
+    snap.tradeDecision = evaluateTradeDecision(snap, this.config.tradeDecision, { now });
 
     const alerts = buildAlerts(snap, this.config.alerts, now);
     const volatile = alerts.length > 0;

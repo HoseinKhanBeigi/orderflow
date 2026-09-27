@@ -235,6 +235,19 @@ export const DEFAULT_CONFIG: EngineConfig = {
     headlineLiquidityStates: ['STRONG', 'EXTREME'],
   },
 
+  tradeDecision: {
+    buyerControlMin: 60,
+    sellerControlMin: 60,
+    fuelMin: 60,
+    fuelEdgeMin: 10,
+    opposingDefenseMax: 50,
+    liquidityWeakeningMin: 70,
+    opposingReplenishmentMax: 50,
+    opposingSurvivalMax: 50,
+    patternSupportBonus: 8,
+    fuelVelocityWeight: 0.4,
+  },
+
   liquidityResponse: {
     bandPct: 0.25,
     bands: [0.05, 0.1, 0.25, 0.5, 1.0],

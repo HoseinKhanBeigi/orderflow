@@ -136,3 +136,11 @@ export type {
   DirectionAnalysis,
   MovePotentialAnalysis,
 } from './movement.js';
+export type {
+  TradeDecisionSnapshot,
+  TradeDecisionAction,
+  TradeDecisionMetrics,
+  TradeDecisionPhase,
+  TradeEntryQuality,
+} from './trade-decision.js';
+export { TRADE_DECISION_STRATEGY_VERSION } from './trade-decision.js';

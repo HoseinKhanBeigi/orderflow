@@ -231,6 +231,23 @@ export interface CandleClassificationConfig {
   headlineLiquidityStates: Array<'STRONG' | 'EXTREME'>;
 }
 
+/**
+ * Simple LONG/SHORT/WAIT decision thresholds.
+ * Not claimed as optimal — calibratable starting points.
+ */
+export interface TradeDecisionConfig {
+  buyerControlMin: number;
+  sellerControlMin: number;
+  fuelMin: number;
+  fuelEdgeMin: number;
+  opposingDefenseMax: number;
+  liquidityWeakeningMin: number;
+  opposingReplenishmentMax: number;
+  opposingSurvivalMax: number;
+  patternSupportBonus: number;
+  fuelVelocityWeight: number;
+}
+
 export interface MarketBattleConfig {
   aggressiveWeights: AggressivePowerWeights;
   /** Same semantics as footprint chart imbalance ratio. */
@@ -407,6 +424,7 @@ export interface EngineConfig {
   marketBattle: MarketBattleConfig;
   marketFuel: MarketFuelConfig;
   candleClassification: CandleClassificationConfig;
+  tradeDecision: TradeDecisionConfig;
   liquidityResponse: LiquidityResponseConfig;
   passiveLiquidity: PassiveLiquidityConfig;
   historicalBaselineSamples: number;

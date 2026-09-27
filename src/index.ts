@@ -26,6 +26,16 @@ export { MarketFuelEngine } from './market-fuel/index.js';
 export type { MarketFuelInput } from './market-fuel/index.js';
 export type { MarketFuelSnapshot, FuelState, FuelDataStatus } from './models/market-fuel.js';
 export type { MarketBattleInput } from './market-battle/index.js';
+export {
+  evaluateTradeDecision,
+  evaluateTradeDecisionFromMetrics,
+  TRADE_DECISION_STRATEGY_VERSION,
+} from './trade-decision/index.js';
+export type {
+  TradeDecisionSnapshot,
+  TradeDecisionAction,
+  TradeDecisionMetrics,
+} from './trade-decision/index.js';
 export { AggressiveFlowEngine } from './aggressive-flow/index.js';
 export type {
   AggressiveFlowSnapshot,

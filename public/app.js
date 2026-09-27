@@ -576,6 +576,7 @@ function updateUi() {
   if (!lastSummary || lastSummary.symbol !== selectedSymbol) return;
   const w = windowData(lastSummary, selectedTf);
   renderMarketFuel(lastSummary);
+  renderTradeDecision(lastSummary);
   if (!w) return;
 
   const meta = STATE_META[w.state] ?? { title: w.state, help: '' };
@@ -660,6 +661,45 @@ function renderMarketFuel(summary) {
   const organic = fuel.organicUpsideFuel == null ? '' : ` · organic ${Math.round(fuel.organicUpsideFuel)}`;
   const forced = fuel.forcedUpsideFuel == null ? '' : ` · forced ${Math.round(fuel.forcedUpsideFuel)}`;
   el.textContent = `Fuel UP ${up} ${upArrow}  DOWN ${down} ${downArrow}  ${imb >= 0 ? '+' : ''}${imb} ${dir}${organic}${forced}`;
+}
+
+function renderTradeDecision(summary) {
+  const el = document.getElementById('trade-decision');
+  if (!el) return;
+  const d =
+    summary?.windows?.['1m']?.tradeDecision ??
+    summary?.windows?.[selectedTf]?.tradeDecision ??
+    summary?.windows?.['10s']?.tradeDecision ??
+    null;
+  if (!d || !d.action) {
+    el.className = 'trade-decision wait';
+    el.textContent = 'WAIT';
+    el.title = 'Trade decision waiting for window data';
+    return;
+  }
+  const action = String(d.action).toUpperCase();
+  el.className = `trade-decision ${action === 'LONG' ? 'long' : action === 'SHORT' ? 'short' : 'wait'}`;
+  const conf = Number.isFinite(d.confidence) ? Math.round(d.confidence) : null;
+  if (action === 'WAIT') {
+    const blockers = (d.blockers ?? []).slice(0, 3).map(fmtDecisionToken);
+    el.textContent = blockers.length ? `WAIT · ${blockers.join(' · ')}` : 'WAIT';
+  } else {
+    el.textContent = conf != null ? `${action} · ${conf}` : action;
+  }
+  const why = (d.reasons ?? []).slice(0, 6).map(fmtDecisionToken);
+  const block = (d.blockers ?? []).slice(0, 6).map(fmtDecisionToken);
+  const lines = [
+    `TRADE DECISION  ${action}${conf != null ? `  confidence ${conf}` : ''}`,
+    d.entryQuality ? `Quality  ${d.entryQuality}` : '',
+    why.length ? `Why\n  ${why.join('\n  ')}` : '',
+    block.length ? `Blocked by\n  ${block.join('\n  ')}` : '',
+    d.strategyVersion ? `Version  ${d.strategyVersion}` : '',
+  ].filter(Boolean);
+  el.title = lines.join('\n\n');
+}
+
+function fmtDecisionToken(v) {
+  return String(v || '').replace(/_/g, ' ').toLowerCase();
 }
 
 function battleLabel(s) {
