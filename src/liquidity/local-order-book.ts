@@ -119,8 +119,25 @@ export class LocalOrderBook {
     return levels;
   }
 
+  /** Keep the nearest levels so a diff stream cannot grow the book without bound. */
+  retainNearest(maxPerSide: number): void {
+    if (maxPerSide <= 0) return;
+    this.trimSide('bid', maxPerSide);
+    this.trimSide('ask', maxPerSide);
+  }
+
   empty(): boolean {
     return this.bids.size === 0 && this.asks.size === 0;
+  }
+
+  private trimSide(side: 'bid' | 'ask', maxPerSide: number): void {
+    const levels = this.sortedLevels(side);
+    if (levels.length <= maxPerSide) return;
+    const map = side === 'bid' ? this.bids : this.asks;
+    const keep = new Set(levels.slice(0, maxPerSide).map((lvl) => key(lvl.price)));
+    for (const price of map.keys()) {
+      if (!keep.has(price)) map.delete(price);
+    }
   }
 
   private upsert(side: 'bid' | 'ask', lvl: BookLevel): void {

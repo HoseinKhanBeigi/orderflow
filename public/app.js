@@ -1252,11 +1252,27 @@ let fpDirtyAll = false;
 let fpGridBound = false;
 
 /** Width of the resting-liquidity ladder drawn beside the newest footprint bar. */
-const PASSIVE_RAIL_W = 128;
+const PASSIVE_RAIL_W = 176;
 /** Cancelled/added notional per level decays with this half-life so the rail shows recent behaviour. */
 const PASSIVE_DECAY_HALFLIFE_MS = 45_000;
 /** @type {Map<string, { at: number, levels: Map<string, object> }>} */
 const fpPassiveLedgers = new Map();
+/** Live depth ladders from the `book` stream, keyed by `market_symbol`. */
+const fpBooks = new Map();
+
+function ingestOrderBook(ev) {
+  const market = ev.market === 'spot' ? 'spot' : 'perp';
+  if (market !== footprintMarket() || !ev.symbol) return;
+  const bids = Array.isArray(ev.bids) ? ev.bids : [];
+  const asks = Array.isArray(ev.asks) ? ev.asks : [];
+  if (!bids.length && !asks.length) return;
+  fpBooks.set(`${market}_${ev.symbol}`, { bids, asks, at: Date.now() });
+  scheduleDraw(ev.symbol);
+}
+
+function orderBookFor(symbol) {
+  return fpBooks.get(`${footprintMarket()}_${symbol}`) ?? null;
+}
 
 /**
  * Turns the stream of resting book marks into per-level passive accounting:
@@ -1418,7 +1434,7 @@ function fpLayout(cssWidth) {
   const gap = 6;
   // Resting book ladder sits between the newest bar and the price axis. It is
   // dropped on narrow charts so the footprint itself always keeps its columns.
-  const railW = cssWidth >= 560 ? PASSIVE_RAIL_W : 0;
+  const railW = cssWidth >= 360 ? (cssWidth >= 720 ? PASSIVE_RAIL_W : 148) : 0;
   const barWidth = candleW + cellW;
   const stride = barWidth + gap;
   const availW = Math.max(1, cssWidth - priceAxisWidth - railW - leftPad);
@@ -2782,6 +2798,20 @@ function drawFootprint(symbol = selectedSymbol) {
     globalHigh = Math.max(globalHigh, livePx);
     globalLow = Math.min(globalLow, livePx);
   }
+  const book = orderBookFor(symbol);
+  if (book && pan < 0.15 && Number.isFinite(globalHigh) && Number.isFinite(globalLow)) {
+    const midPx = livePx || (globalHigh + globalLow) / 2;
+    const capLo = midPx * 0.7;
+    const capHi = midPx * 1.3;
+    for (const lvl of book.bids) {
+      const p = Number(lvl.price);
+      if (p >= capLo && p < globalLow) globalLow = p;
+    }
+    for (const lvl of book.asks) {
+      const p = Number(lvl.price);
+      if (p <= capHi && p > globalHigh) globalHigh = p;
+    }
+  }
   const bucket = displayBucket(globalHigh, globalLow, chartH);
   globalHigh = priceToTick(globalHigh, bucket) + bucket * 2;
   globalLow = priceToTick(globalLow, bucket) - bucket * 2;
@@ -3135,10 +3165,64 @@ function drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, char
  *   - solid green/red extension = size recently consumed (filled)
  *   - hatched pink extension = size cancelled / pulled (not filled)
  */
+function quoteOf(lvl) {
+  const q = Number(lvl?.quoteValue);
+  if (q > 0) return q;
+  const price = Number(lvl?.price);
+  const qty = Number(lvl?.quantity);
+  return price > 0 && qty > 0 ? price * qty : 0;
+}
+
+/** Resting sizes from the live book; consume/pull overlays stay on the passive ledger. */
+function railRows(symbol, bucket) {
+  const book = orderBookFor(symbol);
+  const fresh = Boolean(book && Date.now() - book.at < 20_000);
+  const marks = symbol === selectedSymbol ? (currentLiquidityResponse()?.levels ?? []) : [];
+  const led = marks.length ? updatePassiveLedger(symbol, marks) : null;
+  const map = new Map();
+  const ensure = (price) => {
+    const p = priceToTick(price, bucket);
+    const key = p.toFixed(8);
+    let row = map.get(key);
+    if (!row) {
+      row = {
+        price: p, bid: 0, ask: 0,
+        cancelBid: 0, cancelAsk: 0,
+        consumeBid: 0, consumeAsk: 0,
+        addBid: 0, addAsk: 0,
+      };
+      map.set(key, row);
+    }
+    return row;
+  };
+  if (led) {
+    for (const row of bucketPassiveLedger(led, bucket)) {
+      const dest = ensure(row.price);
+      if (!fresh) {
+        dest.bid += row.bid;
+        dest.ask += row.ask;
+      }
+      dest.cancelBid += row.cancelBid;
+      dest.cancelAsk += row.cancelAsk;
+      dest.consumeBid += row.consumeBid;
+      dest.consumeAsk += row.consumeAsk;
+    }
+  }
+  if (fresh && book) {
+    for (const lvl of book.bids) {
+      const q = quoteOf(lvl);
+      if (q > 0) ensure(lvl.price).bid += q;
+    }
+    for (const lvl of book.asks) {
+      const q = quoteOf(lvl);
+      if (q > 0) ensure(lvl.price).ask += q;
+    }
+  }
+  return { rows: [...map.values()], fresh, hasBook: Boolean(book) };
+}
+
 function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH, bucket, livePx }) {
-  const marks = currentLiquidityResponse()?.levels ?? [];
-  const led = updatePassiveLedger(symbol, marks);
-  const rows = bucketPassiveLedger(led, bucket);
+  const { rows, fresh, hasBook } = railRows(symbol, bucket);
 
   ctx.save();
   ctx.fillStyle = '#0b0f15';
@@ -3163,7 +3247,7 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
   ctx.fillText('ASK', mid + 3, topPad - 20);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#7d8794';
-  ctx.fillText('RESTING BOOK', mid, topPad - 32);
+  ctx.fillText(fresh ? 'BOOK 500' : hasBook ? 'BOOK 500 · STALE' : 'BOOK 500', mid, topPad - 32);
   ctx.fillStyle = '#86efac';
   ctx.fillText('■ consumed', mid - 28, topPad - 8);
   ctx.fillStyle = '#f472b6';
@@ -3172,7 +3256,7 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
   if (!rows.length) {
     ctx.fillStyle = '#5b6572';
     ctx.font = '9px Inter, sans-serif';
-    ctx.fillText('no book', mid, topPad + chartH / 2);
+    ctx.fillText(hasBook ? 'book stale' : 'waiting for book', mid, topPad + chartH / 2);
     ctx.restore();
     return;
   }
@@ -3199,10 +3283,11 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
   }
   if (peak <= 0) peak = 1;
 
-  const wFor = (v) => (v > 0 ? Math.max(1, Math.sqrt(v / peak) * halfW) : 0);
+  const sizeCol = Math.min(40, Math.max(28, halfW * 0.46));
+  const barMax = Math.max(8, halfW - sizeCol);
+  const wFor = (v) => (v > 0 ? Math.max(1, Math.sqrt(v / peak) * barMax) : 0);
   const barH = Math.max(2, Math.min(rh - 1, 14));
-  let topBid = null;
-  let topAsk = null;
+  const sizeLabels = [];
   for (const row of rows) {
     const y = yForPrice(row.price);
     if (y < topPad + 1 || y > topPad + chartH - 1) continue;
@@ -3211,48 +3296,57 @@ function drawPassiveRail(ctx, symbol, { x0, railW, yForPrice, rh, topPad, chartH
     const bidW = wFor(row.bid);
     const bidConsumeW = wFor(row.consumeBid);
     const bidCancelW = wFor(row.cancelBid);
+    const bidOrigin = mid - sizeCol;
     if (bidW) {
       ctx.fillStyle = 'rgba(34, 211, 238, 0.62)';
-      ctx.fillRect(mid - 1 - bidW, y0, bidW, barH);
-      if (!topBid || row.bid > topBid.v) topBid = { v: row.bid, y, w: bidW };
+      ctx.fillRect(bidOrigin - bidW, y0, bidW, barH);
     }
-    // Consumed bids sit outside resting (left of bid bar) — solid red (sells hit bids).
     if (bidConsumeW) {
       ctx.fillStyle = 'rgba(239, 68, 68, 0.72)';
-      ctx.fillRect(mid - 1 - bidW - bidConsumeW, y0, bidConsumeW, barH);
+      ctx.fillRect(bidOrigin - bidW - bidConsumeW, y0, bidConsumeW, barH);
     }
     if (bidCancelW) {
-      drawPulledBlock(ctx, mid - 1 - bidW - bidConsumeW - bidCancelW, y0, bidCancelW, barH);
+      drawPulledBlock(ctx, bidOrigin - bidW - bidConsumeW - bidCancelW, y0, bidCancelW, barH);
     }
 
     const askW = wFor(row.ask);
     const askConsumeW = wFor(row.consumeAsk);
     const askCancelW = wFor(row.cancelAsk);
+    const askOrigin = mid + sizeCol;
     if (askW) {
       ctx.fillStyle = 'rgba(251, 146, 60, 0.62)';
-      ctx.fillRect(mid + 1, y0, askW, barH);
-      if (!topAsk || row.ask > topAsk.v) topAsk = { v: row.ask, y, w: askW };
+      ctx.fillRect(askOrigin, y0, askW, barH);
     }
-    // Consumed asks sit outside resting (right of ask bar) — solid green (buys hit asks).
     if (askConsumeW) {
       ctx.fillStyle = 'rgba(34, 197, 94, 0.72)';
-      ctx.fillRect(mid + 1 + askW, y0, askConsumeW, barH);
+      ctx.fillRect(askOrigin + askW, y0, askConsumeW, barH);
     }
     if (askCancelW) {
-      drawPulledBlock(ctx, mid + 1 + askW + askConsumeW, y0, askCancelW, barH);
+      drawPulledBlock(ctx, askOrigin + askW + askConsumeW, y0, askCancelW, barH);
     }
+    if (row.bid > 0) sizeLabels.push({ side: 'bid', y, v: row.bid });
+    if (row.ask > 0) sizeLabels.push({ side: 'ask', y, v: row.ask });
   }
 
   ctx.font = 'bold 9px JetBrains Mono, monospace';
-  if (topBid) {
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#a5f3fc';
-    ctx.fillText(fmtVolShort(topBid.v), mid - topBid.w + 1, topBid.y);
-  }
-  if (topAsk) {
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#fed7aa';
-    ctx.fillText(fmtVolShort(topAsk.v), mid + topAsk.w - 1, topAsk.y);
+  ctx.textBaseline = 'middle';
+  for (const side of ['bid', 'ask']) {
+    const used = [];
+    const items = sizeLabels.filter((l) => l.side === side).sort((a, b) => b.v - a.v);
+    for (const item of items) {
+      if (used.some((y) => Math.abs(y - item.y) < 11)) continue;
+      used.push(item.y);
+      const text = fmtVolShort(item.v);
+      if (side === 'bid') {
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#a5f3fc';
+        ctx.fillText(text, mid - 3, item.y);
+      } else {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#fed7aa';
+        ctx.fillText(text, mid + 3, item.y);
+      }
+    }
   }
 
   ctx.strokeStyle = '#2a3342';
@@ -4008,6 +4102,9 @@ function connectLiveSocket() {
         break;
       case 'spot_flow':
         ingestSpotFlow(ev.snapshot);
+        break;
+      case 'book':
+        ingestOrderBook(ev);
         break;
       case 'summary':
         if (ev.summary && ev.market) ev.summary.market = ev.market;

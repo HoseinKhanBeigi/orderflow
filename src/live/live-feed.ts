@@ -8,12 +8,12 @@ import {
   streamName,
   unwrapBinancePayload,
 } from '../exchange/types.js';
-import { EXCHANGE_LABELS, parseExchangesEnv, type ExchangeId } from '../exchange/venues.js';
-import type { LiquidationEvent, MarketTrade, MarketType, OrderBookSnapshot } from '../models/trade.js';
+import { EXCHANGE_LABELS, fetchVenueDepth, parseExchangesEnv, type ExchangeId } from '../exchange/venues.js';
+import type { LiquidationEvent, MarketTrade, MarketType } from '../models/trade.js';
 import type { WindowSnapshot } from '../models/signals.js';
 import { isVolatileWindow } from '../analysis/alerts.js';
 import type { PassiveLiquiditySnapshot } from '../models/passive-liquidity.js';
-import type { BinanceAggTrade, BinanceForceOrder, BinanceTrade } from '../exchange/types.js';
+import type { BinanceAggTrade, BinanceDepthDelta, BinanceForceOrder, BinanceTrade } from '../exchange/types.js';
 import { DEFAULT_WATCHLIST, minUsdFor, type WatchCoin } from './watchlist.js';
 import { safeCloseWebSocket } from './json-socket.js';
 import { VenueTradeFan } from './venue-trades.js';
@@ -137,25 +137,15 @@ export type LiveFeedListener = (event: LiveFeedEvent) => void;
  * Every normalized trade, before the watchlist `minUsd` tape filter.
  * The footprint recorder needs the full stream, not just large prints.
  */
+/** Levels kept and drawn on the footprint ladder. Binance REST depth supports 500. */
+const BOOK_DEPTH = 500;
+
 export type RawTradeListener = (trade: MarketTrade, exchange: ExchangeId) => void;
 export type RawLiquidationListener = (liq: LiquidationEvent) => void;
 
 function stripPassive(snapshot: WindowSnapshot): WireWindowSnapshot {
   const { passiveLiquidity: _passiveLiquidity, ...wire } = snapshot;
   return wire;
-}
-
-function parseBookLevels(rows: unknown): { price: number; quantity: number; quoteValue: number }[] {
-  if (!Array.isArray(rows)) return [];
-  const levels: { price: number; quantity: number; quoteValue: number }[] = [];
-  for (const row of rows) {
-    if (!Array.isArray(row) || row.length < 2) continue;
-    const price = Number(row[0]);
-    const quantity = Number(row[1]);
-    if (!Number.isFinite(price) || !Number.isFinite(quantity) || price <= 0 || quantity <= 0) continue;
-    levels.push({ price, quantity, quoteValue: price * quantity });
-  }
-  return levels;
 }
 
 export class LiveBinanceFeed {
@@ -166,6 +156,10 @@ export class LiveBinanceFeed {
   private closed = false;
   private lastSummary = 0;
   private readonly lastBookEmit = new Map<string, number>();
+  /** Diffs received before the REST depth snapshot is applied. */
+  private readonly depthBuffers = new Map<string, BinanceDepthDelta[]>();
+  private readonly depthSynced = new Set<string>();
+  private readonly depthSyncing = new Set<string>();
   private readonly tradeCount = new Map<string, number>();
   private readonly lastMoveEvents = new Map<string, string>();
   private readonly lastStates = new Map<string, Partial<Record<'10s' | '1m' | '5m', string>>>();
@@ -281,6 +275,7 @@ export class LiveBinanceFeed {
 
   private connect(): void {
     this.closeSockets();
+    this.resetDepthSync();
     this.emit({ type: 'status', connected: false, message: 'Connecting…' });
     const { market } = this.config;
     const tradeChannel = market === 'spot' ? 'aggTrade' : 'trade';
@@ -288,25 +283,36 @@ export class LiveBinanceFeed {
     if (market === 'spot') {
       this.openCombined(BINANCE_SPOT_WS, this.coins, tradeChannel, 'spot');
       this.openSocket(`${BINANCE_SPOT_WS}?streams=${this.depthList(this.coins)}`, 'spot book');
-      return;
+    } else {
+      const crypto = this.coins.filter((c) => c.venue !== 'equity');
+      const equity = this.coins.filter((c) => c.venue === 'equity');
+      if (crypto.length) {
+        this.openCombined(BINANCE_FUTURES_WS, crypto, 'trade', 'crypto perp');
+        this.openSocket(`${BINANCE_FUTURES_WS}?streams=${this.depthList(crypto)}`, 'crypto book');
+        this.openSocket(`${BINANCE_FUTURES_WS}?streams=!forceOrder@arr`, 'liquidations');
+      }
+      // TradFi equity perps (https://www.binance.com/en/futures/AMZNUSDT) need /ws/, not combined /stream.
+      if (equity.length) {
+        this.openRawCombined(equity, 'trade', 'equity perp');
+        this.openSocket(`${BINANCE_FUTURES_WS}?streams=${this.depthList(equity)}`, 'equity book');
+      }
     }
 
-    const crypto = this.coins.filter((c) => c.venue !== 'equity');
-    const equity = this.coins.filter((c) => c.venue === 'equity');
-    if (crypto.length) {
-      this.openCombined(BINANCE_FUTURES_WS, crypto, 'trade', 'crypto perp');
-      this.openSocket(`${BINANCE_FUTURES_WS}?streams=${this.depthList(crypto)}`, 'crypto book');
-      this.openSocket(`${BINANCE_FUTURES_WS}?streams=!forceOrder@arr`, 'liquidations');
-    }
-    // TradFi equity perps (https://www.binance.com/en/futures/AMZNUSDT) need /ws/, not combined /stream.
-    if (equity.length) {
-      this.openRawCombined(equity, 'trade', 'equity perp');
-      this.openSocket(`${BINANCE_FUTURES_WS}?streams=${this.depthList(equity)}`, 'equity book');
-    }
+    this.coins.forEach((coin, i) => {
+      setTimeout(() => {
+        if (!this.closed) void this.syncSymbolBook(coin.symbol);
+      }, i * 200);
+    });
+  }
+
+  private resetDepthSync(): void {
+    this.depthBuffers.clear();
+    this.depthSynced.clear();
+    this.depthSyncing.clear();
   }
 
   private streamList(coins: WatchCoin[], tradeChannel: string): string {
-    // Depth comes from depth20@100ms only. bookTicker is top-of-book and must
+    // Book depth is a separate socket. bookTicker is top-of-book and must
     // never be applied as a full snapshot — LocalOrderBook.applySnapshot clears
     // all levels, which wiped the ladder between depth updates and poisoned
     // passive / market-battle confidence.
@@ -314,7 +320,7 @@ export class LiveBinanceFeed {
   }
 
   private depthList(coins: WatchCoin[]): string {
-    return coins.map((c) => streamName(c.symbol, 'depth20@100ms')).join('/');
+    return coins.map((c) => streamName(c.symbol, 'depth@100ms')).join('/');
   }
 
   private openCombined(base: string, coins: WatchCoin[], tradeChannel: string, label: string): void {
@@ -368,10 +374,8 @@ export class LiveBinanceFeed {
     const event = data.e as string | undefined;
     const symbol = String(data.s ?? stream.split('@')[0] ?? '').toUpperCase();
 
-    if (stream.includes('depth20') || (Array.isArray(data.bids) && Array.isArray(data.asks))) {
-      this.handleDepth(symbol, data, market);
-    } else if (event === 'depthUpdate' && Array.isArray(data.b) && Array.isArray(data.a)) {
-      this.handleDepth(symbol, { bids: data.b, asks: data.a, lastUpdateId: data.u, E: data.E, T: data.T }, market);
+    if (event === 'depthUpdate' && Array.isArray(data.b) && Array.isArray(data.a)) {
+      this.onDepthDiff(data as unknown as BinanceDepthDelta);
     }
 
     if (event === 'forceOrder' || stream.includes('forceOrder')) {
@@ -448,37 +452,128 @@ export class LiveBinanceFeed {
     return true;
   }
 
-  private handleDepth(symbol: string, data: Record<string, unknown>, market: MarketType): void {
+  private onDepthDiff(msg: BinanceDepthDelta): void {
+    const symbol = String(msg.s || '').toUpperCase();
     if (!symbol || !this.coins.some((c) => c.symbol === symbol)) return;
-    const bids = parseBookLevels(data.bids ?? data.b);
-    const asks = parseBookLevels(data.asks ?? data.a);
-    if (!bids.length && !asks.length) return;
+    if (!this.depthSynced.has(symbol)) {
+      const buf = this.depthBuffers.get(symbol) ?? [];
+      buf.push(msg);
+      if (buf.length > 800) buf.splice(0, buf.length - 800);
+      this.depthBuffers.set(symbol, buf);
+      if (!this.depthSyncing.has(symbol)) void this.syncSymbolBook(symbol);
+      return;
+    }
+    this.applyDepthDiff(msg);
+  }
 
-    const snapshot: OrderBookSnapshot = {
-      symbol,
-      marketType: market === 'spot' ? 'spot' : 'perp',
-      timestamp: Date.now(),
-      bids,
-      asks,
-      lastUpdateId: typeof data.lastUpdateId === 'number' ? data.lastUpdateId : undefined,
-    };
-    this.engine.ingestBookSnapshot(snapshot);
+  /**
+   * Binance has no depth500 websocket. Seed REST `/depth?limit=500`, then
+   * apply `@depth@100ms` diffs so the ladder stays 500 levels deep.
+   */
+  private async syncSymbolBook(symbol: string): Promise<void> {
+    if (this.closed || this.depthSyncing.has(symbol)) return;
+    if (!this.coins.some((c) => c.symbol === symbol)) return;
+    this.depthSyncing.add(symbol);
+    this.depthSynced.delete(symbol);
+    const market = this.config.market === 'spot' ? 'spot' : 'perp';
+    try {
+      const raw = await fetchVenueDepth('binance', symbol, market, BOOK_DEPTH);
+      if (this.closed) return;
+      if (!raw.bids.length && !raw.asks.length) throw new Error('empty depth');
+      const adapter = market === 'spot' ? this.spot : this.futures;
+      const snapshot = adapter.normalizeDepthSnapshot(
+        symbol,
+        { lastUpdateId: raw.lastUpdateId ?? 0, bids: raw.bids, asks: raw.asks },
+        Date.now(),
+      );
+      const lastId = snapshot.lastUpdateId ?? 0;
+      const buffered = this.depthBuffers.get(symbol) ?? [];
+      const start = buffered.findIndex((e) =>
+        market === 'spot' ? e.U <= lastId + 1 && e.u >= lastId + 1 : e.U <= lastId && e.u >= lastId,
+      );
+      this.engine.ingestBookSnapshot(snapshot);
+      this.engine.getSymbol(symbol, market).book.retainNearest(BOOK_DEPTH);
+      this.depthBuffers.set(symbol, []);
 
+      if (start < 0) {
+        const newer = buffered.filter((e) => e.u > lastId);
+        if (newer.length === 0) {
+          this.depthSynced.add(symbol);
+          this.emitLocalBook(symbol, true);
+          return;
+        }
+        this.depthBuffers.set(symbol, newer.slice(-800));
+        setTimeout(() => {
+          if (!this.closed) void this.syncSymbolBook(symbol);
+        }, 400);
+        return;
+      }
+
+      this.depthSynced.add(symbol);
+      for (const ev of buffered.slice(start)) {
+        if (!this.depthSynced.has(symbol)) break;
+        if (!this.applyDepthDiff(ev, false)) break;
+      }
+      if (this.depthSynced.has(symbol)) this.emitLocalBook(symbol, true);
+      else {
+        setTimeout(() => {
+          if (!this.closed) void this.syncSymbolBook(symbol);
+        }, 400);
+      }
+    } catch (err) {
+      console.warn(
+        `[feed] depth ${BOOK_DEPTH} snapshot failed for ${symbol}:`,
+        err instanceof Error ? err.message : err,
+      );
+      setTimeout(() => {
+        if (!this.closed) void this.syncSymbolBook(symbol);
+      }, 2_000);
+    } finally {
+      this.depthSyncing.delete(symbol);
+    }
+  }
+
+  private applyDepthDiff(msg: BinanceDepthDelta, resync = true): boolean {
+    const market = this.config.market === 'spot' ? 'spot' : 'perp';
+    const delta = market === 'spot' ? this.spot.normalizeDepthDelta(msg) : this.futures.normalizeDepthDelta(msg);
+    const book = this.engine.getSymbol(delta.symbol, market).book;
+    const prevId = book.lastUpdateId;
+    if (msg.pu != null && prevId && msg.pu > prevId) {
+      this.depthSynced.delete(delta.symbol);
+      if (resync && !this.depthSyncing.has(delta.symbol)) void this.syncSymbolBook(delta.symbol);
+      return false;
+    }
+    this.engine.ingestBookDelta(delta);
+    if (book.stale) {
+      book.stale = false;
+      this.depthSynced.delete(delta.symbol);
+      if (resync && !this.depthSyncing.has(delta.symbol)) void this.syncSymbolBook(delta.symbol);
+      return false;
+    }
+    book.retainNearest(BOOK_DEPTH);
+    this.emitLocalBook(delta.symbol);
+    return true;
+  }
+
+  private emitLocalBook(symbol: string, force = false): void {
     const now = Date.now();
-    if (now - (this.lastBookEmit.get(symbol) ?? 0) < 120) return;
+    if (!force && now - (this.lastBookEmit.get(symbol) ?? 0) < 300) return;
     this.lastBookEmit.set(symbol, now);
-
+    const market = this.config.market === 'spot' ? 'spot' : 'perp';
+    const book = this.engine.getSymbol(symbol, market).book;
+    const bids = book.sortedLevels('bid').slice(0, BOOK_DEPTH);
+    const asks = book.sortedLevels('ask').slice(0, BOOK_DEPTH);
+    if (!bids.length && !asks.length) return;
     const bestBid = bids[0]?.price ?? 0;
     const bestAsk = asks[0]?.price ?? 0;
     const mid = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : bestBid || bestAsk;
-    const spread = bestBid && bestAsk ? bestAsk - bestBid : 0;
     this.emit({
       type: 'book',
       symbol,
       bids,
       asks,
       mid,
-      spread,
+      spread: bestBid && bestAsk ? bestAsk - bestBid : 0,
       bidTotal: bids.reduce((s, l) => s + l.quoteValue, 0),
       askTotal: asks.reduce((s, l) => s + l.quoteValue, 0),
     });

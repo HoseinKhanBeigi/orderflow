@@ -41,4 +41,27 @@ describe('LocalOrderBook snapshot guard', () => {
     expect(ob.mid()).toBeCloseTo(101, 5);
     expect(ob.bestAsk()?.quoteValue).toBeCloseTo(5_000_000, 0);
   });
+
+  it('keeps only the nearest levels per side', () => {
+    const ob = new LocalOrderBook();
+    ob.applySnapshot(
+      bookLadder({
+        timestamp: T0,
+        mid: 100,
+        bids: [
+          { price: 99.9, quote: 1 },
+          { price: 99.8, quote: 1 },
+          { price: 99.7, quote: 1 },
+        ],
+        asks: [
+          { price: 100.1, quote: 1 },
+          { price: 100.2, quote: 1 },
+          { price: 100.3, quote: 1 },
+        ],
+      }),
+    );
+    ob.retainNearest(2);
+    expect(ob.sortedLevels('bid').map((l) => l.price)).toEqual([99.9, 99.8]);
+    expect(ob.sortedLevels('ask').map((l) => l.price)).toEqual([100.1, 100.2]);
+  });
 });
