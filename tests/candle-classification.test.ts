@@ -198,6 +198,86 @@ describe('structured candle classification', () => {
     expect(c.outcome.type === 'REVERSAL' || c.outcome.type === 'PENDING').toBe(true);
   });
 
+  it('labels stop hunt high when resistance is swept then rejected with buyer absorption', () => {
+    const prior = [
+      fpBar({ time: 1, high: 110, low: 100, open: 105, close: 106, totalBuy: 2_000, totalSell: 2_000 }),
+      fpBar({ time: 2, high: 110, low: 102, open: 106, close: 108, totalBuy: 2_000, totalSell: 2_000 }),
+      fpBar({ time: 3, high: 109.5, low: 103, open: 108, close: 107, totalBuy: 2_000, totalSell: 2_000 }),
+    ];
+    const hunt = fpBar({
+      time: 4,
+      open: 108,
+      high: 118,
+      low: 106,
+      close: 107,
+      totalBuy: 22_000,
+      totalSell: 7_000,
+    });
+    const c = classifyCandleStructure(hunt, { prior });
+    expect(c.specialEvent.type).toBe('STOP_HUNT_HIGH');
+    expect(c.primaryDisplayLabel).toBe('STOP_HUNT_HIGH');
+  });
+
+  it('does not label a naked wick without absorption / flow flip as stop hunt', () => {
+    const prior = [
+      fpBar({ time: 1, high: 110, low: 100, open: 105, close: 104, totalBuy: 5_000, totalSell: 5_000 }),
+      fpBar({ time: 2, high: 109, low: 101, open: 104, close: 103, totalBuy: 5_000, totalSell: 5_000 }),
+    ];
+    // Sweeps support but closes with balanced / mixed flow — not a stop run.
+    const wick = fpBar({
+      time: 3,
+      open: 103,
+      high: 104,
+      low: 90,
+      close: 100.8,
+      totalBuy: 12_000,
+      totalSell: 11_500,
+    });
+    const c = classifyCandleStructure(wick, { prior });
+    expect(c.specialEvent.type).not.toBe('STOP_HUNT_LOW');
+  });
+
+  it('does not label a continuation breakdown as stop hunt low', () => {
+    const prior = [
+      fpBar({ time: 1, high: 110, low: 100, open: 105, close: 104, totalBuy: 5_000, totalSell: 5_000 }),
+      fpBar({ time: 2, high: 109, low: 101, open: 104, close: 102, totalBuy: 4_000, totalSell: 6_000 }),
+    ];
+    const breakdown = fpBar({
+      time: 3,
+      open: 102,
+      high: 102.5,
+      low: 88,
+      close: 89,
+      totalBuy: 3_000,
+      totalSell: 25_000,
+    });
+    const c = classifyCandleStructure(breakdown, { prior });
+    expect(c.specialEvent.type).not.toBe('STOP_HUNT_LOW');
+  });
+
+  it('accepts stop hunt low when book replenishment confirms defense', () => {
+    const prior = [
+      fpBar({ time: 1, high: 110, low: 100, open: 105, close: 104, totalBuy: 2_000, totalSell: 2_000 }),
+      fpBar({ time: 2, high: 109, low: 100, open: 104, close: 103, totalBuy: 2_000, totalSell: 2_000 }),
+      fpBar({ time: 3, high: 108, low: 101, open: 103, close: 104, totalBuy: 2_000, totalSell: 2_000 }),
+    ];
+    const hunt = fpBar({
+      time: 4,
+      open: 103,
+      high: 105,
+      low: 92,
+      close: 104.5,
+      totalBuy: 11_000,
+      totalSell: 12_000,
+    });
+    const c = classifyCandleStructure(hunt, {
+      prior,
+      metrics: extremeMetrics({ bidReplenishment: 82, bidSurvival: 70 }),
+    });
+    expect(c.specialEvent.type).toBe('STOP_HUNT_LOW');
+    expect(c.specialEvent.confidence).toBeGreaterThan(0.55);
+  });
+
   it('headline priority: special > control > extreme liquidity', () => {
     const bar = fpBar({
       time: 5,

@@ -2215,16 +2215,70 @@ function barAbsorbed(bar) {
 }
 
 function priorSwingLevels(prior) {
-  if (!prior.length) return { support: null, resistance: null };
-  const recent = prior.slice(-16);
-  let resistance = -Infinity;
-  let support = Infinity;
-  for (const b of recent) {
-    if (b.high > resistance) resistance = b.high;
-    if (b.low < support) support = b.low;
+  if (!prior.length) return { support: null, resistance: null, supportTouches: 0, resistanceTouches: 0 };
+  const recent = prior.slice(-24);
+  const atr = recentBarAtr(prior, recent[recent.length - 1]);
+  const tol = Math.max(atr * 0.28, (recent[recent.length - 1].close || 1) * 0.0008);
+
+  const pivotLows = [];
+  const pivotHighs = [];
+  for (let i = 1; i < recent.length - 1; i++) {
+    const p = recent[i];
+    const l = recent[i - 1];
+    const r = recent[i + 1];
+    if (p.low <= l.low && p.low <= r.low) pivotLows.push(p.low);
+    if (p.high >= l.high && p.high >= r.high) pivotHighs.push(p.high);
   }
-  if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
-  return { support, resistance };
+
+  const window16 = prior.slice(-16);
+  let absHigh = -Infinity;
+  let absLow = Infinity;
+  for (const b of window16) {
+    if (b.high > absHigh) absHigh = b.high;
+    if (b.low < absLow) absLow = b.low;
+  }
+  if (!Number.isFinite(absHigh) || !Number.isFinite(absLow)) {
+    return { support: null, resistance: null, supportTouches: 0, resistanceTouches: 0 };
+  }
+
+  const supportPick = pickClusteredLevel(pivotLows, absLow, tol, 'support');
+  const resistancePick = pickClusteredLevel(pivotHighs, absHigh, tol, 'resistance');
+  return {
+    support: supportPick.level,
+    resistance: resistancePick.level,
+    supportTouches: supportPick.touches,
+    resistanceTouches: resistancePick.touches,
+  };
+}
+
+function pickClusteredLevel(pivots, extreme, tol, side) {
+  const points = pivots.slice();
+  if (Number.isFinite(extreme)) points.push(extreme);
+  if (!points.length) return { level: extreme, touches: 1 };
+  const sorted = points.slice().sort((a, b) => a - b);
+  const clusters = [];
+  for (const p of sorted) {
+    const last = clusters[clusters.length - 1];
+    if (last && p - last.max <= tol) {
+      last.sum += p;
+      last.count += 1;
+      last.max = p;
+    } else {
+      clusters.push({ sum: p, count: 1, min: p, max: p });
+    }
+  }
+  let best = clusters[0];
+  for (const c of clusters) {
+    if (c.count > best.count) best = c;
+    else if (c.count === best.count) {
+      const bestMean = best.sum / best.count;
+      const mean = c.sum / c.count;
+      if (side === 'support' ? mean < bestMean : mean > bestMean) best = c;
+    }
+  }
+  const mean = best.sum / best.count;
+  const level = Math.abs(extreme - mean) <= tol * 1.25 ? extreme : mean;
+  return { level, touches: best.count };
 }
 
 function barLocationFromPrior(bar, prior) {
@@ -2273,18 +2327,70 @@ function absorptionReversalKind(bar) {
   return null;
 }
 
-/** Sweep of prior swing high/low (stop liquidity), then close back through the level. */
+/**
+ * Stop hunt = pierce swing / equal high-low stop liquidity, reject back inside,
+ * with flow evidence of absorption or aggressive flip — not a naked wick.
+ */
 function stopHuntKind(bar, prior) {
-  const { support, resistance } = priorSwingLevels(prior);
+  const levels = priorSwingLevels(prior);
+  const { support, resistance } = levels;
   if (support == null || resistance == null || resistance <= support) return null;
   const atr = recentBarAtr(prior, bar);
   const range = bar.high - bar.low;
   if (range <= 0) return null;
+  if (range < atr * 0.55) return null;
   const closePos = (bar.close - bar.low) / range;
   const band = Math.max((resistance - support) * 0.08, atr * 0.35);
-  if (bar.high >= resistance + band * 0.2 && bar.close < resistance && closePos <= 0.42) return 'HIGH';
-  if (bar.low <= support - band * 0.2 && bar.close > support && closePos >= 0.58) return 'LOW';
+  const upperWick = bar.high - Math.max(bar.open, bar.close);
+  const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+  const bodyFrac = Math.abs(bar.close - bar.open) / range;
+
+  const highPierce = bar.high >= resistance + band * 0.2;
+  const lowPierce = bar.low <= support - band * 0.2;
+  const highReject = bar.close < resistance && closePos <= 0.42 && upperWick / range >= 0.32;
+  const lowReject = bar.close > support && closePos >= 0.58 && lowerWick / range >= 0.32;
+
+  if (highPierce && closePos >= 0.7 && bodyFrac >= 0.45) return null;
+  if (lowPierce && closePos <= 0.3 && bodyFrac >= 0.45) return null;
+
+  if (highPierce && highReject && huntFlowConfirms(bar, 'HIGH', prior)) {
+    if (levels.resistanceTouches < 2 && closePos > 0.35) return null;
+    return 'HIGH';
+  }
+  if (lowPierce && lowReject && huntFlowConfirms(bar, 'LOW', prior)) {
+    if (levels.supportTouches < 2 && closePos < 0.65) return null;
+    return 'LOW';
+  }
   return null;
+}
+
+function huntFlowConfirms(bar, kind, prior) {
+  const absorbed = barAbsorbed(bar);
+  const win = fpBarWinner(bar);
+  const vol = (bar.totalBuy ?? 0) + (bar.totalSell ?? 0);
+  const delta = (bar.totalBuy ?? 0) - (bar.totalSell ?? 0);
+  const range = Math.max(bar.high - bar.low, 1e-9);
+  const closePos = (bar.close - bar.low) / range;
+  const deltaPct = vol > 0 ? delta / vol : 0;
+  const priorVac =
+    prior.length > 0 ? barVacuumKind(prior[prior.length - 1], prior.slice(0, -1)) : null;
+  const vacuumInto =
+    (kind === 'LOW' && priorVac === 'DOWNSIDE') || (kind === 'HIGH' && priorVac === 'UPSIDE');
+
+  if (kind === 'LOW') {
+    if (absorbed === 'SELLERS') return true;
+    if (win.id === 'PASSIVE_BUYERS' || win.id === 'AGGRESSIVE_BUYERS') return true;
+    if (vol > 0 && deltaPct <= -0.12 && closePos >= 0.62) return true;
+    if (vacuumInto && closePos >= 0.68) return true;
+    if (vol > 0 && vol < 50 && closePos >= 0.7) return true;
+    return false;
+  }
+  if (absorbed === 'BUYERS') return true;
+  if (win.id === 'PASSIVE_SELLERS' || win.id === 'AGGRESSIVE_SELLERS') return true;
+  if (vol > 0 && deltaPct >= 0.12 && closePos <= 0.38) return true;
+  if (vacuumInto && closePos <= 0.32) return true;
+  if (vol > 0 && vol < 50 && closePos <= 0.3) return true;
+  return false;
 }
 
 /** Vacuum stretch score 0–100 — only extreme stretches clear the dominance gate. */

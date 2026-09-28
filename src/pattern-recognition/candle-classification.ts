@@ -75,8 +75,8 @@ export function classifyCandleStructure(
 
   const control = deriveControl(bar);
   const liquidity = deriveLiquidityBehavior(bar, prior, metrics, config);
-  const special = deriveSpecialEvent(bar, prior);
-  const outcome = deriveOutcome(bar, control.control, special.type);
+  const special = deriveSpecialEvent(bar, prior, metrics);
+  const outcome = deriveOutcome(bar, control.control, special.type, prior, metrics);
   const primaryDisplayLabel = derivePrimaryDisplayLabel(
     control,
     liquidity,
@@ -376,13 +376,17 @@ function softDominantWhenPartial(
   return pickDominantLiquidityEvent(candidates, config);
 }
 
-function deriveSpecialEvent(bar: FootprintBarLike, prior: FootprintBarLike[]): SpecialEventLayer {
-  const hunt = stopHuntKind(bar, prior);
+function deriveSpecialEvent(
+  bar: FootprintBarLike,
+  prior: FootprintBarLike[],
+  metrics: ClassificationInputMetrics | null,
+): SpecialEventLayer {
+  const hunt = stopHuntKind(bar, prior, metrics);
   if (hunt === 'HIGH') {
-    return { type: 'STOP_HUNT_HIGH', confidence: huntConfidence(bar, 'HIGH') };
+    return { type: 'STOP_HUNT_HIGH', confidence: huntConfidence(bar, prior, 'HIGH', metrics) };
   }
   if (hunt === 'LOW') {
-    return { type: 'STOP_HUNT_LOW', confidence: huntConfidence(bar, 'LOW') };
+    return { type: 'STOP_HUNT_LOW', confidence: huntConfidence(bar, prior, 'LOW', metrics) };
   }
 
   const location = barLocationFromPrior(bar, prior);
@@ -422,6 +426,8 @@ function deriveOutcome(
   bar: FootprintBarLike,
   control: ControlState,
   special: SpecialEventType | null,
+  prior: FootprintBarLike[] = [],
+  metrics: ClassificationInputMetrics | null = null,
 ): OutcomeLayer {
   const range = Math.max(bar.high - bar.low, 1e-9);
   const body = Math.abs(bar.close - bar.open);
@@ -435,6 +441,7 @@ function deriveOutcome(
 
   if (special === 'STOP_HUNT_LOW' || special === 'STOP_HUNT_HIGH') {
     // Reversal confirmation often needs the next candle — stay causal.
+    const kind = special === 'STOP_HUNT_LOW' ? 'LOW' : 'HIGH';
     const reversedInBar =
       (special === 'STOP_HUNT_LOW' && closePos >= 0.58) ||
       (special === 'STOP_HUNT_HIGH' && closePos <= 0.42);
@@ -442,7 +449,7 @@ function deriveOutcome(
       return {
         type: 'REVERSAL',
         direction: special === 'STOP_HUNT_LOW' ? 'UP' : 'DOWN',
-        confidence: huntConfidence(bar, special === 'STOP_HUNT_LOW' ? 'LOW' : 'HIGH'),
+        confidence: huntConfidence(bar, prior, kind, metrics),
       };
     }
     return { type: 'PENDING', direction, confidence: null };
@@ -668,16 +675,115 @@ export function barAbsorbed(bar: FootprintBarLike): 'SELLERS' | 'BUYERS' | null 
 }
 
 function priorSwingLevels(prior: FootprintBarLike[]): { support: number | null; resistance: number | null } {
-  if (!prior.length) return { support: null, resistance: null };
-  const recent = prior.slice(-16);
-  let resistance = -Infinity;
-  let support = Infinity;
-  for (const b of recent) {
-    if (b.high > resistance) resistance = b.high;
-    if (b.low < support) support = b.low;
+  const ranked = rankedHuntLevels(prior);
+  return { support: ranked.support, resistance: ranked.resistance };
+}
+
+function barLocationFromPrior(
+  bar: FootprintBarLike,
+  prior: FootprintBarLike[],
+): 'AT_SUPPORT' | 'AT_RESISTANCE' | 'ABOVE_RESISTANCE' | 'BELOW_SUPPORT' | 'MID_RANGE' | 'UNKNOWN' {
+  const { support, resistance } = priorSwingLevels(prior);
+  if (support == null || resistance == null || resistance <= support) return 'UNKNOWN';
+  const band = Math.max((resistance - support) * 0.12, (bar.close || 1) * 0.0015);
+  if (bar.close > resistance + band * 0.15) return 'ABOVE_RESISTANCE';
+  if (bar.close < support - band * 0.15) return 'BELOW_SUPPORT';
+  if (bar.high >= resistance - band) return 'AT_RESISTANCE';
+  if (bar.low <= support + band) return 'AT_SUPPORT';
+  return 'MID_RANGE';
+}
+
+/**
+ * Swing / equal-level candidates for stop liquidity.
+ * Prefers clustered pivot highs/lows over a single noisy extreme.
+ */
+function rankedHuntLevels(prior: FootprintBarLike[]): {
+  support: number | null;
+  resistance: number | null;
+  supportTouches: number;
+  resistanceTouches: number;
+} {
+  if (!prior.length) {
+    return { support: null, resistance: null, supportTouches: 0, resistanceTouches: 0 };
   }
-  if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
-  return { support, resistance };
+  const recent = prior.slice(-24);
+  const atrRef = recent[recent.length - 1]!;
+  const atr = recentBarAtr(prior, atrRef);
+  const tol = Math.max(atr * 0.28, (atrRef.close || 1) * 0.0008);
+
+  const pivotLows: number[] = [];
+  const pivotHighs: number[] = [];
+  for (let i = 1; i < recent.length - 1; i++) {
+    const p = recent[i]!;
+    const l = recent[i - 1]!;
+    const r = recent[i + 1]!;
+    if (p.low <= l.low && p.low <= r.low) pivotLows.push(p.low);
+    if (p.high >= l.high && p.high >= r.high) pivotHighs.push(p.high);
+  }
+
+  const window16 = prior.slice(-16);
+  let absHigh = -Infinity;
+  let absLow = Infinity;
+  for (const b of window16) {
+    if (b.high > absHigh) absHigh = b.high;
+    if (b.low < absLow) absLow = b.low;
+  }
+  if (!Number.isFinite(absHigh) || !Number.isFinite(absLow)) {
+    return { support: null, resistance: null, supportTouches: 0, resistanceTouches: 0 };
+  }
+
+  const supportPick = pickClusteredLevel(pivotLows, absLow, tol, 'support');
+  const resistancePick = pickClusteredLevel(pivotHighs, absHigh, tol, 'resistance');
+  return {
+    support: supportPick.level,
+    resistance: resistancePick.level,
+    supportTouches: supportPick.touches,
+    resistanceTouches: resistancePick.touches,
+  };
+}
+
+function pickClusteredLevel(
+  pivots: number[],
+  extreme: number,
+  tol: number,
+  side: 'support' | 'resistance',
+): { level: number; touches: number } {
+  const points = pivots.slice();
+  if (Number.isFinite(extreme)) points.push(extreme);
+  if (!points.length) return { level: extreme, touches: 1 };
+
+  const sorted = [...points].sort((a, b) => a - b);
+  type Cluster = { sum: number; count: number; min: number; max: number };
+  const clusters: Cluster[] = [];
+  for (const p of sorted) {
+    const last = clusters[clusters.length - 1];
+    if (last && p - last.max <= tol) {
+      last.sum += p;
+      last.count += 1;
+      last.max = p;
+    } else {
+      clusters.push({ sum: p, count: 1, min: p, max: p });
+    }
+  }
+
+  let best = clusters[0]!;
+  for (const c of clusters) {
+    if (c.count > best.count) {
+      best = c;
+      continue;
+    }
+    if (c.count === best.count) {
+      const bestMean = best.sum / best.count;
+      const mean = c.sum / c.count;
+      if (side === 'support' ? mean < bestMean : mean > bestMean) best = c;
+    }
+  }
+
+  // Prefer the extreme if it sits in a strong cluster; otherwise use cluster mean.
+  const mean = best.sum / best.count;
+  const extremeInCluster = Math.abs(extreme - mean) <= tol * 1.25;
+  const level = extremeInCluster ? extreme : mean;
+  return { level, touches: best.count };
 }
 
 function recentBarAtr(prior: FootprintBarLike[], bar: FootprintBarLike): number {
@@ -716,38 +822,135 @@ function vacuumStretchScore(bar: FootprintBarLike, prior: FootprintBarLike[]): n
   return clamp(40 + (stretch - 1) * 35, 0, 100);
 }
 
-export function stopHuntKind(bar: FootprintBarLike, prior: FootprintBarLike[]): 'HIGH' | 'LOW' | null {
-  const { support, resistance } = priorSwingLevels(prior);
+/**
+ * Stop hunt = pierce real stop liquidity (swing / equal high-low), reject back inside,
+ * with flow evidence of absorption or aggressive flip — not a naked wick.
+ */
+export function stopHuntKind(
+  bar: FootprintBarLike,
+  prior: FootprintBarLike[],
+  metrics: ClassificationInputMetrics | null = null,
+): 'HIGH' | 'LOW' | null {
+  const levels = rankedHuntLevels(prior);
+  const { support, resistance } = levels;
   if (support == null || resistance == null || resistance <= support) return null;
+
   const atr = recentBarAtr(prior, bar);
   const range = bar.high - bar.low;
   if (range <= 0) return null;
+  // Tiny noise bars are not hunts.
+  if (range < atr * 0.55) return null;
+
   const closePos = (bar.close - bar.low) / range;
   const band = Math.max((resistance - support) * 0.08, atr * 0.35);
-  if (bar.high >= resistance + band * 0.2 && bar.close < resistance && closePos <= 0.42) return 'HIGH';
-  if (bar.low <= support - band * 0.2 && bar.close > support && closePos >= 0.58) return 'LOW';
+  const upperWick = bar.high - Math.max(bar.open, bar.close);
+  const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+  const bodyFrac = Math.abs(bar.close - bar.open) / range;
+
+  const highPierce = bar.high >= resistance + band * 0.2;
+  const lowPierce = bar.low <= support - band * 0.2;
+  const highReject = bar.close < resistance && closePos <= 0.42 && upperWick / range >= 0.32;
+  const lowReject = bar.close > support && closePos >= 0.58 && lowerWick / range >= 0.32;
+
+  // Continuation displacement after pierce = breakout, not hunt.
+  if (highPierce && closePos >= 0.7 && bodyFrac >= 0.45) return null;
+  if (lowPierce && closePos <= 0.3 && bodyFrac >= 0.45) return null;
+
+  if (highPierce && highReject && huntFlowConfirms(bar, 'HIGH', metrics, prior)) {
+    // Weak single-touch mid pivots need stronger reclaim.
+    if (levels.resistanceTouches < 2 && closePos > 0.35) return null;
+    return 'HIGH';
+  }
+  if (lowPierce && lowReject && huntFlowConfirms(bar, 'LOW', metrics, prior)) {
+    if (levels.supportTouches < 2 && closePos < 0.65) return null;
+    return 'LOW';
+  }
   return null;
 }
 
-function barLocationFromPrior(
+function huntFlowConfirms(
   bar: FootprintBarLike,
+  kind: 'HIGH' | 'LOW',
+  metrics: ClassificationInputMetrics | null,
   prior: FootprintBarLike[],
-): 'AT_SUPPORT' | 'AT_RESISTANCE' | 'ABOVE_RESISTANCE' | 'BELOW_SUPPORT' | 'MID_RANGE' | 'UNKNOWN' {
-  const { support, resistance } = priorSwingLevels(prior);
-  if (support == null || resistance == null || resistance <= support) return 'UNKNOWN';
-  const band = Math.max((resistance - support) * 0.12, (bar.close || 1) * 0.0015);
-  if (bar.close > resistance + band * 0.15) return 'ABOVE_RESISTANCE';
-  if (bar.close < support - band * 0.15) return 'BELOW_SUPPORT';
-  if (bar.high >= resistance - band) return 'AT_RESISTANCE';
-  if (bar.low <= support + band) return 'AT_SUPPORT';
-  return 'MID_RANGE';
+): boolean {
+  const absorbed = barAbsorbed(bar);
+  const win = barWinner(bar);
+  const vol = volumeOf(bar);
+  const delta = (bar.totalBuy ?? 0) - (bar.totalSell ?? 0);
+  const range = Math.max(bar.high - bar.low, 1e-9);
+  const closePos = (bar.close - bar.low) / range;
+  const deltaPct = vol > 0 ? delta / vol : 0;
+
+  const priorVac =
+    prior.length > 0 ? vacuumKind(prior[prior.length - 1]!, prior.slice(0, -1)) : null;
+  const vacuumInto =
+    (kind === 'LOW' && priorVac === 'DOWNSIDE') || (kind === 'HIGH' && priorVac === 'UPSIDE');
+
+  if (kind === 'LOW') {
+    if (absorbed === 'SELLERS') return true;
+    if (win === 'PASSIVE_BUYERS' || win === 'AGGRESSIVE_BUYERS') return true;
+    // Classic flush: sell-heavy aggression into lows, close reclaimed high in range.
+    if (vol > 0 && deltaPct <= -0.12 && closePos >= 0.62) return true;
+    if ((metrics?.bidReplenishment ?? 0) >= 70 || (metrics?.bidSurvival ?? 0) >= 65) return true;
+    if ((metrics?.bidWithdrawal ?? 0) >= 75 && closePos >= 0.7) return true;
+    if (vacuumInto && closePos >= 0.68) return true;
+    // Sparse volume fixtures: allow strong structural reclaim alone.
+    if (vol > 0 && vol < 50 && closePos >= 0.7) return true;
+    return false;
+  }
+
+  if (absorbed === 'BUYERS') return true;
+  if (win === 'PASSIVE_SELLERS' || win === 'AGGRESSIVE_SELLERS') return true;
+  if (vol > 0 && deltaPct >= 0.12 && closePos <= 0.38) return true;
+  if ((metrics?.askReplenishment ?? 0) >= 70 || (metrics?.askSurvival ?? 0) >= 65) return true;
+  if ((metrics?.askWithdrawal ?? 0) >= 75 && closePos <= 0.3) return true;
+  if (vacuumInto && closePos <= 0.32) return true;
+  if (vol > 0 && vol < 50 && closePos <= 0.3) return true;
+  return false;
 }
 
-function huntConfidence(bar: FootprintBarLike, kind: 'HIGH' | 'LOW'): number {
+function huntConfidence(
+  bar: FootprintBarLike,
+  prior: FootprintBarLike[],
+  kind: 'HIGH' | 'LOW',
+  metrics: ClassificationInputMetrics | null = null,
+): number {
   const range = Math.max(bar.high - bar.low, 1e-9);
   const closePos = (bar.close - bar.low) / range;
   const extremity = kind === 'LOW' ? closePos : 1 - closePos;
-  return clamp(0.55 + extremity * 0.4, 0.5, 0.98);
+  const atr = recentBarAtr(prior, bar);
+  const levels = rankedHuntLevels(prior);
+  const level = kind === 'LOW' ? levels.support : levels.resistance;
+  const touches = kind === 'LOW' ? levels.supportTouches : levels.resistanceTouches;
+  const swept =
+    level == null
+      ? 0
+      : kind === 'LOW'
+        ? Math.max(0, level - bar.low)
+        : Math.max(0, bar.high - level);
+  const sweepFrac = atr > 0 ? clamp(swept / atr, 0, 1.5) / 1.5 : 0;
+  const wick =
+    kind === 'LOW'
+      ? (Math.min(bar.open, bar.close) - bar.low) / range
+      : (bar.high - Math.max(bar.open, bar.close)) / range;
+
+  let score = 0.48 + extremity * 0.22 + sweepFrac * 0.12 + clamp(wick, 0, 1) * 0.1;
+  if (touches >= 2) score += 0.06;
+  if (touches >= 3) score += 0.03;
+
+  const absorbed = barAbsorbed(bar);
+  if ((kind === 'LOW' && absorbed === 'SELLERS') || (kind === 'HIGH' && absorbed === 'BUYERS')) {
+    score += 0.08;
+  }
+
+  if (kind === 'LOW') {
+    if ((metrics?.bidReplenishment ?? 0) >= 70 || (metrics?.bidSurvival ?? 0) >= 65) score += 0.05;
+  } else if ((metrics?.askReplenishment ?? 0) >= 70 || (metrics?.askSurvival ?? 0) >= 65) {
+    score += 0.05;
+  }
+
+  return clamp(score, 0.5, 0.98);
 }
 
 function absorbConfidence(bar: FootprintBarLike): number {

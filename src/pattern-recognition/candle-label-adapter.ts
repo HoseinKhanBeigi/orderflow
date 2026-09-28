@@ -146,32 +146,104 @@ function sweepQualityOf(
   if (!kind) return null;
   const { support, resistance } = priorSwingLevels(prior);
   const range = Math.max(bar.high - bar.low, 1e-9);
+  const closePos = (bar.close - bar.low) / range;
+  let base = 0;
   if (kind === 'HIGH' && resistance != null) {
     const swept = Math.max(0, bar.high - resistance);
     const rejected = Math.max(0, bar.high - bar.close);
-    return clamp((swept / range) * 0.5 + (rejected / range) * 0.5, 0, 1) * 100;
-  }
-  if (kind === 'LOW' && support != null) {
+    base = clamp((swept / range) * 0.45 + (rejected / range) * 0.4 + (1 - closePos) * 0.15, 0, 1);
+  } else if (kind === 'LOW' && support != null) {
     const swept = Math.max(0, support - bar.low);
     const rejected = Math.max(0, bar.close - bar.low);
-    return clamp((swept / range) * 0.5 + (rejected / range) * 0.5, 0, 1) * 100;
+    base = clamp((swept / range) * 0.45 + (rejected / range) * 0.4 + closePos * 0.15, 0, 1);
+  } else {
+    const wick = kind === 'LOW' ? closePos : 1 - closePos;
+    base = clamp(wick, 0, 1);
   }
-  const closePos = (bar.close - bar.low) / range;
-  const wick = kind === 'LOW' ? closePos : 1 - closePos;
-  return clamp(wick, 0, 1) * 100;
+  // Absorption / reclaim bonus for true stop runs.
+  const buy = bar.totalBuy ?? 0;
+  const sell = bar.totalSell ?? 0;
+  const vol = buy + sell;
+  const deltaPct = vol > 0 ? (buy - sell) / vol : 0;
+  const flowBonus =
+    kind === 'LOW'
+      ? deltaPct <= -0.12 && closePos >= 0.58
+        ? 0.08
+        : 0
+      : deltaPct >= 0.12 && closePos <= 0.42
+        ? 0.08
+        : 0;
+  return clamp(base + flowBonus, 0, 1) * 100;
 }
 
 function priorSwingLevels(prior: FootprintBarLike[]): { support: number | null; resistance: number | null } {
   if (!prior.length) return { support: null, resistance: null };
-  const recent = prior.slice(-16);
-  let resistance = -Infinity;
-  let support = Infinity;
-  for (const b of recent) {
-    if (b.high > resistance) resistance = b.high;
-    if (b.low < support) support = b.low;
+  const recent = prior.slice(-24);
+  const atrLook = recent.slice(-8);
+  let atrSum = 0;
+  for (const b of atrLook) atrSum += Math.max(b.high - b.low, 0);
+  const last = recent[recent.length - 1]!;
+  const atr = atrLook.length ? atrSum / atrLook.length : Math.max(last.high - last.low, 1);
+  const tol = Math.max(atr * 0.28, (last.close || 1) * 0.0008);
+
+  const pivotLows: number[] = [];
+  const pivotHighs: number[] = [];
+  for (let i = 1; i < recent.length - 1; i++) {
+    const p = recent[i]!;
+    const l = recent[i - 1]!;
+    const r = recent[i + 1]!;
+    if (p.low <= l.low && p.low <= r.low) pivotLows.push(p.low);
+    if (p.high >= l.high && p.high >= r.high) pivotHighs.push(p.high);
   }
-  if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
-  return { support, resistance };
+
+  const window16 = prior.slice(-16);
+  let absHigh = -Infinity;
+  let absLow = Infinity;
+  for (const b of window16) {
+    if (b.high > absHigh) absHigh = b.high;
+    if (b.low < absLow) absLow = b.low;
+  }
+  if (!Number.isFinite(absHigh) || !Number.isFinite(absLow)) return { support: null, resistance: null };
+
+  return {
+    support: pickClusterLevel(pivotLows, absLow, tol, 'support'),
+    resistance: pickClusterLevel(pivotHighs, absHigh, tol, 'resistance'),
+  };
+}
+
+function pickClusterLevel(
+  pivots: number[],
+  extreme: number,
+  tol: number,
+  side: 'support' | 'resistance',
+): number {
+  const points = pivots.slice();
+  if (Number.isFinite(extreme)) points.push(extreme);
+  if (!points.length) return extreme;
+  const sorted = [...points].sort((a, b) => a - b);
+  type Cluster = { sum: number; count: number; min: number; max: number };
+  const clusters: Cluster[] = [];
+  for (const p of sorted) {
+    const last = clusters[clusters.length - 1];
+    if (last && p - last.max <= tol) {
+      last.sum += p;
+      last.count += 1;
+      last.max = p;
+    } else {
+      clusters.push({ sum: p, count: 1, min: p, max: p });
+    }
+  }
+  let best = clusters[0]!;
+  for (const c of clusters) {
+    if (c.count > best.count) best = c;
+    else if (c.count === best.count) {
+      const bestMean = best.sum / best.count;
+      const mean = c.sum / c.count;
+      if (side === 'support' ? mean < bestMean : mean > bestMean) best = c;
+    }
+  }
+  const mean = best.sum / best.count;
+  return Math.abs(extreme - mean) <= tol * 1.25 ? extreme : mean;
 }
 
 function intensityToScore(label: string | undefined): number | null {
