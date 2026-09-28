@@ -1789,7 +1789,8 @@ async function seedFromKlines() {
   const tf = chartTfMinutes;
   const exchange = klineExchange();
   const market = footprintMarket();
-  if (tf < 15) {
+  // 1m stays live-only (server aggregator). 5m+ backfill from venue klines when DB history is thin.
+  if (tf < 5) {
     scheduleDraw();
     return;
   }
@@ -1983,7 +1984,7 @@ function live1mStore(symbol) {
 function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
   const live = tf === 1 ? live1mStore(symbol) : aggregateFrom1m(symbol, tf);
   const hist = fpHistoryEnabled ? getFpHistory(symbol, tf, selectedExchange) : new Map();
-  const kline = tf >= 15 ? getFpKlineSeed(symbol, tf) : new Map();
+  const kline = tf >= 5 ? getFpKlineSeed(symbol, tf) : new Map();
   if (hist.size === 0 && kline.size === 0 && live.size === 0) return [];
 
   const out = new Map();
@@ -2137,6 +2138,69 @@ function barBattlePercents(bar) {
   let best = 0;
   for (let i = 1; i < pcts.length; i++) if (pcts[i] > pcts[best]) best = i;
   return rows.map((row, i) => ({ text: row.text, color: row.color, pct: pcts[i], strong: i === best && pcts[i] > 0 }));
+}
+
+/**
+ * One-line race read from the four battle %.
+ * Consume = follow-through; abs = printed but failed to keep the close.
+ */
+function barRaceSummary(rows) {
+  if (!rows?.length) return null;
+  const pct = (name) => rows.find((r) => r.text === name)?.pct ?? 0;
+  const asks = pct('Asks');
+  const bids = pct('Bids');
+  const sellAbs = pct('Sell abs');
+  const buyAbs = pct('Buy abs');
+
+  let won;
+  let wonColor;
+  if (asks >= bids + 8) {
+    won = 'buyers won';
+    wonColor = '#22c55e';
+  } else if (bids >= asks + 8) {
+    won = 'sellers won';
+    wonColor = '#ef4444';
+  } else {
+    won = 'no clear winner';
+    wonColor = '#8b949e';
+  }
+
+  let trap = '';
+  let trapColor = '#c5ccd6';
+  if (buyAbs >= 18 && buyAbs >= sellAbs + 4) {
+    trap = 'buyers trapped';
+    trapColor = '#fbbf24';
+  } else if (sellAbs >= 18 && sellAbs >= buyAbs + 4) {
+    trap = 'sellers trapped';
+    trapColor = '#60a5fa';
+  } else if (buyAbs >= 15 && sellAbs >= 15) {
+    trap = 'both trapped';
+    trapColor = '#c5ccd6';
+  } else if (Math.max(asks, bids) >= 55 && Math.max(buyAbs, sellAbs) < 15) {
+    trap = 'clean follow-through';
+    trapColor = wonColor;
+  }
+
+  return {
+    text: trap ? `${won} · ${trap}` : won,
+    color: trap ? trapColor : wonColor,
+    wonColor,
+  };
+}
+
+function drawBarRaceSummary(ctx, summary, cx, y, maxW) {
+  if (!summary?.text) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 9px Inter, system-ui, sans-serif';
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+  ctx.strokeText(summary.text, cx, y, maxW);
+  ctx.fillStyle = summary.color;
+  ctx.fillText(summary.text, cx, y, maxW);
+  ctx.restore();
 }
 
 function barAbsorbed(bar) {
@@ -2767,7 +2831,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 88;
+  const bottomPad = 100;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -2785,7 +2849,18 @@ function drawFootprint(symbol = selectedSymbol) {
     return;
   }
 
-  let globalHigh = -Infinity, globalLow = Infinity;
+  // Bucket from the full loaded series so panning does not re-merge price levels
+  // on the same candle (e.g. 01:30 looking different when you drag left).
+  let seriesHigh = -Infinity;
+  let seriesLow = Infinity;
+  for (const bar of bars) {
+    if (bar.high > seriesHigh) seriesHigh = bar.high;
+    if (bar.low < seriesLow) seriesLow = bar.low;
+  }
+  const bucket = displayBucket(seriesHigh, seriesLow, chartH);
+
+  let globalHigh = -Infinity;
+  let globalLow = Infinity;
   for (const bar of visible) {
     if (bar.high > globalHigh) globalHigh = bar.high;
     if (bar.low < globalLow) globalLow = bar.low;
@@ -2812,7 +2887,6 @@ function drawFootprint(symbol = selectedSymbol) {
       if (p <= capHi && p > globalHigh) globalHigh = p;
     }
   }
-  const bucket = displayBucket(globalHigh, globalLow, chartH);
   globalHigh = priceToTick(globalHigh, bucket) + bucket * 2;
   globalLow = priceToTick(globalLow, bucket) - bucket * 2;
   const priceRange = globalHigh - globalLow || bucket;
@@ -3006,7 +3080,9 @@ function drawFootprint(symbol = selectedSymbol) {
       ctx.fillStyle = delta >= 0 ? '#4ade80' : '#f87171';
       ctx.fillText(`${delta >= 0 ? '+' : '-'}${fmtVolShort(Math.abs(delta))}`, x + barWidth / 2, topPad + chartH + 28);
     }
-    drawBarBattlePercents(ctx, barBattlePercents(bar), cx, topPad + chartH + 42, barWidth - 2);
+    const battle = barBattlePercents(bar);
+    drawBarRaceSummary(ctx, barRaceSummary(battle), cx, topPad + chartH + 40, barWidth - 2);
+    drawBarBattlePercents(ctx, battle, cx, topPad + chartH + 52, barWidth - 2);
   }
 
   if (railW > 0) {
