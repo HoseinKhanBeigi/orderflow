@@ -1789,7 +1789,7 @@ async function seedFromKlines() {
   const tf = chartTfMinutes;
   const exchange = klineExchange();
   const market = footprintMarket();
-  // 1m stays live-only (server aggregator). 5m+ backfill from venue klines when DB history is thin.
+  // 1m stays live-only (server aggregator). 5m+ backfill closed candles from venue klines.
   if (tf < 5) {
     scheduleDraw();
     return;
@@ -1804,6 +1804,8 @@ async function seedFromKlines() {
     scheduleDraw();
     return;
   }
+
+  const liveOpenT = fpCandleTime(Date.now(), tf);
 
   await mapPool(coins, 3, async (coin) => {
     if (req !== fpKlineReq || tf !== chartTfMinutes || klineExchange() !== exchange) return;
@@ -1839,8 +1841,28 @@ async function seedFromKlines() {
           totalBuy: 0,
           totalSell: 0,
         };
-        fillKlineProxyLevels(bar, c.volume, c.quote, c.takerBuy);
+        // Closed history keeps kline backfill. Open candle is created by live 1m.
+        if (c.time < liveOpenT) {
+          fillKlineProxyLevels(bar, c.volume, c.quote, c.takerBuy);
+        }
         seed.set(c.time, bar);
+      }
+      // Always create the open candle shell if the venue list is lagging.
+      if (!seed.has(liveOpenT)) {
+        const last = [...seed.values()].sort((a, b) => a.time - b.time).at(-1);
+        const px = latestLivePrice(coin.symbol, last?.close ?? 0);
+        if (px > 0) {
+          seed.set(liveOpenT, {
+            time: liveOpenT,
+            open: last?.close ?? px,
+            high: px,
+            low: px,
+            close: px,
+            levels: new Map(),
+            totalBuy: 0,
+            totalSell: 0,
+          });
+        }
       }
       scheduleDraw(coin.symbol);
       void refreshPatternMarkers(coin.symbol, true);
@@ -1942,9 +1964,13 @@ function aggregateFrom1m(symbol, tfMinutes) {
   const venues = selectedExchange === 'all' ? activeExchanges() : [selectedExchange];
   const out = new Map();
   const bucket = tfMinutes * 60;
+  // Only the open higher-TF candle receives live 1m rolls. Stale minutes must
+  // not rebuild closed buckets like 15:15 / 15:30 after a refresh.
+  const liveOpenT = fpCandleTime(Date.now(), tfMinutes);
   for (const ex of venues) {
     for (const bar of getFootprintStore(symbol, 1, ex).values()) {
       const t = bar.time - (bar.time % bucket);
+      if (t !== liveOpenT) continue;
       if (!out.has(t)) {
         out.set(t, {
           time: t,
@@ -1987,6 +2013,7 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
   const kline = tf >= 5 ? getFpKlineSeed(symbol, tf) : new Map();
   if (hist.size === 0 && kline.size === 0 && live.size === 0) return [];
 
+  const liveOpenT = fpCandleTime(Date.now(), tf);
   const out = new Map();
   for (const bar of hist.values()) out.set(bar.time, cloneFpBar(bar));
   for (const bar of live.values()) {
@@ -1997,7 +2024,12 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     const existing = out.get(k.time);
     if (!existing) {
       out.set(k.time, cloneFpBar(k));
-    } else if ((k.totalBuy + k.totalSell) > 0 && levelCoverage(existing) < 0.5) {
+      continue;
+    }
+    // Open candle footprint comes from live 1m — do not inject kline proxy into it.
+    if (k.time === liveOpenT) continue;
+    // Closed candles: keep / restore backfill levels when coverage is thin.
+    if ((k.totalBuy + k.totalSell) > 0 && levelCoverage(existing) < 0.5) {
       for (const [key, lv] of k.levels) {
         if (!existing.levels.has(key)) {
           existing.levels.set(key, { price: lv.price, buy: lv.buy, sell: lv.sell });
