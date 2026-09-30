@@ -12,11 +12,13 @@ import type {
   PassiveSide,
 } from '../models/passive-liquidity.js';
 import {
-  absorptionScoreOf,
-  persistenceScore,
+  absorptionMetric,
+  cancellationMetric,
+  consumptionMetric,
+  persistenceMetric,
+  replenishmentMetric,
   replenishmentRatio,
-  replenishmentScoreOf,
-  withdrawalScoreOf,
+  withdrawalMetric,
   type LevelScoreInput,
 } from './level-scores.js';
 import type { TradeMatcher } from './trade-matcher.js';
@@ -74,11 +76,16 @@ interface TrackedLevel {
   approachRefQuantity: number;
   approachRefCancelled: number;
   approachRefConsumed: number;
-  closestApproachBps: number;
-  quantityAtClosestApproach: number;
+  /** Distance at first sight — approach must improve past this. */
+  firstSeenDistanceBps: number;
+  snapshotCount: number;
+  /** Null until mid has closed in past firstSeenDistanceBps. */
+  closestApproachBps: number | null;
+  quantityAtClosestApproach: number | null;
+  approachCheckpoints: Array<'20' | '10' | '5' | '2' | '1' | 'contact'>;
   approachWithdrawal: boolean;
 
-  sizePercentile: number;
+  sizePercentile: number | null;
   lastEvent: PassiveLiquidityEventType | 'NONE';
   timeline: RingBuffer<LiquidityLevelTimelinePoint>;
 }
@@ -329,8 +336,13 @@ export class LevelTracker {
       level.removedAt = 0;
       this.applyQuantity(level, quantity, now, mid, flow, delta.levels);
       this.trackApproach(level, now, mid);
-      if (quantity > 0) this.sizeDist[side].add(quantity * price);
-      level.sizePercentile = this.sizeDist[side].midRank(quantity * price);
+      if (quantity > 0) {
+        level.snapshotCount += 1;
+        this.sizeDist[side].add(quantity * price);
+        level.sizePercentile = this.sizeDist[side].size >= 8
+          ? this.sizeDist[side].midRank(quantity * price)
+          : null;
+      }
     }
 
     for (const [price, level] of map) {
@@ -395,10 +407,13 @@ export class LevelTracker {
       approachRefQuantity: quantity,
       approachRefCancelled: 0,
       approachRefConsumed: 0,
-      closestApproachBps: distanceBpsOf(side, price, mid),
-      quantityAtClosestApproach: quantity,
+      firstSeenDistanceBps: distanceBpsOf(side, price, mid),
+      snapshotCount: 0,
+      closestApproachBps: null,
+      quantityAtClosestApproach: null,
+      approachCheckpoints: [],
       approachWithdrawal: false,
-      sizePercentile: 50,
+      sizePercentile: null,
       lastEvent: 'NONE',
       timeline: new RingBuffer<LiquidityLevelTimelinePoint>(this.config.timelinePoints),
     };
@@ -608,13 +623,24 @@ export class LevelTracker {
   /**
    * Records what a level does as price closes in on it. Losing size to
    * cancellations during an approach is withdrawal, not defence.
+   *
+   * Birth distance is not an approach. Survival only arms after price improves
+   * past firstSeenDistanceBps and touches a checkpoint (or contact/attack).
    */
   private trackApproach(level: TrackedLevel, now: number, mid: number): void {
     const bps = distanceBpsOf(level.side, level.price, mid);
 
-    if (bps < level.closestApproachBps) {
-      level.closestApproachBps = bps;
-      level.quantityAtClosestApproach = level.quantity;
+    if (bps < level.firstSeenDistanceBps - 1e-9) {
+      if (level.closestApproachBps == null || bps < level.closestApproachBps) {
+        level.closestApproachBps = bps;
+        level.quantityAtClosestApproach = level.quantity;
+      }
+      for (const cp of APPROACH_CHECKPOINTS) {
+        const key = checkpointKey(cp);
+        if (bps <= cp && level.firstSeenDistanceBps > cp && !level.approachCheckpoints.includes(key)) {
+          level.approachCheckpoints.push(key);
+        }
+      }
     }
 
     if (bps > level.approachRefBps) {
@@ -636,6 +662,7 @@ export class LevelTracker {
 
     if (shrankEnough && spanCancelled > spanConsumed) {
       if (!level.approachWithdrawal) {
+        level.approachWithdrawal = true;
         this.pushEvent(
           level,
           'WALL_DISAPPEARED',
@@ -645,7 +672,6 @@ export class LevelTracker {
           'size pulled as price approached, before being attacked',
         );
       }
-      level.approachWithdrawal = true;
     }
   }
 
@@ -688,14 +714,18 @@ export class LevelTracker {
       attackCount: level.attackCount,
       defendedCount: level.defendedCount,
       replenishmentCount: level.replenishmentCount,
+      snapshotCount: level.snapshotCount,
     };
 
-    const persistence = persistenceScore(scoreInput, this.config);
-    const replenishment = replenishmentScoreOf(scoreInput);
-    const withdrawal = withdrawalScoreOf(scoreInput, this.config);
-    const absorption = absorptionScoreOf(scoreInput);
+    const persistence = persistenceMetric(scoreInput, this.config);
+    const replenishment = replenishmentMetric(scoreInput);
+    const withdrawal = withdrawalMetric(scoreInput, this.config);
+    const absorption = absorptionMetric(scoreInput);
+    const cancellation = cancellationMetric(scoreInput);
+    const consumption = consumptionMetric(scoreInput);
+    const sizePct = level.sizePercentile;
     const isWall =
-      level.sizePercentile >= this.config.wallMinPercentile && level.quantity > 0;
+      sizePct != null && sizePct >= this.config.wallMinPercentile && level.quantity > 0;
 
     return {
       side: level.side,
@@ -728,22 +758,34 @@ export class LevelTracker {
       attackCount: level.attackCount,
       defendedCount: level.defendedCount,
       replenishmentRatio: replenishmentRatio(level.replenishedQuantity, level.consumedQuantity),
-      persistenceScore: persistence,
-      replenishmentScore: replenishment,
-      withdrawalScore: withdrawal,
-      absorptionScore: absorption,
-      sizePercentile: level.sizePercentile,
+      persistenceScore: persistence.value,
+      replenishmentScore: replenishment.value,
+      withdrawalScore: withdrawal.value,
+      absorptionScore: absorption.value,
+      cancellationScore: cancellation.value,
+      consumptionScore: consumption.value,
+      persistenceState: persistence.state,
+      replenishmentState: replenishment.state,
+      withdrawalState: withdrawal.state,
+      cancellationState: cancellation.state,
+      consumptionState: consumption.state,
+      sizePercentile: sizePct,
       isWall,
+      firstSeenDistanceBps: level.firstSeenDistanceBps,
+      snapshotCount: level.snapshotCount,
       closestApproachBps: level.closestApproachBps,
-      notionalAtClosestApproach: level.quantityAtClosestApproach * level.price,
+      notionalAtClosestApproach: level.quantityAtClosestApproach == null
+        ? null
+        : level.quantityAtClosestApproach * level.price,
+      approachCheckpoints: [...level.approachCheckpoints],
       approachWithdrawal: level.approachWithdrawal,
       visible: level.visible,
       outOfView: level.outOfView,
       state: classifyLevelState(level, {
-        persistence,
-        replenishment,
-        withdrawal,
-        absorption,
+        persistence: persistence.value,
+        replenishment: replenishment.value,
+        withdrawal: withdrawal.value,
+        absorption: absorption.value,
         ageMs,
         isWall,
       }, this.config),
@@ -757,11 +799,22 @@ export function distanceBpsOf(side: PassiveSide, price: number, mid: number): nu
   return (Math.max(0, distance) / mid) * 10_000;
 }
 
+const APPROACH_CHECKPOINTS = [20, 10, 5, 2, 1, 0] as const;
+
+function checkpointKey(cp: number): '20' | '10' | '5' | '2' | '1' | 'contact' {
+  if (cp <= 0) return 'contact';
+  if (cp <= 1) return '1';
+  if (cp <= 2) return '2';
+  if (cp <= 5) return '5';
+  if (cp <= 10) return '10';
+  return '20';
+}
+
 interface LevelStateInput {
-  persistence: number;
-  replenishment: number;
-  withdrawal: number;
-  absorption: number;
+  persistence: number | null;
+  replenishment: number | null;
+  withdrawal: number | null;
+  absorption: number | null;
   ageMs: number;
   isWall: boolean;
 }
@@ -783,16 +836,21 @@ function classifyLevelState(
   if (level.brokenCount > 0 && level.quantity < level.maxQuantity * 0.2) return 'BROKEN';
   if (level.approachWithdrawal) return 'WITHDRAWING';
   if (scores.isWall && scores.ageMs < config.wallYoungMs) return 'UNRELIABLE';
-  if (scores.withdrawal >= 60 && scores.withdrawal > scores.replenishment) return 'WITHDRAWING';
-  if (scores.absorption >= config.minAbsorptionScore) return 'ABSORBING';
-  if (level.defendedCount >= 2 && scores.replenishment >= 50) return 'DEFENDING';
-  if (level.episode && scores.replenishment >= 50) return 'REPLENISHING';
+  const withdrawal = scores.withdrawal;
+  const replenishment = scores.replenishment;
+  const absorption = scores.absorption;
+  if (withdrawal != null && replenishment != null && withdrawal >= 60 && withdrawal > replenishment) {
+    return 'WITHDRAWING';
+  }
+  if (absorption != null && absorption >= config.minAbsorptionScore) return 'ABSORBING';
+  if (level.defendedCount >= 2 && replenishment != null && replenishment >= 50) return 'DEFENDING';
+  if (level.episode && replenishment != null && replenishment >= 50) return 'REPLENISHING';
   if (level.episode) return 'BEING_CONSUMED';
   if (level.quantity > level.maxQuantity * 0.95 && level.addedQuantity > level.initialQuantity) {
     return 'BUILDING';
   }
   if (level.quantity < level.maxQuantity * 0.5) return 'WEAKENING';
-  if (scores.persistence >= 55) return 'PERSISTENT';
+  if ((scores.persistence ?? 0) >= 55) return 'PERSISTENT';
   return 'NEW';
 }
 

@@ -48,8 +48,16 @@ export class PassiveMetricNormalizer {
   }
 
   percentile(key: PassiveMetricKey, value: number): number {
+    return this.percentileOrNull(key, value) ?? 50;
+  }
+
+  /**
+   * Cold-start safe percentile. Returns null until enough samples exist so
+   * callers cannot treat an unmeasured metric as a neutral 50.
+   */
+  percentileOrNull(key: PassiveMetricKey, value: number): number | null {
     const dist = this.dist(key);
-    if (dist.size < MIN_SAMPLES || !Number.isFinite(value)) return 50;
+    if (dist.size < MIN_SAMPLES || !Number.isFinite(value)) return null;
     return dist.midRank(value);
   }
 
@@ -62,7 +70,7 @@ export class PassiveMetricNormalizer {
     const warm = dist.size >= MIN_SAMPLES;
     return {
       raw: value,
-      percentile: warm ? dist.midRank(value) : 50,
+      percentile: warm ? dist.midRank(value) : null,
       zScore: warm ? dist.zScore(value, 1e-9) : 0,
       vsNearbyDepth: safeDiv(value, context.nearbyDepth),
       vsRecentExecutedVolume: safeDiv(value, context.recentExecutedVolume),
@@ -84,7 +92,7 @@ export class PassiveMetricNormalizer {
 export function emptyMeasure(raw = 0): NormalizedMeasure {
   return {
     raw,
-    percentile: 50,
+    percentile: null,
     zScore: 0,
     vsNearbyDepth: 0,
     vsRecentExecutedVolume: 0,

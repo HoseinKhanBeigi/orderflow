@@ -2,6 +2,7 @@ import { clamp } from '../core/integrity.js';
 import type { FlowBattleSnapshot } from '../models/passive.js';
 import type { LiquidityResponseSnapshot, IntensityLabel } from '../models/liquidity-response.js';
 import type { PassiveLiquiditySnapshot } from '../models/passive-liquidity.js';
+import type { PassiveStrengthSide } from '../models/passive-strength.js';
 import type { NetAggressionSnapshot } from '../models/net-aggression.js';
 import type { AggressiveFlowSnapshot, AggressiveSideFlow } from '../models/aggressive-flow.js';
 import type { PriceImpactEfficiency, WindowId } from '../models/trade.js';
@@ -63,6 +64,7 @@ export class MarketBattleEngine {
     const bookReliable = pl
       ? (pl.dataQuality?.trustworthy ?? false) && (pl.dataQuality?.score ?? 0) >= 35
       : lr.dataQuality >= 40 && lr.confidence !== 'LOW';
+    const published = publishedStrength(pl);
 
     const upsideAgg = mapAggressiveSide(
       af?.buy ?? null,
@@ -75,31 +77,49 @@ export class MarketBattleEngine {
       tradeLowConf || Boolean(af?.sell?.lowConfidence),
     );
 
-    const upsidePas = buildPassive({
-      currentDepth: pl?.context.askDepth ?? lr.askDepth.current,
-      nearDepth: pl?.context.nearAskDepth ?? lr.askDepth.current,
-      consumption: lr.askConsumption,
-      replenishment: lr.askReplenishment,
-      withdrawal: lr.askWithdrawal,
-      survival: pl?.context.askPersistence ?? clamp(100 - intensityToScore(lr.askWithdrawal), 0, 100),
-      strength: pl?.passiveSellerStrength ?? fb.battle.passiveSellerStrength,
-      reliable: bookReliable,
-      baseScore: fb.battle.passiveSellerStrength,
-      depthPercentile: lr.askDepth.currentPercentile,
-    });
+    const upsidePas = published
+      ? defenseFromStrength(published.asks, {
+          currentDepth: pl?.context.askDepth ?? lr.askDepth.current,
+          nearDepth: pl?.context.nearAskDepth ?? lr.askDepth.current,
+          consumption: lr.askConsumption,
+          replenishment: lr.askReplenishment,
+          withdrawal: lr.askWithdrawal,
+          reliable: bookReliable,
+        })
+      : buildPassive({
+          currentDepth: pl?.context.askDepth ?? lr.askDepth.current,
+          nearDepth: pl?.context.nearAskDepth ?? lr.askDepth.current,
+          consumption: lr.askConsumption,
+          replenishment: lr.askReplenishment,
+          withdrawal: lr.askWithdrawal,
+          survival: pl?.context.askPersistence ?? clamp(100 - intensityToScore(lr.askWithdrawal), 0, 100),
+          strength: pl?.passiveSellerStrength ?? fb.battle.passiveSellerStrength,
+          reliable: bookReliable,
+          baseScore: fb.battle.passiveSellerStrength,
+          depthPercentile: lr.askDepth.currentPercentile,
+        });
 
-    const downsidePas = buildPassive({
-      currentDepth: pl?.context.bidDepth ?? lr.bidDepth.current,
-      nearDepth: pl?.context.nearBidDepth ?? lr.bidDepth.current,
-      consumption: lr.bidConsumption,
-      replenishment: lr.bidReplenishment,
-      withdrawal: lr.bidWithdrawal,
-      survival: pl?.context.bidPersistence ?? clamp(100 - intensityToScore(lr.bidWithdrawal), 0, 100),
-      strength: pl?.passiveBuyerStrength ?? fb.battle.passiveBuyerStrength,
-      reliable: bookReliable,
-      baseScore: fb.battle.passiveBuyerStrength,
-      depthPercentile: lr.bidDepth.currentPercentile,
-    });
+    const downsidePas = published
+      ? defenseFromStrength(published.bids, {
+          currentDepth: pl?.context.bidDepth ?? lr.bidDepth.current,
+          nearDepth: pl?.context.nearBidDepth ?? lr.bidDepth.current,
+          consumption: lr.bidConsumption,
+          replenishment: lr.bidReplenishment,
+          withdrawal: lr.bidWithdrawal,
+          reliable: bookReliable,
+        })
+      : buildPassive({
+          currentDepth: pl?.context.bidDepth ?? lr.bidDepth.current,
+          nearDepth: pl?.context.nearBidDepth ?? lr.bidDepth.current,
+          consumption: lr.bidConsumption,
+          replenishment: lr.bidReplenishment,
+          withdrawal: lr.bidWithdrawal,
+          survival: pl?.context.bidPersistence ?? clamp(100 - intensityToScore(lr.bidWithdrawal), 0, 100),
+          strength: pl?.passiveBuyerStrength ?? fb.battle.passiveBuyerStrength,
+          reliable: bookReliable,
+          baseScore: fb.battle.passiveBuyerStrength,
+          depthPercentile: lr.bidDepth.currentPercentile,
+        });
 
     const upsidePrice = buildPriceResponse({
       displacementPercent: Math.max(0, input.priceChangePercent),
@@ -144,6 +164,16 @@ export class MarketBattleEngine {
     });
 
     const summary = summarizeBattles(upside, downside);
+    const askWall = pl?.wallMap?.nearestStrongAsk ?? pl?.wallMap?.strongestRelevantAsk ?? null;
+    const bidWall = pl?.wallMap?.nearestStrongBid ?? pl?.wallMap?.strongestRelevantBid ?? null;
+    upside.relevantWall = askWall;
+    downside.relevantWall = bidWall;
+    if (askWall && askWall.distanceBps <= 25) {
+      upside.why = [...upside.why, `Ask ${askWall.price} strength ${Math.round(askWall.strength)}`].slice(0, 6);
+    }
+    if (bidWall && bidWall.distanceBps <= 25) {
+      downside.why = [...downside.why, `Bid ${bidWall.price} strength ${Math.round(bidWall.strength)}`].slice(0, 6);
+    }
 
     return {
       window: input.window,
@@ -221,6 +251,46 @@ function mapAggressiveSide(
     hasData: true,
     lowConfidence: tradeLowConf || side.lowConfidence,
     score: side.power,
+  };
+}
+
+function publishedStrength(pl: PassiveLiquiditySnapshot | null) {
+  const read = pl?.strength;
+  if (!read) return null;
+  if (read.state === 'UNCERTAIN' || read.confidence < 40) return null;
+  if (read.dataStatus === 'NO_DATA' || read.dataStatus === 'STALE_DATA') return null;
+  return read;
+}
+
+/**
+ * Uses the strength engine's score as defense power.
+ * Consumption, refill, and withdrawal stay as observed labels. They are not folded into a second score.
+ */
+function defenseFromStrength(
+  side: PassiveStrengthSide,
+  observed: {
+    currentDepth: number;
+    nearDepth: number;
+    consumption: IntensityLabel;
+    replenishment: IntensityLabel;
+    withdrawal: IntensityLabel;
+    reliable: boolean;
+  },
+): PassiveSideView {
+  const survival = side.survivalScore == null ? null : clamp(side.survivalScore, 0, 100);
+  const strength = clamp(side.strength, 0, 100);
+  return {
+    currentDepth: observed.currentDepth,
+    nearDepth: observed.nearDepth,
+    consumption: observed.consumption,
+    replenishment: observed.replenishment,
+    withdrawal: observed.withdrawal,
+    survival: survival ?? 0,
+    survivalLabel: survival == null ? 'UNTESTED' : survival >= 65 ? 'STRONG' : survival >= 35 ? 'MODERATE' : 'WEAK',
+    strength,
+    defensePower: strength,
+    reliable: observed.reliable,
+    score: strength,
   };
 }
 
@@ -595,6 +665,7 @@ function packUpside(
     battleScore: clamp(battleScore, 0, 100),
     state,
     why,
+    relevantWall: null,
   };
 }
 
@@ -611,6 +682,7 @@ function packDownside(
     battleScore: clamp(battleScore, 0, 100),
     state,
     why,
+    relevantWall: null,
   };
 }
 

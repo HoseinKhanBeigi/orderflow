@@ -32,8 +32,15 @@ export {
 export {
   distanceWeight,
   persistenceScore,
+  persistenceMetric,
   replenishmentRatio,
   replenishmentScoreOf,
+  replenishmentMetric,
   withdrawalScoreOf,
+  withdrawalMetric,
+  cancellationMetric,
+  consumptionMetric,
   absorptionScoreOf,
+  absorptionMetric,
 } from './level-scores.js';
+export type { LevelMetric, LevelMetricState, LevelScoreInput } from './level-scores.js';

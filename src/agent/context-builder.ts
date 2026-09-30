@@ -223,7 +223,7 @@ function battleSide(
     score: Math.round(score),
     aggressivePower: Math.round(aggressivePower),
     defensePower: Math.round(passive.defensePower),
-    survival: passive.survivalLabel,
+    survival: passive.survivalLabel === 'UNTESTED' ? 'WEAK' : passive.survivalLabel,
     consumption: passive.consumption,
     replenishment: passive.replenishment,
     why: why.slice(0, 3),

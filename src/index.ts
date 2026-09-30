@@ -111,3 +111,11 @@ export type {
 export * from './models/index.js';
 export * as simulation from './simulation/index.js';
 export * as backtest from './backtest/index.js';
+export {
+  evaluatePassiveStrength,
+  PassiveLiquidityStrengthEngine,
+  PASSIVE_STRENGTH_VERSION,
+} from './passive-strength/index.js';
+export type { PassiveStrengthSnapshot, PassiveStrengthState } from './passive-strength/index.js';
+export { evaluateLevelMap, LevelStrengthEngine, LEVEL_STRENGTH_VERSION } from './level-strength/index.js';
+export type { LevelWallMap, LevelStrengthState } from './level-strength/index.js';

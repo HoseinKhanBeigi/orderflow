@@ -73,12 +73,12 @@ export class WallTracker {
         const nearbyMedian = median(neighbours);
         const vsNearbyMedian = nearbyMedian > 0 ? level.notionalValue / nearbyMedian : 0;
 
-        const unusualSize = level.sizePercentile >= this.config.wallMinPercentile;
+        const unusualSize = (level.sizePercentile ?? 0) >= this.config.wallMinPercentile;
         const unusualLocally = vsNearbyMedian >= this.config.wallMinVsNearbyMedian;
         if (!unusualSize && !unusualLocally) continue;
 
-        this.persistenceDist.add(level.persistenceScore);
-        this.replenishDist.add(level.replenishmentScore);
+        this.persistenceDist.add(level.persistenceScore ?? 0);
+        this.replenishDist.add(level.replenishmentScore ?? 0);
 
         walls.push(
           this.build(level, vsNearbyMedian, now, side === 'BID' ? priceRejection.bid : priceRejection.ask),
@@ -97,11 +97,11 @@ export class WallTracker {
     priceRejection: number,
   ): PassiveLiquidityWall {
     const persistencePercentile = this.persistenceDist.size >= 8
-      ? this.persistenceDist.midRank(level.persistenceScore)
-      : level.persistenceScore;
+      ? this.persistenceDist.midRank(level.persistenceScore ?? 0)
+      : (level.persistenceScore ?? 0);
     const replenishmentPercentile = this.replenishDist.size >= 8
-      ? this.replenishDist.midRank(level.replenishmentScore)
-      : level.replenishmentScore;
+      ? this.replenishDist.midRank(level.replenishmentScore ?? 0)
+      : (level.replenishmentScore ?? 0);
 
     const young = level.ageMs < this.config.wallYoungMs;
     const ageFactor = clamp(
@@ -113,27 +113,52 @@ export class WallTracker {
       ? clamp(level.defendedCount / level.attackCount, 0, 1)
       : 0;
     const attackCredit = clamp(level.attackCount / 4, 0, 1);
-    const replenish = clamp(level.replenishmentRatio, 0, 1);
-    const withdrawal = level.withdrawalScore / 100;
+    const replenish = level.replenishmentScore == null
+      ? null
+      : clamp(level.replenishmentRatio, 0, 1);
+    const withdrawal = level.withdrawalScore == null ? null : level.withdrawalScore / 100;
     const proximity = distanceWeight(level.distanceBps, this.config.distanceWeightK);
+    const sizePct = (level.sizePercentile ?? 0) / 100;
 
+    // Only observed terms enter the average — untested refill/survival are not 0 or 50.
+    const positive: Array<[number, number]> = [
+      [0.22, sizePct],
+      [0.12, clamp(vsNearbyMedian / 6, 0, 1)],
+      [0.28, 0.5 * ageFactor + 0.5 * persistencePercentile / 100],
+      [0.12, proximity],
+      [0.1, clamp(priceRejection, 0, 1)],
+    ];
+    if (replenish != null) positive.push([0.22, replenish]);
+    if (level.attackCount > 0) positive.push([0.14, 0.6 * defence + 0.4 * attackCredit]);
+
+    let posAcc = 0;
+    let posW = 0;
+    for (const [w, v] of positive) {
+      posAcc += w * v;
+      posW += w;
+    }
+    const pos = posW > 0 ? posAcc / posW : 0;
+    const withdrawPenalty = withdrawal == null ? 0 : 0.3 * withdrawal;
     const strengthRaw =
-      0.18 * (level.sizePercentile / 100) +
-      0.1 * clamp(vsNearbyMedian / 6, 0, 1) +
-      0.22 * (0.5 * ageFactor + 0.5 * persistencePercentile / 100) +
-      0.2 * replenish +
-      0.12 * (0.6 * defence + 0.4 * attackCredit) +
-      0.1 * proximity +
-      0.08 * clamp(priceRejection, 0, 1) -
-      0.3 * withdrawal -
+      pos -
+      withdrawPenalty -
       (young ? 0.25 : 0) -
       (level.approachWithdrawal ? 0.3 : 0);
 
+    const reliabilityTerms: Array<[number, number]> = [
+      [0.4, ageFactor],
+      [0.25, 1 - (withdrawal ?? 0)],
+    ];
+    if (replenish != null) reliabilityTerms.push([0.25, replenish]);
+    if (level.attackCount > 0) reliabilityTerms.push([0.2, defence]);
+    let relAcc = 0;
+    let relW = 0;
+    for (const [w, v] of reliabilityTerms) {
+      relAcc += w * v;
+      relW += w;
+    }
     const reliabilityRaw =
-      0.35 * ageFactor +
-      0.25 * replenish +
-      0.2 * defence +
-      0.2 * (1 - withdrawal) -
+      (relW > 0 ? relAcc / relW : 0) -
       (level.approachWithdrawal ? 0.4 : 0) -
       (young ? 0.2 : 0);
 
@@ -152,7 +177,7 @@ export class WallTracker {
       quantity: level.quantity,
       notional: level.notionalValue,
       distanceBps: level.distanceBps,
-      sizePercentile: level.sizePercentile,
+      sizePercentile: level.sizePercentile ?? 0,
       persistencePercentile,
       replenishmentPercentile,
       vsNearbyMedian,

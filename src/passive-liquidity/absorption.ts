@@ -5,10 +5,10 @@ import type { AbsorptionAssessment } from '../models/passive-liquidity.js';
 export interface AbsorptionInput {
   /** Percentile of aggressive flow hitting the passive side. */
   aggressionPercentile: number;
-  /** Percentile of passive liquidity consumed on that side. */
-  consumptionPercentile: number;
-  /** Percentile of replenishment on that side. */
-  replenishmentPercentile: number;
+  /** Percentile of passive liquidity consumed on that side. Null = untested. */
+  consumptionPercentile: number | null;
+  /** Percentile of replenishment on that side. Null = untested. */
+  replenishmentPercentile: number | null;
   /** Percentile of price displacement in the aggressor's direction. */
   displacementPercentile: number;
   replenishmentRatio: number;
@@ -24,10 +24,10 @@ export function emptyAbsorption(
     absorbingSide: type === 'SELLER_ABSORPTION' ? 'ASK' : 'BID',
     score: 0,
     confidence: 0,
-    aggressionPercentile: 50,
-    consumptionPercentile: 50,
-    replenishmentPercentile: 50,
-    displacementPercentile: 50,
+    aggressionPercentile: 0,
+    consumptionPercentile: 0,
+    replenishmentPercentile: 0,
+    displacementPercentile: 0,
     detected: false,
   };
 }
@@ -38,6 +38,7 @@ export function emptyAbsorption(
  *
  * Delta on its own is never enough. A +$500M delta with a big upward move is
  * aggressive buyers succeeding, not passive sellers absorbing them.
+ * Missing consumption/refill percentiles mean UNTESTED — not neutral 50.
  */
 export function assessAbsorption(
   type: 'SELLER_ABSORPTION' | 'BUYER_ABSORPTION',
@@ -45,6 +46,20 @@ export function assessAbsorption(
   config: PassiveLiquidityConfig,
   trustworthy: boolean,
 ): AbsorptionAssessment {
+  if (input.consumptionPercentile == null || input.replenishmentPercentile == null) {
+    return {
+      type: null,
+      absorbingSide: type === 'SELLER_ABSORPTION' ? 'ASK' : 'BID',
+      score: 0,
+      confidence: 0,
+      aggressionPercentile: input.aggressionPercentile,
+      consumptionPercentile: input.consumptionPercentile ?? 0,
+      replenishmentPercentile: input.replenishmentPercentile ?? 0,
+      displacementPercentile: input.displacementPercentile,
+      detected: false,
+    };
+  }
+
   const aggression = clamp(input.aggressionPercentile / 100, 0, 1);
   const consumption = clamp(input.consumptionPercentile / 100, 0, 1);
   const replenishment = clamp(input.replenishmentPercentile / 100, 0, 1);

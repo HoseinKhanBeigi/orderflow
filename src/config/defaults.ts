@@ -306,6 +306,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     wallMinVsNearbyMedian: 3,
     wallYoungMs: 2_000,
     wallMatureMs: 300_000,
+    wallPersistenceMinSnapshots: 4,
     wallBreakFraction: 0.8,
 
     approachArmBps: 2,

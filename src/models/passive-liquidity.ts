@@ -1,4 +1,6 @@
 import type { WhyFact } from './liquidity-response.js';
+import type { PassiveStrengthSnapshot } from './passive-strength.js';
+import type { LevelWallMap } from './level-strength.js';
 
 export type PassiveSide = 'BID' | 'ASK';
 
@@ -99,18 +101,34 @@ export interface PassiveLiquidityLevel {
 
   replenishmentRatio: number;
 
-  persistenceScore: number;
-  replenishmentScore: number;
-  withdrawalScore: number;
-  absorptionScore: number;
+  /** Null when INSUFFICIENT_DATA — never a fake mid score. */
+  persistenceScore: number | null;
+  /** Null when UNTESTED (no consume / refill yet). */
+  replenishmentScore: number | null;
+  /** Null when UNTESTED (no cancel / consume yet). */
+  withdrawalScore: number | null;
+  /** Null when UNTESTED (no consume yet). */
+  absorptionScore: number | null;
+  cancellationScore: number | null;
+  consumptionScore: number | null;
 
-  /** Rolling percentile of this level's notional vs this book's own history. */
-  sizePercentile: number;
+  persistenceState: 'OBSERVED' | 'UNTESTED' | 'INSUFFICIENT_DATA' | 'STALE' | 'UNRELIABLE';
+  replenishmentState: 'OBSERVED' | 'UNTESTED' | 'INSUFFICIENT_DATA' | 'STALE' | 'UNRELIABLE';
+  withdrawalState: 'OBSERVED' | 'UNTESTED' | 'INSUFFICIENT_DATA' | 'STALE' | 'UNRELIABLE';
+  cancellationState: 'OBSERVED' | 'UNTESTED' | 'INSUFFICIENT_DATA' | 'STALE' | 'UNRELIABLE';
+  consumptionState: 'OBSERVED' | 'UNTESTED' | 'INSUFFICIENT_DATA' | 'STALE' | 'UNRELIABLE';
+
+  /** Rolling percentile of this level's notional vs this book's own history. Null when cold. */
+  sizePercentile: number | null;
   isWall: boolean;
 
-  /** Closest the mid has come while this level held size. */
-  closestApproachBps: number;
-  notionalAtClosestApproach: number;
+  firstSeenDistanceBps: number;
+  snapshotCount: number;
+  /** Closest the mid has come while this level held size. Null until price moves closer than birth. */
+  closestApproachBps: number | null;
+  notionalAtClosestApproach: number | null;
+  /** Approach checkpoints touched after first seen (20/10/5/2/1/contact). */
+  approachCheckpoints: Array<'20' | '10' | '5' | '2' | '1' | 'contact'>;
   /** Size shrank without matching executions while price closed in. */
   approachWithdrawal: boolean;
 
@@ -232,10 +250,10 @@ export interface NetLiquiditySnapshot {
 /** Dashboard net-liquidity timeframe tabs; keyed on the wire as String(ms). */
 export const NET_LIQUIDITY_WINDOWS_MS = [10_000, 30_000, 60_000, 300_000, 900_000] as const;
 
-/** Raw value plus every normalization the spec requires. Never a bare threshold. */
 export interface NormalizedMeasure {
   raw: number;
-  percentile: number;
+  /** Null until enough samples exist — never a fake neutral 50. */
+  percentile: number | null;
   zScore: number;
   vsNearbyDepth: number;
   vsRecentExecutedVolume: number;
@@ -353,10 +371,11 @@ export interface PassiveSideMetrics {
 
   velocity: PassiveLiquidityVelocity;
 
-  consumedPercentile: number;
-  cancelledPercentile: number;
-  replenishedPercentile: number;
-  nearDepthPercentile: number;
+  /** Null until the normalizer has enough samples — never a fake 50. */
+  consumedPercentile: number | null;
+  cancelledPercentile: number | null;
+  replenishedPercentile: number | null;
+  nearDepthPercentile: number | null;
 }
 
 export interface AbsorptionAssessment {
@@ -623,6 +642,10 @@ export interface PassiveLiquiditySnapshot {
 
   events: PassiveLiquidityEvent[];
   dataQuality: PassiveLiquidityDataQuality;
+  /** Which resting side is actually holding. Separate from the legacy composite score. */
+  strength: PassiveStrengthSnapshot;
+  /** Ranked resting prices. Side strength stays on `strength`; this is the ladder. */
+  wallMap: LevelWallMap;
   context: PassiveLiquidityContext;
   features: PassiveLiquidityFeatures;
 }

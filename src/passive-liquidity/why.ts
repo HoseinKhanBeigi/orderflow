@@ -32,11 +32,11 @@ export interface WhyInput {
 function fact(
   label: string,
   value: string,
-  percentile: number | undefined,
+  percentile: number | null | undefined,
   bands: PercentileBandConfig,
   detail?: string,
 ): WhyFact {
-  if (percentile === undefined) return { label, value, detail };
+  if (percentile == null || !Number.isFinite(percentile)) return { label, value, detail };
   return {
     label,
     value,

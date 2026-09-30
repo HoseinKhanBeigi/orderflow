@@ -345,6 +345,11 @@ export interface PassiveLiquidityConfig {
   wallYoungMs: number;
   /** Age at which persistence saturates. */
   wallMatureMs: number;
+  /**
+   * Minimum book snapshots before persistenceScore is numeric.
+   * Below this (and while young) persistence is INSUFFICIENT_DATA, not a fake mid score.
+   */
+  wallPersistenceMinSnapshots: number;
   /** Fractional size loss that counts as an attack survived vs broken. */
   wallBreakFraction: number;
 

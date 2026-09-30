@@ -1,5 +1,6 @@
 import type { WindowId } from './trade.js';
 import type { IntensityLabel } from './liquidity-response.js';
+import type { LevelRef } from './level-strength.js';
 import type {
   AggressivePowerContribution,
   FootprintAggressionLevel,
@@ -68,7 +69,7 @@ export interface PassiveSideView {
   replenishment: IntensityLabel;
   withdrawal: IntensityLabel;
   survival: number;
-  survivalLabel: 'STRONG' | 'MODERATE' | 'WEAK';
+  survivalLabel: 'STRONG' | 'MODERATE' | 'WEAK' | 'UNTESTED';
   strength: number;
   /** Defense power 0–100 from order book / passive liquidity. */
   defensePower: number;
@@ -91,6 +92,8 @@ export interface UpsideBattle {
   battleScore: number;
   state: UpsideBattleState;
   why: string[];
+  /** The ask level price is actually pressing, when one is near. */
+  relevantWall: LevelRef | null;
 }
 
 export interface DownsideBattle {
@@ -101,6 +104,8 @@ export interface DownsideBattle {
   battleScore: number;
   state: DownsideBattleState;
   why: string[];
+  /** The bid level price is actually pressing, when one is near. */
+  relevantWall: LevelRef | null;
 }
 
 /**
@@ -194,6 +199,7 @@ export function emptyMarketBattle(window: WindowId = '10s'): MarketBattleSnapsho
     battleScore: 0,
     state: 'NO_MEANINGFUL_BATTLE',
     why: ['Insufficient data'],
+    relevantWall: null,
   };
   const downside: DownsideBattle = {
     aggressive: emptyAggressiveSide(),
@@ -202,6 +208,7 @@ export function emptyMarketBattle(window: WindowId = '10s'): MarketBattleSnapsho
     battleScore: 0,
     state: 'NO_MEANINGFUL_BATTLE',
     why: ['Insufficient data'],
+    relevantWall: null,
   };
   return {
     window,

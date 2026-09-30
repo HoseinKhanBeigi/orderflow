@@ -420,8 +420,9 @@ function pctCls(percentile) {
 }
 
 function pct(percentile) {
+  if (percentile == null) return 'untested';
   const p = Number(percentile);
-  return Number.isFinite(p) ? `${Math.round(p)}th` : '—';
+  return Number.isFinite(p) ? `${Math.round(p)}th` : 'untested';
 }
 
 function renderSides(snap) {
@@ -451,7 +452,7 @@ function renderSides(snap) {
     </div>`;
 
   el.sides.innerHTML = card(
-    `Passive strength <span class="muted">buyers ${Math.round(snap.passiveBuyerStrength)} · sellers ${Math.round(snap.passiveSellerStrength)}</span>`,
+    `Passive strength <span class="muted">${snap.strength ? `${snap.strength.state.replaceAll('_', ' ')} · ${snap.strength.passiveWinner}` : `buyers ${Math.round(snap.passiveBuyerStrength)} · sellers ${Math.round(snap.passiveSellerStrength)}`}</span>`,
     `<div class="pl-sides">${side(snap.bid, 'BIDS')}${side(snap.ask, 'ASKS')}</div>`,
   );
 }

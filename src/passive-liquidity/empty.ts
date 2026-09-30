@@ -10,6 +10,8 @@ import { emptyAbsorption } from './absorption.js';
 import { emptyMeasure } from './normalize.js';
 import { emptyVacuum } from './vacuum.js';
 import { emptyNetLiquiditySnapshot } from './net-liquidity.js';
+import { emptyPassiveStrengthSnapshot } from '../models/passive-strength.js';
+import { emptyLevelWallMap } from '../models/level-strength.js';
 
 function emptyNetByWindow() {
   const out: PassiveLiquiditySnapshot['netByWindow'] = {};
@@ -44,10 +46,10 @@ function emptySide(side: PassiveSide): PassiveSideMetrics {
       replenishedQuantityPerSec: 0,
       replenishedNotionalPerSec: 0,
     },
-    consumedPercentile: 50,
-    cancelledPercentile: 50,
-    replenishedPercentile: 50,
-    nearDepthPercentile: 50,
+    consumedPercentile: null,
+    cancelledPercentile: null,
+    replenishedPercentile: null,
+    nearDepthPercentile: null,
   };
 }
 
@@ -209,6 +211,8 @@ export function emptyPassiveLiquiditySnapshot(
       observations: 0,
       reasons: ['no order book data'],
     },
+    strength: emptyPassiveStrengthSnapshot(symbol, timestamp),
+    wallMap: emptyLevelWallMap(symbol, timestamp),
     context: emptyPassiveLiquidityContext(),
     features: emptyPassiveLiquidityFeatures(),
   };

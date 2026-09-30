@@ -612,6 +612,8 @@ export class SymbolEngine {
       flowBattle,
       liquidityResponse,
       passiveLiquidity,
+      passiveStrength: passiveLiquidity.strength,
+      wallMap: passiveLiquidity.wallMap,
       netAggression,
       marketBattle,
       marketFuel,

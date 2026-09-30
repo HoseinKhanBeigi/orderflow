@@ -35,6 +35,9 @@ import { LiquidityVelocityTracker } from './velocity.js';
 import { distanceToNextWallBps, nearestWall, WallTracker } from './walls.js';
 import { buildWhy } from './why.js';
 import { NetLiquidityTracker } from './net-liquidity.js';
+import { PassiveLiquidityStrengthEngine } from '../passive-strength/index.js';
+import { dataStatusOf, projectSideComponents, reconciliationOf, strongestWall, withDepthScore } from '../passive-strength/index.js';
+import { LevelStrengthEngine, levelDataQuality, levelObservation, relocatedPrices } from '../level-strength/index.js';
 
 export interface PassiveLiquiditySnapshotInput {
   now: number;
@@ -94,6 +97,8 @@ export class PassiveLiquidityEngine {
   private truncatedLevels = 0;
   private resets = 0;
   private lastNetLiquidityTrustworthy = false;
+  private readonly strengthEngine = new PassiveLiquidityStrengthEngine();
+  private readonly levelEngine = new LevelStrengthEngine();
 
   constructor(
     readonly symbol: string,
@@ -268,7 +273,7 @@ export class PassiveLiquidityEngine {
 
     const passiveBuyerStrength = passiveStrength(
       {
-        depthPercentile: this.normalizer.percentile('bidDepth', depth.bidNotional),
+        depthPercentile: this.normalizer.percentileOrNull('bidDepth', depth.bidNotional),
         nearDepthPercentile: bidMetrics.nearDepthPercentile,
         persistenceScore: bidMetrics.persistenceScore,
         replenishmentPercentile: bidMetrics.replenishedPercentile,
@@ -283,7 +288,7 @@ export class PassiveLiquidityEngine {
 
     const passiveSellerStrength = passiveStrength(
       {
-        depthPercentile: this.normalizer.percentile('askDepth', depth.askNotional),
+        depthPercentile: this.normalizer.percentileOrNull('askDepth', depth.askNotional),
         nearDepthPercentile: askMetrics.nearDepthPercentile,
         persistenceScore: askMetrics.persistenceScore,
         replenishmentPercentile: askMetrics.replenishedPercentile,
@@ -374,12 +379,12 @@ export class PassiveLiquidityEngine {
         aggressiveSellPercentile,
         upsideDisplacementPercentile,
         downsideDisplacementPercentile,
-        askConsumedPercentile: askMetrics.consumedPercentile,
-        bidConsumedPercentile: bidMetrics.consumedPercentile,
-        askReplenishedPercentile: askMetrics.replenishedPercentile,
-        bidReplenishedPercentile: bidMetrics.replenishedPercentile,
-        askCancelledPercentile: askMetrics.cancelledPercentile,
-        bidCancelledPercentile: bidMetrics.cancelledPercentile,
+        askConsumedPercentile: askMetrics.consumedPercentile ?? 0,
+        bidConsumedPercentile: bidMetrics.consumedPercentile ?? 0,
+        askReplenishedPercentile: askMetrics.replenishedPercentile ?? 0,
+        bidReplenishedPercentile: bidMetrics.replenishedPercentile ?? 0,
+        askCancelledPercentile: askMetrics.cancelledPercentile ?? 0,
+        bidCancelledPercentile: bidMetrics.cancelledPercentile ?? 0,
         floor,
         ceiling,
       },
@@ -504,10 +509,10 @@ export class PassiveLiquidityEngine {
       sellerAbsorptionScore: sellerAbsorption.score,
       upsideVacuumScore: upsideVacuum.score,
       downsideVacuumScore: downsideVacuum.score,
-      bidWithdrawalPercentile: bidMetrics.cancelledPercentile,
-      askWithdrawalPercentile: askMetrics.cancelledPercentile,
-      bidReplenishmentPercentile: bidMetrics.replenishedPercentile,
-      askReplenishmentPercentile: askMetrics.replenishedPercentile,
+      bidWithdrawalPercentile: bidMetrics.cancelledPercentile ?? 0,
+      askWithdrawalPercentile: askMetrics.cancelledPercentile ?? 0,
+      bidReplenishmentPercentile: bidMetrics.replenishedPercentile ?? 0,
+      askReplenishmentPercentile: askMetrics.replenishedPercentile ?? 0,
       aggressiveBuyPercentile,
       aggressiveSellPercentile,
       downsideEfficiencyPercentile,
@@ -516,6 +521,34 @@ export class PassiveLiquidityEngine {
       defendedAskTests,
       dataQuality: quality.score,
     };
+
+    const strength = this.strengthEngine.evaluate({
+      symbol: this.symbol,
+      timestamp: now,
+      bids:   withDepthScore(
+        projectSideComponents(bidMetrics, levels, wallList, bands),
+        this.normalizer.percentileOrNull('bidDepth', depth.bidNotional),
+      ),
+      asks: withDepthScore(
+        projectSideComponents(askMetrics, levels, wallList, bands),
+        this.normalizer.percentileOrNull('askDepth', depth.askNotional),
+      ),
+      reconciliationError: reconciliationOf(netLiquidity),
+      dataStatus: dataStatusOf(quality),
+      strongestBidWall: strongestWall(wallList, 'BID'),
+      strongestAskWall: strongestWall(wallList, 'ASK'),
+    });
+    const relocated = relocatedPrices(wallList);
+    const wallMap = this.levelEngine.evaluate({
+      symbol: this.symbol,
+      timestamp: now,
+      currentPrice: mid,
+      levels: levels.map((level) => levelObservation(level, relocated.has(`${level.side}:${level.price}`))),
+      dataQuality: levelDataQuality(quality),
+      buyPower: aggressiveBuyPercentile,
+      sellPower: aggressiveSellPercentile,
+      sideStrength: { bids: passiveBuyerStrength, asks: passiveSellerStrength },
+    });
 
     return {
       symbol: this.symbol,
@@ -575,6 +608,8 @@ export class PassiveLiquidityEngine {
       why,
       events,
       dataQuality: quality,
+      strength,
+      wallMap,
       context,
       features,
     };
@@ -681,13 +716,19 @@ export class PassiveLiquidityEngine {
 
     let persistenceWeighted = 0;
     let withdrawalWeighted = 0;
-    let weight = 0;
+    let persistenceWeight = 0;
+    let withdrawalWeight = 0;
     let count = 0;
     for (const level of levels) {
       if (level.side !== side || level.outOfView || level.quantity <= 0) continue;
-      persistenceWeighted += level.persistenceScore * level.notionalValue;
-      withdrawalWeighted += level.withdrawalScore * level.notionalValue;
-      weight += level.notionalValue;
+      if (level.persistenceScore != null) {
+        persistenceWeighted += level.persistenceScore * level.notionalValue;
+        persistenceWeight += level.notionalValue;
+      }
+      if (level.withdrawalScore != null) {
+        withdrawalWeighted += level.withdrawalScore * level.notionalValue;
+        withdrawalWeight += level.notionalValue;
+      }
       count += 1;
     }
 
@@ -706,23 +747,23 @@ export class PassiveLiquidityEngine {
       cancelledNotional: windowFlow.cancelledNotional,
       replenishedNotional: windowFlow.replenishedNotional,
       replenishmentRatio: ratio,
-      persistenceScore: weight > 0 ? persistenceWeighted / weight : 0,
-      withdrawalScore: weight > 0 ? withdrawalWeighted / weight : 0,
+      persistenceScore: persistenceWeight > 0 ? persistenceWeighted / persistenceWeight : 0,
+      withdrawalScore: withdrawalWeight > 0 ? withdrawalWeighted / withdrawalWeight : 0,
       levelCount: count,
       velocity: this.velocity.velocity(side, this.lastBookAt, this.config.metricWindowMs),
-      consumedPercentile: this.normalizer.percentile(
+      consumedPercentile: this.normalizer.percentileOrNull(
         isBid ? 'bidConsumed' : 'askConsumed',
         metricFlow.consumedNotional,
       ),
-      cancelledPercentile: this.normalizer.percentile(
+      cancelledPercentile: this.normalizer.percentileOrNull(
         isBid ? 'bidCancelled' : 'askCancelled',
         metricFlow.cancelledNotional,
       ),
-      replenishedPercentile: this.normalizer.percentile(
+      replenishedPercentile: this.normalizer.percentileOrNull(
         isBid ? 'bidReplenished' : 'askReplenished',
         metricFlow.replenishedNotional,
       ),
-      nearDepthPercentile: this.normalizer.percentile(
+      nearDepthPercentile: this.normalizer.percentileOrNull(
         isBid ? 'nearBidDepth' : 'nearAskDepth',
         nearDepth,
       ),

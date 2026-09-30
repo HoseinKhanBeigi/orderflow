@@ -3,6 +3,8 @@ import type { MovePotentialSnapshot } from './movement.js';
 import type { FlowBattleSnapshot } from './passive.js';
 import type { LiquidityResponseSnapshot } from './liquidity-response.js';
 import type { PassiveLiquiditySnapshot } from './passive-liquidity.js';
+import type { PassiveStrengthSnapshot } from './passive-strength.js';
+import type { LevelWallMap } from './level-strength.js';
 import type { NetAggressionSnapshot } from './net-aggression.js';
 import type { MarketBattleSnapshot } from './market-battle.js';
 import type { MarketFuelSnapshot } from './market-fuel.js';
@@ -84,6 +86,10 @@ export interface WindowSnapshot {
   flowBattle: FlowBattleSnapshot;
   liquidityResponse: LiquidityResponseSnapshot;
   passiveLiquidity: PassiveLiquiditySnapshot;
+  /** Compact strength read. Kept on the wire after the full book snapshot is stripped. */
+  passiveStrength: PassiveStrengthSnapshot;
+  /** Ranked resting prices. Small enough to stay on the live snapshot. */
+  wallMap: LevelWallMap;
   /** Executed-trade aggression only (no cancel / replenish). */
   netAggression: NetAggressionSnapshot;
   /** Aggressive vs passive battles composed from existing engines. */

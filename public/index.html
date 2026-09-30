@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-trade-decision-v1" />
+  <link rel="stylesheet" href="/styles.css?v=decision-panel-v2" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -17,8 +17,7 @@
       </div>
       <div id="status" class="status connecting">Connecting…</div>
       <div id="symbol-label" class="symbol-label">—</div>
-      <div id="market-fuel" class="symbol-label" title="Active executable pressure. Not a price forecast.">Fuel —</div>
-      <div id="trade-decision" class="trade-decision wait" title="Simple attack + defense + price confirm">WAIT</div>
+      <div id="passive-strength" class="passive-strength" title="Passive defense advantage">Passive —</div>
       <button type="button" class="alert-bell" id="watchlist-btn" title="Choose watchlist coins">
         Watchlist
       </button>
@@ -105,6 +104,9 @@
           </div>
         </div>
         <div id="fp-grid" class="fp-grid" aria-label="Footprint charts"></div>
+        <aside id="decision-panel" class="decision-panel" aria-label="Market decision">
+          <p class="decision-empty">Waiting for market read</p>
+        </aside>
       </section>
     </main>
   </div>
@@ -135,6 +137,6 @@
     </div>
   </footer>
 
-  <script src="/app.js?v=fp-backfill-live-open" type="module"></script>
+  <script src="/app.js?v=decision-panel-v2" type="module"></script>
 </body>
 </html>
