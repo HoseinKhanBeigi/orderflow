@@ -119,3 +119,21 @@ export {
 export type { PassiveStrengthSnapshot, PassiveStrengthState } from './passive-strength/index.js';
 export { evaluateLevelMap, LevelStrengthEngine, LEVEL_STRENGTH_VERSION } from './level-strength/index.js';
 export type { LevelWallMap, LevelStrengthState } from './level-strength/index.js';
+export {
+  LocationContextEngine,
+  evaluateLocationContext,
+  applyLevelOutcomes,
+  flipBrokenLevel,
+  wallsAsExternalLevels,
+  emptyLocationContext,
+  locationTraderLabel,
+  LOCATION_CONTEXT_VERSION,
+  DEFAULT_LOCATION_CONTEXT_CONFIG,
+} from './location-context/index.js';
+export type {
+  LocationContextSnapshot,
+  LocationContextConfig,
+  LocationContextInput,
+  LocationContextState,
+  ContactType,
+} from './location-context/index.js';

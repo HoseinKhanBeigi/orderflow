@@ -700,7 +700,7 @@ function renderMarketDecision(summary) {
   const battle = w.marketBattle;
   const passive = w.passiveStrength;
   const map = w.wallMap;
-  const view = buildDecisionView(td, battle, passive, map, summary?.price);
+  const view = buildDecisionView(td, battle, passive, map, summary?.price, w?.locationContext);
 
   el.innerHTML = decisionAdvanced
     ? renderDecisionAdvanced(view, map)
@@ -713,7 +713,7 @@ function renderMarketDecision(summary) {
   });
 }
 
-function buildDecisionView(td, battle, passive, map, price) {
+function buildDecisionView(td, battle, passive, map, price, locationContext = null) {
   const metrics = td?.metrics ?? {};
   const askDef = Math.round(
     passive?.asks?.strength ??
@@ -765,6 +765,11 @@ function buildDecisionView(td, battle, passive, map, price) {
       ? battle.dataHealth.status
       : null;
 
+  const loc = locationContext;
+  const locationState = loc?.locationContext
+    ? String(loc.locationContext).replaceAll('_', ' ')
+    : 'UNKNOWN';
+
   return {
     price,
     controlSide,
@@ -782,6 +787,12 @@ function buildDecisionView(td, battle, passive, map, price) {
     relevantBid: map?.strongestRelevantBid ?? battle?.downside?.relevantWall ?? null,
     strongestAsk: map?.strongestOverallAsk ?? map?.strongestAsk ?? null,
     strongestBid: map?.strongestOverallBid ?? map?.strongestBid ?? null,
+    locationState,
+    locationPrice: price ?? null,
+    locationSupport: loc?.nearestSupport?.price != null ? fmtPx(loc.nearestSupport.price) : null,
+    locationResistance: loc?.nearestResistance?.price != null ? fmtPx(loc.nearestResistance.price) : null,
+    locationSupportBps: loc?.distanceToSupportBps ?? null,
+    locationResistanceBps: loc?.distanceToResistanceBps ?? null,
   };
 }
 
@@ -1064,6 +1075,16 @@ function renderDecisionDefault(view) {
       ${confLine}
       ${detailLine}
       ${dataLine}
+    </section>
+
+    <section class="decision-card decision-card-compact">
+      <div class="decision-kicker">MARKET LOCATION</div>
+      <div class="decision-location-state">${escapeHtml(view.locationState || 'UNKNOWN')}</div>
+      <div class="decision-location-grid">
+        <div><span>Price</span><strong>${fmtPx(view.locationPrice)}</strong></div>
+        <div><span>Support</span><strong>${view.locationSupport ?? '—'}${view.locationSupportBps != null ? ` · ${Math.round(view.locationSupportBps)} bps` : ''}</strong></div>
+        <div><span>Resistance</span><strong>${view.locationResistance ?? '—'}${view.locationResistanceBps != null ? ` · ${Math.round(view.locationResistanceBps)} bps` : ''}</strong></div>
+      </div>
     </section>
 
     <section class="decision-card">
@@ -3065,6 +3086,21 @@ function effortResultStory(er) {
   };
 }
 
+function locationTraderLabelFromBar(bar, prior) {
+  const loc = barLocationFromPrior(bar, prior);
+  if (loc === 'AT_SUPPORT') return 'AT SUPPORT';
+  if (loc === 'BELOW_SUPPORT') return 'BELOW SUPPORT';
+  if (loc === 'AT_RESISTANCE') return 'AT RESISTANCE';
+  if (loc === 'ABOVE_RESISTANCE') return 'ABOVE RESISTANCE';
+  if (loc === 'MID_RANGE') return 'BETWEEN LEVELS';
+  return '';
+}
+
+function withLocationSubtitle(story, locLabel) {
+  if (!story || !locLabel) return story;
+  return { ...story, line2: locLabel, locationLabel: locLabel };
+}
+
 /**
  * Layered candle story (CONTROL / LIQUIDITY / SPECIAL / OUTCOME).
  * Compact headline priority: special → control → extreme dominant liquidity.
@@ -3076,6 +3112,7 @@ function strategyStoryForBar(allBars, idx) {
   const win = fpBarWinner(bar);
   const absorbed = barAbsorbed(bar);
   const location = barLocationFromPrior(bar, prior);
+  const locLabel = locationTraderLabelFromBar(bar, prior);
   const move = bar.close - bar.open;
   const range = Math.max(bar.high - bar.low, 1e-9);
   const bodyFrac = Math.abs(move) / range;
@@ -3167,6 +3204,8 @@ function strategyStoryForBar(allBars, idx) {
     askConsume,
     bidConsume,
     effortResult: er,
+    location,
+    locationLabel: locLabel,
   };
 
   // Prefer compact effort/result trader labels over legacy control copy.
@@ -3180,43 +3219,43 @@ function strategyStoryForBar(allBars, idx) {
   )) {
     // Keep stop-hunt / structure specials first — they are location events.
     if (special !== 'STOP_HUNT_HIGH' && special !== 'STOP_HUNT_LOW' && special !== 'HELD_SUPPORT' && special !== 'REJECTED_RESISTANCE') {
-      return { ...erStory, detail };
+      return withLocationSubtitle({ ...erStory, detail }, locLabel);
     }
   }
 
   // Headline priority: special → control → extreme liquidity
   if (special === 'STOP_HUNT_HIGH') {
-    return { badge: 'SHORT', line1: 'Stop hunt high', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail };
+    return withLocationSubtitle({ badge: 'SHORT', line1: 'Stop hunt high', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail }, locLabel || 'AT RESISTANCE');
   }
   if (special === 'STOP_HUNT_LOW') {
-    return { badge: 'LONG', line1: 'Stop hunt low', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail };
+    return withLocationSubtitle({ badge: 'LONG', line1: 'Stop hunt low', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail }, locLabel || 'AT SUPPORT');
   }
   if (special === 'HELD_SUPPORT') {
-    return { badge: 'LONG', line1: 'Held support', line2: 'buyers defended', color: '#22c55e', detail };
+    return { badge: 'LONG', line1: 'Held support', line2: locLabel || 'AT SUPPORT', color: '#22c55e', detail };
   }
   if (special === 'REJECTED_RESISTANCE') {
-    return { badge: 'SHORT', line1: 'Rejected resist', line2: 'sellers capped', color: '#ef4444', detail };
+    return { badge: 'SHORT', line1: 'Rejected resist', line2: locLabel || 'AT RESISTANCE', color: '#ef4444', detail };
   }
   if (erStory) {
-    return { ...erStory, detail };
+    return withLocationSubtitle({ ...erStory, detail }, locLabel);
   }
   if (special === 'SELLER_ABSORBED') {
-    return { badge: biasFromControl(control, 'WAIT'), line1: 'Sellers absorbed', line2: 'bids held', color: '#7dd3fc', detail };
+    return withLocationSubtitle({ badge: biasFromControl(control, 'WAIT'), line1: 'Sellers absorbed', line2: 'bids held', color: '#7dd3fc', detail }, locLabel);
   }
   if (special === 'BUYER_ABSORBED') {
-    return { badge: biasFromControl(control, 'WAIT'), line1: 'Buyers absorbed', line2: 'asks held', color: '#fbbf24', detail };
+    return withLocationSubtitle({ badge: biasFromControl(control, 'WAIT'), line1: 'Buyers absorbed', line2: 'asks held', color: '#fbbf24', detail }, locLabel);
   }
 
   if (control === 'BUYER_IN_CONTROL') {
-    const sub = liqDominant !== 'NONE' && topLiq.score >= 85
+    const sub = locLabel || (liqDominant !== 'NONE' && topLiq.score >= 85
       ? liqHeadline(liqDominant)
-      : outcomeLine(outcome, outcomeDir);
+      : outcomeLine(outcome, outcomeDir));
     return { badge: 'LONG', line1: 'Buyer in control', line2: sub, color: '#22c55e', detail };
   }
   if (control === 'SELLER_IN_CONTROL') {
-    const sub = liqDominant !== 'NONE' && topLiq.score >= 85
+    const sub = locLabel || (liqDominant !== 'NONE' && topLiq.score >= 85
       ? liqHeadline(liqDominant)
-      : outcomeLine(outcome, outcomeDir);
+      : outcomeLine(outcome, outcomeDir));
     return { badge: 'SHORT', line1: 'Seller in control', line2: sub, color: '#ef4444', detail };
   }
 
@@ -3225,13 +3264,13 @@ function strategyStoryForBar(allBars, idx) {
     return {
       badge,
       line1: liqHeadline(liqDominant),
-      line2: outcomeLine(outcome, outcomeDir),
+      line2: locLabel || outcomeLine(outcome, outcomeDir),
       color: badge === 'LONG' ? '#22d3ee' : '#fb923c',
       detail,
     };
   }
 
-  return { badge: 'WAIT', line1: 'No clear edge', line2: '', color: '#8b949e', detail };
+  return { badge: 'WAIT', line1: locLabel || 'No clear edge', line2: locLabel ? 'location only' : '', color: '#8b949e', detail };
 }
 
 function biasFromControl(control, fallback) {

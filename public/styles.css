@@ -222,10 +222,33 @@ body {
 .decision-advantage,
 .decision-relevant,
 .decision-wall,
-.decision-data-warn {
+.decision-data-warn,
+.decision-location-state {
   margin-top: 0.18rem;
   color: var(--muted);
   line-height: 1.25;
+}
+.decision-location-state {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+.decision-location-grid {
+  display: grid;
+  gap: 0.12rem;
+  margin-top: 0.28rem;
+  font-size: 0.68rem;
+}
+.decision-location-grid div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+.decision-location-grid strong {
+  color: var(--text);
+  font-weight: 600;
 }
 .decision-blocker { color: #fde68a; }
 .decision-data-warn { color: #fca5a5; }

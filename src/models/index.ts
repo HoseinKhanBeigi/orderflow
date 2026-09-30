@@ -144,3 +144,22 @@ export type {
   TradeEntryQuality,
 } from './trade-decision.js';
 export { TRADE_DECISION_STRATEGY_VERSION } from './trade-decision.js';
+export type {
+  LocationContextSnapshot,
+  LocationContextConfig,
+  LocationContextState,
+  ContactType,
+  StructuralLevel,
+  LocationLevelView,
+  SupportReactionState,
+  ResistanceReactionState,
+  LocationDataQuality,
+  LocationArea,
+} from './location-context.js';
+export {
+  LOCATION_CONTEXT_VERSION,
+  DEFAULT_LOCATION_CONTEXT_CONFIG,
+  emptyLocationContext,
+  locationTraderLabel,
+  distanceBps,
+} from './location-context.js';

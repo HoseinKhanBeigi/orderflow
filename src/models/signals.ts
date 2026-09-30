@@ -9,6 +9,7 @@ import type { NetAggressionSnapshot } from './net-aggression.js';
 import type { MarketBattleSnapshot } from './market-battle.js';
 import type { MarketFuelSnapshot } from './market-fuel.js';
 import type { TradeDecisionSnapshot } from './trade-decision.js';
+import type { LocationContextSnapshot } from './location-context.js';
 
 export interface AbsorptionResult {
   detected: boolean;
@@ -96,6 +97,8 @@ export interface WindowSnapshot {
   marketBattle: MarketBattleSnapshot;
   /** Active / forced executable pressure. Does not include resting liquidity. */
   marketFuel: MarketFuelSnapshot;
+  /** Where price sits vs support/resistance — context only, never a trade signal. */
+  locationContext: LocationContextSnapshot;
   /** Simple LONG / SHORT / WAIT decision from attack + defense + price confirm. */
   tradeDecision: TradeDecisionSnapshot;
 }

@@ -30,6 +30,12 @@ import {
   emptyTradeDecisionWait,
 } from '../trade-decision/index.js';
 import { AggressiveFlowEngine } from '../aggressive-flow/engine.js';
+import {
+  LocationContextEngine,
+  wallsAsExternalLevels,
+  type LocationBarLike,
+} from '../location-context/index.js';
+import { emptyLocationContext } from '../models/location-context.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
 import { PassiveLiquidityEngine } from '../passive-liquidity/engine.js';
@@ -97,6 +103,7 @@ export class SymbolEngine {
   readonly marketBattle: MarketBattleEngine;
   readonly marketFuel: MarketFuelEngine;
   readonly aggressiveFlow: AggressiveFlowEngine;
+  readonly locationContext = new LocationContextEngine();
 
   private readonly listeners = new Set<EngineListener>();
   /**
@@ -617,6 +624,7 @@ export class SymbolEngine {
       netAggression,
       marketBattle,
       marketFuel,
+      locationContext: emptyLocationContext(this.symbol, now),
       tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
@@ -630,6 +638,68 @@ export class SymbolEngine {
         dataQualityScore: conf,
       }),
     };
+
+    const locBar: LocationBarLike = {
+      time: Math.floor(now / 1000),
+      open: priceStart || priceEnd,
+      high: agg.priceHigh || Math.max(priceStart, priceEnd),
+      low: agg.priceLow || Math.min(priceStart, priceEnd),
+      close: priceEnd || priceStart,
+      totalBuy: agg.buyVolume,
+      totalSell: agg.sellVolume,
+    };
+    const priorLoc: LocationBarLike[] = [];
+    const wall = passiveLiquidity.wallMap;
+    const external = wallsAsExternalLevels({
+      knownAt: locBar.time,
+      bidWalls: [
+        wall.strongestBid,
+        wall.strongestRelevantBid,
+        ...(wall.bids ?? []).slice(0, 3),
+      ]
+        .filter(Boolean)
+        .map((r) => ({ price: r!.price, strength: r!.strength ?? null })),
+      askWalls: [
+        wall.strongestAsk,
+        wall.strongestRelevantAsk,
+        ...(wall.asks ?? []).slice(0, 3),
+      ]
+        .filter(Boolean)
+        .map((r) => ({ price: r!.price, strength: r!.strength ?? null })),
+    });
+    const structure = liquidityResponse.structure;
+    if (structure?.swingLow != null) {
+      external.push({
+        price: structure.swingLow,
+        type: 'SUPPORT',
+        source: 'STRUCTURE_SWING',
+        strength: 72,
+        knownAt: locBar.time,
+      });
+    }
+    if (structure?.swingHigh != null) {
+      external.push({
+        price: structure.swingHigh,
+        type: 'RESISTANCE',
+        source: 'STRUCTURE_SWING',
+        strength: 72,
+        knownAt: locBar.time,
+      });
+    }
+    snap.locationContext = this.locationContext.evaluate({
+      symbol: this.symbol,
+      bar: locBar,
+      prior: priorLoc,
+      externalLevels: external,
+      reaction: {
+        buyEffort: marketBattle.upside.aggressive.power,
+        sellEffort: marketBattle.downside.aggressive.power,
+        sellerDefense: marketBattle.upside.passive.defensePower,
+        buyerDefense: marketBattle.downside.passive.defensePower,
+        upResult: marketBattle.upside.price.efficiencyScore,
+        downResult: marketBattle.downside.price.efficiencyScore,
+      },
+    });
 
     snap.tradeDecision = evaluateTradeDecision(snap, this.config.tradeDecision, { now });
 
