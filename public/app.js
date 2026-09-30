@@ -2647,69 +2647,6 @@ function barBattlePercents(bar) {
   return rows.map((row, i) => ({ text: row.text, color: row.color, pct: pcts[i], strong: i === best && pcts[i] > 0 }));
 }
 
-/**
- * One-line race read from the four battle %.
- * Consume = follow-through; abs = printed but failed to keep the close.
- */
-function barRaceSummary(rows) {
-  if (!rows?.length) return null;
-  const pct = (name) => rows.find((r) => r.text === name)?.pct ?? 0;
-  const asks = pct('Asks');
-  const bids = pct('Bids');
-  const sellAbs = pct('Sell abs');
-  const buyAbs = pct('Buy abs');
-
-  let won;
-  let wonColor;
-  if (asks >= bids + 8) {
-    won = 'buyers won';
-    wonColor = '#22c55e';
-  } else if (bids >= asks + 8) {
-    won = 'sellers won';
-    wonColor = '#ef4444';
-  } else {
-    won = 'no clear winner';
-    wonColor = '#8b949e';
-  }
-
-  let trap = '';
-  let trapColor = '#c5ccd6';
-  if (buyAbs >= 18 && buyAbs >= sellAbs + 4) {
-    trap = 'buyers trapped';
-    trapColor = '#fbbf24';
-  } else if (sellAbs >= 18 && sellAbs >= buyAbs + 4) {
-    trap = 'sellers trapped';
-    trapColor = '#60a5fa';
-  } else if (buyAbs >= 15 && sellAbs >= 15) {
-    trap = 'both trapped';
-    trapColor = '#c5ccd6';
-  } else if (Math.max(asks, bids) >= 55 && Math.max(buyAbs, sellAbs) < 15) {
-    trap = 'clean follow-through';
-    trapColor = wonColor;
-  }
-
-  return {
-    text: trap ? `${won} · ${trap}` : won,
-    color: trap ? trapColor : wonColor,
-    wonColor,
-  };
-}
-
-function drawBarRaceSummary(ctx, summary, cx, y, maxW) {
-  if (!summary?.text) return;
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '600 9px Inter, system-ui, sans-serif';
-  ctx.lineWidth = 3;
-  ctx.lineJoin = 'round';
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-  ctx.strokeText(summary.text, cx, y, maxW);
-  ctx.fillStyle = summary.color;
-  ctx.fillText(summary.text, cx, y, maxW);
-  ctx.restore();
-}
-
 function barAbsorbed(bar) {
   const vol = (bar.totalBuy ?? 0) + (bar.totalSell ?? 0);
   const delta = (bar.totalBuy ?? 0) - (bar.totalSell ?? 0);
@@ -2911,6 +2848,223 @@ function vacuumStretchScore(bar, prior) {
 const LIQ_DOMINANCE_SCORE = 70;
 const LIQ_DOMINANCE_MARGIN = 15;
 
+const ER_MEANINGFUL_EFFORT = 60;
+const ER_STRONG_EFFORT = 75;
+const ER_MEANINGFUL_RESULT = 50;
+const ER_STRONG_RESULT = 70;
+const ER_LOW_RESULT = 30;
+const ER_DEFENSE_MIN = 60;
+
+function erPctRank(values, value) {
+  const xs = values.filter((v) => Number.isFinite(v) && v > 0);
+  if (!xs.length || !(value > 0)) return value > 0 ? 55 : 0;
+  let below = 0;
+  let atOrBelow = 0;
+  for (const v of xs) {
+    if (v < value) below += 1;
+    if (v <= value) atOrBelow += 1;
+  }
+  return ((below + atOrBelow) / 2 / xs.length) * 100;
+}
+
+function erMedian(values) {
+  const xs = values.filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  if (!xs.length) return 0;
+  const mid = Math.floor(xs.length / 2);
+  return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+}
+
+/**
+ * Client footprint effort vs result — mirrors the TS engine for candle labels.
+ * Uses only `bar` + prior bars (no future).
+ */
+function evaluateEffortResultForBar(bar, prior, sellerDefense = null, buyerDefense = null) {
+  const range = Math.max((bar.high ?? 0) - (bar.low ?? 0), 1e-12);
+  const closePos = Math.min(1, Math.max(0, ((bar.close ?? 0) - (bar.low ?? 0)) / range));
+  const upDisp = Math.max((bar.close ?? 0) - (bar.open ?? 0), 0);
+  const downDisp = Math.max((bar.open ?? 0) - (bar.close ?? 0), 0);
+  const buyVol = Math.max(0, bar.totalBuy ?? 0);
+  const sellVol = Math.max(0, bar.totalSell ?? 0);
+  const buyTrades = Math.max(0, bar.buyTrades ?? 0);
+  const sellTrades = Math.max(0, bar.sellTrades ?? 0);
+  const buyIntensity = buyTrades > 0 ? buyVol / buyTrades : buyVol;
+  const sellIntensity = sellTrades > 0 ? sellVol / sellTrades : sellVol;
+  const atr = recentBarAtr(prior, bar) || range;
+  const medRange = erMedian(prior.map((b) => (b.high ?? 0) - (b.low ?? 0))) || range;
+
+  const buyVolHist = prior.map((b) => b.totalBuy ?? 0).concat(buyVol);
+  const sellVolHist = prior.map((b) => b.totalSell ?? 0).concat(sellVol);
+  const upHist = prior.map((b) => Math.max((b.close ?? 0) - (b.open ?? 0), 0)).concat(upDisp);
+  const downHist = prior.map((b) => Math.max((b.open ?? 0) - (b.close ?? 0), 0)).concat(downDisp);
+
+  const buyEffort = Math.min(100, Math.max(0,
+    0.45 * erPctRank(buyVolHist, buyVol) +
+    0.2 * erPctRank(prior.map((b) => {
+      const t = b.buyTrades ?? 0;
+      return t > 0 ? (b.totalBuy ?? 0) / t : (b.totalBuy ?? 0);
+    }).concat(buyIntensity), buyIntensity) +
+    0.2 * (buyVol > 0 ? Math.min(1, Math.max(0, buyVol - sellVol) / buyVol) * 100 : 0) +
+    0.15 * (buyVol > 0 ? Math.min(1, (bar.largestBuy ?? 0) / buyVol) * 100 : 0),
+  ));
+  const sellEffort = Math.min(100, Math.max(0,
+    0.45 * erPctRank(sellVolHist, sellVol) +
+    0.2 * erPctRank(prior.map((b) => {
+      const t = b.sellTrades ?? 0;
+      return t > 0 ? (b.totalSell ?? 0) / t : (b.totalSell ?? 0);
+    }).concat(sellIntensity), sellIntensity) +
+    0.2 * (sellVol > 0 ? Math.min(1, Math.max(0, sellVol - buyVol) / sellVol) * 100 : 0) +
+    0.15 * (sellVol > 0 ? Math.min(1, (bar.largestSell ?? 0) / sellVol) * 100 : 0),
+  ));
+
+  const scale = Math.max(atr, medRange, 1e-12);
+  const upResult = Math.min(100, Math.max(0,
+    0.35 * Math.min(2, upDisp / scale) / 2 * 100 +
+    0.25 * erPctRank(upHist, upDisp) +
+    0.25 * closePos * 100 +
+    0.15 * (prior.length && bar.close > prior[prior.length - 1].close ? 100 : 25),
+  ));
+  const downResult = Math.min(100, Math.max(0,
+    0.35 * Math.min(2, downDisp / scale) / 2 * 100 +
+    0.25 * erPctRank(downHist, downDisp) +
+    0.25 * (1 - closePos) * 100 +
+    0.15 * (prior.length && bar.close < prior[prior.length - 1].close ? 100 : 25),
+  ));
+
+  const buyEff = buyEffort < 5 ? upResult : Math.min(100, 0.55 * Math.min(100, (upResult / Math.max(buyEffort, 1)) * 100) + 0.45 * upResult);
+  const sellEff = sellEffort < 5 ? downResult : Math.min(100, 0.55 * Math.min(100, (downResult / Math.max(sellEffort, 1)) * 100) + 0.45 * downResult);
+
+  let buyAttack = 'NO_MEANINGFUL_BUY_ATTACK';
+  if (buyEffort >= ER_MEANINGFUL_EFFORT) {
+    if (buyEffort >= ER_STRONG_EFFORT && upResult <= ER_LOW_RESULT && sellerDefense != null && sellerDefense >= ER_DEFENSE_MIN) {
+      buyAttack = 'BUYER_ABSORPTION';
+    } else if (buyEffort >= ER_STRONG_EFFORT && upResult >= ER_STRONG_RESULT) buyAttack = 'BUY_ATTACK_SUCCESSFUL';
+    else if (buyEffort >= ER_MEANINGFUL_EFFORT && upResult >= ER_MEANINGFUL_RESULT) buyAttack = 'BUY_ATTACK_WEAK';
+    else if (upResult <= ER_LOW_RESULT) buyAttack = 'BUY_ATTACK_FAILED';
+    else buyAttack = 'BUY_ATTACK_WEAK';
+  }
+
+  let sellAttack = 'NO_MEANINGFUL_SELL_ATTACK';
+  if (sellEffort >= ER_MEANINGFUL_EFFORT) {
+    if (sellEffort >= ER_STRONG_EFFORT && downResult <= ER_LOW_RESULT && buyerDefense != null && buyerDefense >= ER_DEFENSE_MIN) {
+      sellAttack = 'SELLER_ABSORPTION';
+    } else if (sellEffort >= ER_STRONG_EFFORT && downResult >= ER_STRONG_RESULT) sellAttack = 'SELL_ATTACK_SUCCESSFUL';
+    else if (sellEffort >= ER_MEANINGFUL_EFFORT && downResult >= ER_MEANINGFUL_RESULT) sellAttack = 'SELL_ATTACK_WEAK';
+    else if (downResult <= ER_LOW_RESULT) sellAttack = 'SELL_ATTACK_FAILED';
+    else sellAttack = 'SELL_ATTACK_WEAK';
+  }
+
+  let interpretation = 'NO_CLEAR_RESULT';
+  if (buyAttack === 'BUYER_ABSORPTION' || (buyEffort >= ER_STRONG_EFFORT && upResult <= ER_LOW_RESULT)) {
+    interpretation = 'BUYERS_ABSORBED';
+  } else if (sellAttack === 'SELLER_ABSORPTION' || (sellEffort >= ER_STRONG_EFFORT && downResult <= ER_LOW_RESULT)) {
+    interpretation = 'SELLERS_ABSORBED';
+  } else if (upResult >= ER_STRONG_RESULT && buyEffort < ER_STRONG_EFFORT && buyEffort >= 35 && (sellerDefense == null || sellerDefense <= 35)) {
+    interpretation = 'UPSIDE_VACUUM';
+  } else if (downResult >= ER_STRONG_RESULT && sellEffort < ER_STRONG_EFFORT && sellEffort >= 35 && (buyerDefense == null || buyerDefense <= 35)) {
+    interpretation = 'DOWNSIDE_VACUUM';
+  } else if (buyAttack === 'BUY_ATTACK_SUCCESSFUL' || (buyEffort >= ER_STRONG_EFFORT && upResult >= ER_STRONG_RESULT)) {
+    interpretation = 'BUYERS_EFFECTIVE';
+  } else if (sellAttack === 'SELL_ATTACK_SUCCESSFUL' || (sellEffort >= ER_STRONG_EFFORT && downResult >= ER_STRONG_RESULT)) {
+    interpretation = 'SELLERS_EFFECTIVE';
+  } else if (buyEffort < ER_MEANINGFUL_EFFORT && sellEffort < ER_MEANINGFUL_EFFORT) {
+    interpretation = 'NO_CLEAR_RESULT';
+  } else {
+    interpretation = 'BALANCED';
+  }
+
+  const levels = Array.isArray(bar.levels) ? bar.levels : [];
+  let buyNearHigh = 0;
+  let sellNearLow = 0;
+  let buyTot = 0;
+  let sellTot = 0;
+  const highCut = (bar.high ?? 0) - range * 0.25;
+  const lowCut = (bar.low ?? 0) + range * 0.25;
+  for (const lv of levels) {
+    const b = lv.buy ?? lv[1] ?? 0;
+    const s = lv.sell ?? lv[2] ?? 0;
+    const px = lv.price ?? lv[0] ?? 0;
+    buyTot += b;
+    sellTot += s;
+    if (px >= highCut) buyNearHigh += b;
+    if (px <= lowCut) sellNearLow += s;
+  }
+  let aggressionLocation = 'MID';
+  if (buyVol >= sellVol) {
+    if (buyTot > 0 && buyNearHigh / buyTot >= 0.55) aggressionLocation = 'HIGH';
+    else if (buyTot > 0 && buyNearHigh / buyTot >= 0.35) aggressionLocation = 'UPPER_THIRD';
+  } else if (sellTot > 0 && sellNearLow / sellTot >= 0.55) aggressionLocation = 'LOW';
+  else if (sellTot > 0 && sellNearLow / sellTot >= 0.35) aggressionLocation = 'LOWER_THIRD';
+
+  const reasons = [];
+  if (interpretation === 'BUYERS_EFFECTIVE') reasons.push('high buy effort', 'strong upward result');
+  else if (interpretation === 'SELLERS_EFFECTIVE') reasons.push('high sell effort', 'strong downward result');
+  else if (interpretation === 'BUYERS_ABSORBED') {
+    reasons.push('high buy effort', 'poor upward displacement');
+    if (sellerDefense != null && sellerDefense >= ER_DEFENSE_MIN) reasons.push('strong ask defense');
+  } else if (interpretation === 'SELLERS_ABSORBED') {
+    reasons.push('high sell effort', 'poor downward displacement');
+    if (buyerDefense != null && buyerDefense >= ER_DEFENSE_MIN) reasons.push('strong bid defense');
+  } else if (interpretation === 'UPSIDE_VACUUM') reasons.push('moderate buy effort', 'easy upward movement');
+  else if (interpretation === 'DOWNSIDE_VACUUM') reasons.push('moderate sell effort', 'easy downward movement');
+
+  return {
+    buyEffort: Math.round(buyEffort),
+    sellEffort: Math.round(sellEffort),
+    upResult: Math.round(upResult),
+    downResult: Math.round(downResult),
+    buyEfficiency: Math.round(buyEff),
+    sellEfficiency: Math.round(sellEff),
+    buyAttackState: buyAttack,
+    sellAttackState: sellAttack,
+    interpretation,
+    aggressionLocation,
+    sellerDefense,
+    buyerDefense,
+    closePosition: closePos,
+    reasons,
+  };
+}
+
+function effortResultTraderLabel(interpretation) {
+  switch (interpretation) {
+    case 'BUYERS_EFFECTIVE': return 'BUYERS EFFECTIVE';
+    case 'SELLERS_EFFECTIVE': return 'SELLERS EFFECTIVE';
+    case 'BUYERS_ABSORBED': return 'BUYERS ABSORBED';
+    case 'SELLERS_ABSORBED': return 'SELLERS ABSORBED';
+    case 'UPSIDE_VACUUM': return 'UPSIDE VACUUM';
+    case 'DOWNSIDE_VACUUM': return 'DOWNSIDE VACUUM';
+    case 'BALANCED': return 'BALANCED';
+    default: return 'NO CLEAR RESULT';
+  }
+}
+
+function effortResultStory(er) {
+  if (!er) return null;
+  const label = effortResultTraderLabel(er.interpretation);
+  if (er.interpretation === 'NO_CLEAR_RESULT') return null;
+  const color =
+    er.interpretation === 'BUYERS_EFFECTIVE' || er.interpretation === 'SELLERS_ABSORBED' || er.interpretation === 'UPSIDE_VACUUM'
+      ? '#22c55e'
+      : er.interpretation === 'SELLERS_EFFECTIVE' || er.interpretation === 'BUYERS_ABSORBED' || er.interpretation === 'DOWNSIDE_VACUUM'
+        ? '#ef4444'
+        : '#8b949e';
+  const badge =
+    er.interpretation === 'BUYERS_EFFECTIVE' || er.interpretation === 'SELLERS_ABSORBED' || er.interpretation === 'UPSIDE_VACUUM'
+      ? 'LONG'
+      : er.interpretation === 'SELLERS_EFFECTIVE' || er.interpretation === 'BUYERS_ABSORBED' || er.interpretation === 'DOWNSIDE_VACUUM'
+        ? 'SHORT'
+        : 'WAIT';
+  const effort = er.interpretation.startsWith('BUY') || er.interpretation === 'UPSIDE_VACUUM' ? er.buyEffort : er.sellEffort;
+  const result = er.interpretation.startsWith('BUY') || er.interpretation === 'UPSIDE_VACUUM' ? er.upResult : er.downResult;
+  return {
+    badge,
+    line1: label,
+    line2: `effort ${effort} · result ${result}`,
+    color,
+    effortResult: er,
+  };
+}
+
 /**
  * Layered candle story (CONTROL / LIQUIDITY / SPECIAL / OUTCOME).
  * Compact headline priority: special → control → extreme dominant liquidity.
@@ -2928,6 +3082,20 @@ function strategyStoryForBar(allBars, idx) {
   const vac = barVacuumKind(bar, prior);
   const stretch = vacuumStretchScore(bar, prior);
 
+  // Effort vs result is the primary candle interpretation (who attacked vs who won).
+  const battle = barBattlePercents(bar);
+  let sellerDefense = null;
+  let buyerDefense = null;
+  if (battle) {
+    const buyAbs = battle.find((r) => r.text === 'Buy abs');
+    const sellAbs = battle.find((r) => r.text === 'Sell abs');
+    // Proxy defense from failed aggression share on the candle.
+    sellerDefense = buyAbs?.pct ?? null;
+    buyerDefense = sellAbs?.pct ?? null;
+  }
+  const er = evaluateEffortResultForBar(bar, prior, sellerDefense, buyerDefense);
+  const erStory = effortResultStory(er);
+
   // CONTROL
   let control = 'UNCLEAR';
   if (win.id === 'AGGRESSIVE_BUYERS') control = 'BUYER_IN_CONTROL';
@@ -2943,14 +3111,13 @@ function strategyStoryForBar(allBars, idx) {
     special = 'HELD_SUPPORT';
   } else if (location === 'AT_RESISTANCE' && (absorbed === 'BUYERS' || win.id === 'PASSIVE_SELLERS' || win.id === 'AGGRESSIVE_SELLERS')) {
     special = 'REJECTED_RESISTANCE';
-  } else if (absorbed === 'SELLERS' || win.id === 'PASSIVE_BUYERS') special = 'SELLER_ABSORBED';
-  else if (absorbed === 'BUYERS' || win.id === 'PASSIVE_SELLERS') special = 'BUYER_ABSORBED';
+  } else if (er.interpretation === 'SELLERS_ABSORBED' || absorbed === 'SELLERS' || win.id === 'PASSIVE_BUYERS') special = 'SELLER_ABSORBED';
+  else if (er.interpretation === 'BUYERS_ABSORBED' || absorbed === 'BUYERS' || win.id === 'PASSIVE_SELLERS') special = 'BUYER_ABSORBED';
 
   // LIQUIDITY — heuristic pull only; never forced as headline without dominance.
   let askPull = vac === 'UPSIDE' ? stretch : 0;
   let bidPull = vac === 'DOWNSIDE' ? stretch : 0;
   // Consumption proxy from battle shares (display only; not book accounting).
-  const battle = barBattlePercents(bar);
   let askConsume = 0;
   let bidConsume = 0;
   if (battle) {
@@ -2999,7 +3166,23 @@ function strategyStoryForBar(allBars, idx) {
     bidPull,
     askConsume,
     bidConsume,
+    effortResult: er,
   };
+
+  // Prefer compact effort/result trader labels over legacy control copy.
+  if (erStory && (
+    er.interpretation === 'BUYERS_EFFECTIVE' ||
+    er.interpretation === 'SELLERS_EFFECTIVE' ||
+    er.interpretation === 'BUYERS_ABSORBED' ||
+    er.interpretation === 'SELLERS_ABSORBED' ||
+    er.interpretation === 'UPSIDE_VACUUM' ||
+    er.interpretation === 'DOWNSIDE_VACUUM'
+  )) {
+    // Keep stop-hunt / structure specials first — they are location events.
+    if (special !== 'STOP_HUNT_HIGH' && special !== 'STOP_HUNT_LOW' && special !== 'HELD_SUPPORT' && special !== 'REJECTED_RESISTANCE') {
+      return { ...erStory, detail };
+    }
+  }
 
   // Headline priority: special → control → extreme liquidity
   if (special === 'STOP_HUNT_HIGH') {
@@ -3013,6 +3196,9 @@ function strategyStoryForBar(allBars, idx) {
   }
   if (special === 'REJECTED_RESISTANCE') {
     return { badge: 'SHORT', line1: 'Rejected resist', line2: 'sellers capped', color: '#ef4444', detail };
+  }
+  if (erStory) {
+    return { ...erStory, detail };
   }
   if (special === 'SELLER_ABSORBED') {
     return { badge: biasFromControl(control, 'WAIT'), line1: 'Sellers absorbed', line2: 'bids held', color: '#7dd3fc', detail };
@@ -3107,6 +3293,31 @@ function liqHeadline(event) {
 function strategyStoryTooltip(story) {
   if (!story?.detail) return '';
   const d = story.detail;
+  const er = d.effortResult;
+  if (er) {
+    const effLabel = (n) => (n >= 70 ? 'HIGH' : n >= 45 ? 'MOD' : 'LOW');
+    const lines = [
+      'FOOTPRINT RESULT',
+      `Buy Effort  ${er.buyEffort}`,
+      `Sell Effort  ${er.sellEffort}`,
+      `Up Result  ${er.upResult}`,
+      `Down Result  ${er.downResult}`,
+      `Buy Efficiency  ${effLabel(er.buyEfficiency)}`,
+      `Sell Efficiency  ${effLabel(er.sellEfficiency)}`,
+    ];
+    if (er.sellerDefense != null) lines.push(`Seller Defense  ${Math.round(er.sellerDefense)}`);
+    if (er.buyerDefense != null) lines.push(`Buyer Defense  ${Math.round(er.buyerDefense)}`);
+    lines.push(`Aggression Loc  ${fmtToken(er.aggressionLocation)}`);
+    lines.push(`Interpretation  ${effortResultTraderLabel(er.interpretation)}`);
+    if (er.reasons?.length) {
+      lines.push('Reason:');
+      for (const r of er.reasons) lines.push(`  ${r}`);
+    }
+    lines.push('', `CONTROL  ${fmtToken(d.control)}`);
+    lines.push(`SPECIAL  ${fmtToken(d.special || 'NONE')}`);
+    lines.push(`OUTCOME  ${fmtToken(d.outcome)}${d.outcomeDir && d.outcomeDir !== 'NONE' ? ' ' + d.outcomeDir : ''}`);
+    return lines.join('\n');
+  }
   const lines = [
     `CONTROL  ${fmtToken(d.control)}`,
     `LIQUIDITY  ${fmtToken(d.liquidity)}`,
@@ -3719,8 +3930,7 @@ function drawFootprint(symbol = selectedSymbol) {
       ctx.fillText(`${delta >= 0 ? '+' : '-'}${fmtVolShort(Math.abs(delta))}`, x + barWidth / 2, topPad + chartH + 28);
     }
     const battle = barBattlePercents(bar);
-    drawBarRaceSummary(ctx, barRaceSummary(battle), cx, topPad + chartH + 40, barWidth - 2);
-    drawBarBattlePercents(ctx, battle, cx, topPad + chartH + 52, barWidth - 2);
+    drawBarBattlePercents(ctx, battle, cx, topPad + chartH + 40, barWidth - 2);
   }
 
   if (railW > 0) {
@@ -4431,10 +4641,12 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   const story = strategyStoryForBar(bars, idx);
   if (!story) return;
   const kind =
-    story.line1 === 'Asks consumed' ? { key: 'consume-ask', side: 'buy' }
-      : story.line1 === 'Bids consumed' ? { key: 'consume-bid', side: 'sell' }
-        : story.line1 === 'Buyers absorbed' ? { key: 'absorb-buy', side: 'sell' }
-          : story.line1 === 'Sellers absorbed' ? { key: 'absorb-sell', side: 'buy' }
+    story.line1 === 'Asks consumed' || story.line1 === 'ASKS CONSUMED' ? { key: 'consume-ask', side: 'buy' }
+      : story.line1 === 'Bids consumed' || story.line1 === 'BIDS CONSUMED' ? { key: 'consume-bid', side: 'sell' }
+        : story.line1 === 'Buyers absorbed' || story.line1 === 'BUYERS ABSORBED' ? { key: 'absorb-buy', side: 'sell' }
+          : story.line1 === 'Sellers absorbed' || story.line1 === 'SELLERS ABSORBED' ? { key: 'absorb-sell', side: 'buy' }
+            : story.line1 === 'BUYERS EFFECTIVE' || story.line1 === 'UPSIDE VACUUM' ? { key: 'buyers-effective', side: 'buy' }
+              : story.line1 === 'SELLERS EFFECTIVE' || story.line1 === 'DOWNSIDE VACUUM' ? { key: 'sellers-effective', side: 'sell' }
             : story.line1 === 'Stop hunt low' || (story.line1 === 'Stop hunt' && story.line2?.includes('low'))
               ? { key: 'hunt-low', side: 'buy' }
               : story.line1 === 'Stop hunt high' || (story.line1 === 'Stop hunt' && story.line2?.includes('high'))
