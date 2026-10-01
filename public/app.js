@@ -701,7 +701,11 @@ function renderMarketDecision(summary) {
   const passive = w.passiveStrength;
   const map = w.wallMap;
   const liveDefense = w.liveDefense ?? null;
-  const view = buildDecisionView(td, battle, passive, map, summary?.price, w?.locationContext, liveDefense);
+  let pathContext = w.pathContext ?? null;
+  try {
+    pathContext = enrichPathContextFromChart(pathContext, summary?.price, liveDefense, map, battle);
+  } catch (_) { /* keep server path */ }
+  const view = buildDecisionView(td, battle, passive, map, summary?.price, w?.locationContext, liveDefense, pathContext);
 
   el.innerHTML = decisionAdvanced
     ? renderDecisionAdvanced(view, map)
@@ -714,7 +718,7 @@ function renderMarketDecision(summary) {
   });
 }
 
-function buildDecisionView(td, battle, passive, map, price, locationContext = null, liveDefense = null) {
+function buildDecisionView(td, battle, passive, map, price, locationContext = null, liveDefense = null, pathContext = null) {
   const metrics = td?.metrics ?? {};
   const liveAsk = liveDefense?.relevantAsk ?? map?.strongestRelevantAsk ?? battle?.upside?.relevantWall ?? null;
   const liveBid = liveDefense?.relevantBid ?? map?.strongestRelevantBid ?? battle?.downside?.relevantWall ?? null;
@@ -805,6 +809,204 @@ function buildDecisionView(td, battle, passive, map, price, locationContext = nu
     confluence: liveDefense?.alignment?.confluenceState ?? 'NONE',
     bidAtSupport: !!liveDefense?.alignment?.bidAtSupport,
     askAtResistance: !!liveDefense?.alignment?.askAtResistance,
+    path: summarizePathContext(pathContext, price),
+  };
+}
+
+/** Client-side path enrich from chart HSR segments — keeps historical vs live separate. */
+function enrichPathContextFromChart(serverPath, price, liveDefense, map, battle) {
+  const px = Number(price);
+  if (!(px > 0) || typeof buildHistoricalSRSegments !== 'function') return serverPath;
+  const symbol = selectedSymbol;
+  const bars = typeof footprintBars === 'function' ? footprintBars(symbol) : null;
+  if (!bars?.length) return serverPath;
+  const { segments } = buildHistoricalSRSegments(bars);
+  const showMinor = typeof hsrShowMinor === 'function' ? hsrShowMinor() : false;
+  const majorMin = typeof HSR_MAJOR_MIN !== 'undefined' ? HSR_MAJOR_MIN : 62;
+  const resistances = (segments || [])
+    .filter((s) => s.type === 'RESISTANCE' && !s.broken)
+    .map((s) => ({
+      center: s.price,
+      zoneLow: s.zoneLow,
+      zoneHigh: s.zoneHigh,
+      strength: s.strength,
+      major: s.major ?? s.strength >= majorMin,
+    }));
+  const supports = (segments || [])
+    .filter((s) => s.type === 'SUPPORT' && !s.broken)
+    .map((s) => ({
+      center: s.price,
+      zoneLow: s.zoneLow,
+      zoneHigh: s.zoneHigh,
+      strength: s.strength,
+      major: s.major ?? s.strength >= majorMin,
+    }));
+
+  const liveAsk = liveDefense?.relevantAsk ?? map?.strongestRelevantAsk ?? battle?.upside?.relevantWall ?? null;
+  const liveBid = liveDefense?.relevantBid ?? map?.strongestRelevantBid ?? battle?.downside?.relevantWall ?? null;
+
+  // Lightweight client mirror of evaluatePathContext for chart-visible zones.
+  const nextRes = resistances
+    .filter((z) => (showMinor || z.major) && (z.zoneLow > px || z.center > px))
+    .sort((a, b) => a.center - b.center)[0] ?? null;
+  const nextSup = supports
+    .filter((z) => (showMinor || z.major) && (z.zoneHigh < px || z.center < px))
+    .sort((a, b) => b.center - a.center)[0] ?? null;
+  const minorResHidden = !showMinor && !nextRes && resistances.some((z) => z.center > px && !z.major);
+  const minorSupHidden = !showMinor && !nextSup && supports.some((z) => z.center < px && !z.major);
+
+  const base = serverPath || { upside: {}, downside: {}, currentPrice: px };
+  const upside = { ...(base.upside || {}) };
+  const downside = { ...(base.downside || {}) };
+
+  if (nextRes) {
+    upside.nextHistoricalResistance = nextRes;
+    upside.historicalStatus = 'FOUND';
+    upside.historicalReason = null;
+    upside.historicalReasonLabel = null;
+  } else {
+    upside.nextHistoricalResistance = null;
+    upside.historicalStatus = 'NONE_DETECTED';
+    upside.historicalReason = minorResHidden ? 'FILTERED_AS_MINOR' : (resistances.length ? 'NO_QUALIFIED_LEVEL' : 'INSUFFICIENT_HISTORY');
+    upside.historicalReasonLabel = minorResHidden
+      ? 'No major resistance detected · Minor levels hidden'
+      : 'No qualified resistance in loaded chart history';
+  }
+  if (nextSup) {
+    downside.nextHistoricalSupport = nextSup;
+    downside.historicalStatus = 'FOUND';
+    downside.historicalReason = null;
+    downside.historicalReasonLabel = null;
+  } else {
+    downside.nextHistoricalSupport = null;
+    downside.historicalStatus = 'NONE_DETECTED';
+    downside.historicalReason = minorSupHidden ? 'FILTERED_AS_MINOR' : (supports.length ? 'NO_QUALIFIED_LEVEL' : 'INSUFFICIENT_HISTORY');
+    downside.historicalReasonLabel = minorSupHidden
+      ? 'No major support detected · Minor levels hidden'
+      : 'No qualified support in loaded chart history';
+  }
+
+  upside.higherTfStatus = upside.higherTfStatus || 'HIGHER_TF_NOT_AVAILABLE';
+  downside.higherTfStatus = downside.higherTfStatus || 'HIGHER_TF_NOT_AVAILABLE';
+  upside.liveAskDefense = liveAsk
+    ? { price: liveAsk.price, strength: liveAsk.strength }
+    : upside.liveAskDefense ?? null;
+  downside.liveBidDefense = liveBid
+    ? { price: liveBid.price, strength: liveBid.strength }
+    : downside.liveBidDefense ?? null;
+
+  // Next obstacle: prefer nearer of historical vs live (never label live as RESISTANCE).
+  const upObs = [];
+  if (nextRes) upObs.push({ type: 'HISTORICAL_RESISTANCE', price: nextRes.center, strength: nextRes.strength, label: 'HISTORICAL RES' });
+  if (liveAsk) upObs.push({ type: 'LIVE_ASK_DEFENSE', price: liveAsk.price, strength: liveAsk.strength, label: 'LIVE ASK' });
+  upObs.sort((a, b) => Math.abs(a.price - px) - Math.abs(b.price - px));
+  upside.nextObstacle = upObs[0]
+    ? {
+        direction: 'UP',
+        type: upObs[0].type,
+        price: upObs[0].price,
+        strength: upObs[0].strength,
+        sourceLabel: upObs[0].label,
+        distanceBps: Math.abs(upObs[0].price - px) / px * 10000,
+      }
+    : {
+        direction: 'UP',
+        type: 'NONE_DETECTED',
+        price: null,
+        strength: null,
+        sourceLabel: 'No major obstacle detected nearby',
+        distanceBps: null,
+      };
+
+  const dnObs = [];
+  if (nextSup) dnObs.push({ type: 'HISTORICAL_SUPPORT', price: nextSup.center, strength: nextSup.strength, label: 'HISTORICAL SUP' });
+  if (liveBid) dnObs.push({ type: 'LIVE_BID_DEFENSE', price: liveBid.price, strength: liveBid.strength, label: 'LIVE BID' });
+  dnObs.sort((a, b) => Math.abs(a.price - px) - Math.abs(b.price - px));
+  downside.nextObstacle = dnObs[0]
+    ? {
+        direction: 'DOWN',
+        type: dnObs[0].type,
+        price: dnObs[0].price,
+        strength: dnObs[0].strength,
+        sourceLabel: dnObs[0].label,
+        distanceBps: Math.abs(dnObs[0].price - px) / px * 10000,
+      }
+    : {
+        direction: 'DOWN',
+        type: 'NONE_DETECTED',
+        price: null,
+        strength: null,
+        sourceLabel: 'No major obstacle detected nearby',
+        distanceBps: null,
+      };
+
+  if (!upObs.length) upside.quality = 'MODERATELY_OPEN';
+  else if (liveAsk && liveAsk.strength >= 65) upside.quality = nextRes ? 'BLOCKED' : 'CONTESTED';
+  else upside.quality = upside.quality || 'CONTESTED';
+
+  upside.interpretation = nextRes
+    ? `Next historical resistance ${nextRes.center}`
+    : (liveAsk
+      ? `No historical resistance detected — live ask defense at ${liveAsk.price}`
+      : 'No major obstacle detected nearby');
+
+  return { ...base, currentPrice: px, upside, downside };
+}
+
+function summarizePathContext(path, price) {
+  if (!path) {
+    return {
+      histRes: 'NONE DETECTED',
+      histResReason: 'Waiting for path context',
+      liveAsk: null,
+      htfRes: 'HIGHER TF NOT AVAILABLE',
+      nextObstacle: 'No major obstacle detected nearby',
+      upsideQuality: 'UNKNOWN',
+      histSup: 'NONE DETECTED',
+      histSupReason: 'Waiting for path context',
+      liveBid: null,
+      htfSup: 'HIGHER TF NOT AVAILABLE',
+      nextObstacleDown: 'No major obstacle detected nearby',
+      downsideQuality: 'UNKNOWN',
+      resistanceState: null,
+      supportState: null,
+    };
+  }
+  const u = path.upside || {};
+  const d = path.downside || {};
+  const fmtObs = (o) => {
+    if (!o || o.type === 'NONE_DETECTED' || o.price == null) return o?.sourceLabel || 'No major obstacle detected nearby';
+    const str = o.strength != null ? ` · ${Math.round(o.strength)}` : '';
+    return `${o.sourceLabel} ${fmtPx(o.price)}${str}`;
+  };
+  return {
+    histRes: u.historicalStatus === 'FOUND' && u.nextHistoricalResistance
+      ? `${fmtPx(u.nextHistoricalResistance.center)} · ${Math.round(u.nextHistoricalResistance.strength)}`
+      : 'NONE DETECTED',
+    histResReason: u.historicalReasonLabel || null,
+    liveAsk: u.liveAskDefense
+      ? `${fmtPx(u.liveAskDefense.price)} · ${Math.round(u.liveAskDefense.strength)}`
+      : (u.liveBookQuality === 'STALE' || u.liveBookQuality === 'UNRELIABLE' ? 'LIVE LIQUIDITY UNKNOWN' : 'NONE'),
+    htfRes: u.higherTfStatus === 'FOUND' && u.higherTimeframeResistance
+      ? `${u.higherTimeframeResistance.timeframe || 'HTF'} ${fmtPx(u.higherTimeframeResistance.center)} · ${Math.round(u.higherTimeframeResistance.strength)}`
+      : (u.higherTfStatus === 'HIGHER_TF_NOT_AVAILABLE' ? 'HIGHER TF NOT AVAILABLE' : 'NONE DETECTED'),
+    nextObstacle: fmtObs(u.nextObstacle),
+    upsideQuality: String(u.quality || 'UNKNOWN').replaceAll('_', ' '),
+    histSup: d.historicalStatus === 'FOUND' && d.nextHistoricalSupport
+      ? `${fmtPx(d.nextHistoricalSupport.center)} · ${Math.round(d.nextHistoricalSupport.strength)}`
+      : 'NONE DETECTED',
+    histSupReason: d.historicalReasonLabel || null,
+    liveBid: d.liveBidDefense
+      ? `${fmtPx(d.liveBidDefense.price)} · ${Math.round(d.liveBidDefense.strength)}`
+      : (d.liveBookQuality === 'STALE' || d.liveBookQuality === 'UNRELIABLE' ? 'LIVE LIQUIDITY UNKNOWN' : 'NONE'),
+    htfSup: d.higherTfStatus === 'FOUND' && d.higherTimeframeSupport
+      ? `${d.higherTimeframeSupport.timeframe || 'HTF'} ${fmtPx(d.higherTimeframeSupport.center)} · ${Math.round(d.higherTimeframeSupport.strength)}`
+      : (d.higherTfStatus === 'HIGHER_TF_NOT_AVAILABLE' ? 'HIGHER TF NOT AVAILABLE' : 'NONE DETECTED'),
+    nextObstacleDown: fmtObs(d.nextObstacle),
+    downsideQuality: String(d.quality || 'UNKNOWN').replaceAll('_', ' '),
+    resistanceState: u.resistanceState && u.resistanceState !== 'NONE' ? String(u.resistanceState).replaceAll('_', ' ') : null,
+    supportState: d.supportState && d.supportState !== 'NONE' ? String(d.supportState).replaceAll('_', ' ') : null,
+    interpretation: u.interpretation || d.interpretation || null,
   };
 }
 
@@ -1113,7 +1315,26 @@ function renderDecisionDefault(view) {
         <div><span>Support</span><strong>${view.locationSupport ?? '—'}${view.locationSupportBps != null ? ` · ${Math.round(view.locationSupportBps)} bps` : ''}</strong></div>
         <div><span>Resistance</span><strong>${view.locationResistance ?? '—'}${view.locationResistanceBps != null ? ` · ${Math.round(view.locationResistanceBps)} bps` : ''}</strong></div>
       </div>
+      ${view.path?.resistanceState ? `<div class="decision-why">Resistance ${escapeHtml(view.path.resistanceState)}</div>` : ''}
       ${view.candleInteraction ? `<div class="decision-why">Candle ${escapeHtml(view.candleInteraction)}</div>` : ''}
+    </section>
+
+    <section class="decision-card decision-card-compact">
+      <div class="decision-kicker">ABOVE PRICE</div>
+      <div class="decision-battle-row"><span>Historical Resistance</span><strong>${escapeHtml(view.path?.histRes || 'NONE DETECTED')}</strong></div>
+      ${view.path?.histResReason ? `<div class="decision-why">${escapeHtml(view.path.histResReason)}</div>` : ''}
+      <div class="decision-battle-row"><span>Live Ask Defense</span><strong>${escapeHtml(view.path?.liveAsk || 'NONE')}</strong></div>
+      <div class="decision-battle-row"><span>Higher-TF Resistance</span><strong>${escapeHtml(view.path?.htfRes || 'HIGHER TF NOT AVAILABLE')}</strong></div>
+      <div class="decision-battle-row"><span>Next Obstacle</span><strong>${escapeHtml(view.path?.nextObstacle || '—')}</strong></div>
+      <div class="decision-why">Upside path · ${escapeHtml(view.path?.upsideQuality || 'UNKNOWN')}</div>
+    </section>
+
+    <section class="decision-card decision-card-compact">
+      <div class="decision-kicker">BELOW PRICE</div>
+      <div class="decision-battle-row"><span>Historical Support</span><strong>${escapeHtml(view.path?.histSup || 'NONE DETECTED')}</strong></div>
+      ${view.path?.histSupReason ? `<div class="decision-why">${escapeHtml(view.path.histSupReason)}</div>` : ''}
+      <div class="decision-battle-row"><span>Live Bid Defense</span><strong>${escapeHtml(view.path?.liveBid || 'NONE')}</strong></div>
+      <div class="decision-battle-row"><span>Next Obstacle</span><strong>${escapeHtml(view.path?.nextObstacleDown || '—')}</strong></div>
     </section>
 
     <section class="decision-card">
@@ -1150,6 +1371,7 @@ function renderDecisionDefault(view) {
       <div class="decision-kicker">DECISION</div>
       <div class="decision-action">${escapeHtml(d.label)}</div>
       ${reason ? `<div class="decision-why">${escapeHtml(reason)}</div>` : ''}
+      ${view.path?.interpretation ? `<div class="decision-why">${escapeHtml(view.path.interpretation)}</div>` : ''}
       ${dataLine}
     </section>
 
@@ -4328,6 +4550,8 @@ function buildHistoricalSRSegments(bars) {
         strengthState: level.strengthState,
         strengthConfidence: level.strengthConfidence,
         reactionTrend: level.reactionTrend,
+        locationState: level.locationState ?? null,
+        interactionState: level.interactionState ?? null,
         avgReactionPct: level.avgReactionPct,
         maxReactionPct: level.maxReactionPct,
         testCount: level.testCount,
@@ -4346,6 +4570,8 @@ function buildHistoricalSRSegments(bars) {
       seg.strengthState = level.strengthState;
       seg.strengthConfidence = level.strengthConfidence;
       seg.reactionTrend = level.reactionTrend;
+      seg.locationState = level.locationState ?? null;
+      seg.interactionState = level.interactionState ?? null;
       seg.avgReactionPct = level.avgReactionPct;
       seg.maxReactionPct = level.maxReactionPct;
       seg.testCount = level.testCount;
@@ -4477,6 +4703,32 @@ function buildHistoricalSRSegments(bars) {
         }
         level.beyond = 0;
       }
+
+      // Compact zone location / interaction for tooltip (boundaries, not center tick).
+      if (!level.broken) {
+        const c = bar.close;
+        if (c >= level.zoneLow && c <= level.zoneHigh) {
+          level.locationState = level.type === 'SUPPORT' ? 'INSIDE_SUPPORT' : 'INSIDE_RESISTANCE';
+        } else if (level.type === 'SUPPORT') {
+          level.locationState = c < level.zoneLow ? 'BELOW_SUPPORT' : 'ABOVE_SUPPORT';
+          if (Math.abs(c - level.zoneHigh) / c * 10000 <= 18 && c > level.zoneHigh) {
+            level.locationState = 'NEAR_SUPPORT';
+          }
+        } else {
+          level.locationState = c > level.zoneHigh ? 'ABOVE_RESISTANCE' : 'BELOW_RESISTANCE';
+          if (Math.abs(c - level.zoneLow) / c * 10000 <= 18 && c < level.zoneLow) {
+            level.locationState = 'NEAR_RESISTANCE';
+          }
+        }
+        if (level.broken) level.interactionState = 'BROKEN';
+        else if (bar.low <= level.zoneHigh && bar.high >= level.zoneLow) {
+          const bodyLo = Math.min(bar.open, bar.close);
+          const bodyHi = Math.max(bar.open, bar.close);
+          level.interactionState =
+            bodyLo <= level.zoneHigh && bodyHi >= level.zoneLow ? 'BODY_TOUCH' : 'WICK_TOUCH';
+        }
+        upsertSeg(level);
+      }
     }
   }
 
@@ -4490,25 +4742,31 @@ function buildHistoricalSRSegments(bars) {
 }
 
 function hsrTooltipText(seg) {
-  const side = seg.type === 'SUPPORT' ? 'SUPPORT' : 'RESISTANCE';
+  const side = seg.type === 'SUPPORT' ? 'SUPPORT ZONE' : 'RESISTANCE ZONE';
   const holdRatio =
     seg.testCount > 0 ? `${Math.round((seg.holdCount / seg.testCount) * 100)}%` : '—';
   const avg = seg.avgReactionPct != null ? `${(seg.avgReactionPct * 100).toFixed(2)}%` : '—';
   const max = seg.maxReactionPct != null ? `${(seg.maxReactionPct * 100).toFixed(2)}%` : '—';
   const weakenNote =
     seg.strengthState === 'STRONG_BUT_WEAKENING' ? '\nRepeated tests producing smaller reactions.' : '';
+  const zLow = seg.zoneLow != null ? fmtPriceAxis(seg.zoneLow) : '—';
+  const zHigh = seg.zoneHigh != null ? fmtPriceAxis(seg.zoneHigh) : '—';
   return [
-    `${side} ${fmtPriceAxis(seg.price)}`,
+    side,
+    `${zLow} – ${zHigh}`,
+    `Center: ${fmtPriceAxis(seg.price)}`,
     `Strength: ${Math.round(seg.strength)} / 100`,
-    `Confidence: ${Math.round(seg.strengthConfidence ?? 0)}%`,
     `State: ${hsrStateLabel(seg.strengthState)}`,
+    seg.locationState ? `Current Location: ${String(seg.locationState).replace(/_/g, ' ')}` : '',
+    seg.interactionState ? `Interaction: ${String(seg.interactionState).replace(/_/g, ' ')}` : '',
     `Tests: ${seg.testCount ?? 0}`,
     `Successful Holds: ${seg.holdCount ?? 0}`,
     `Hold Ratio: ${holdRatio}`,
     `Average Reaction: ${avg}`,
     `Largest Reaction: ${max}`,
     `Reaction Trend: ${seg.reactionTrend ?? 'STABLE'}`,
-  ].join('\n') + weakenNote;
+    `Confidence: ${Math.round(seg.strengthConfidence ?? 0)}%`,
+  ].filter(Boolean).join('\n') + weakenNote;
 }
 
 function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {

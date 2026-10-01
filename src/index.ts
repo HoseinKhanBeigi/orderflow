@@ -147,6 +147,10 @@ export {
   DEFAULT_SR_STRENGTH_CONFIG,
   strengthStateLabel,
   multiTimeframeConfluenceScore,
+  classifyZoneLocation,
+  classifyZoneInteraction,
+  zoneInteractionBadge,
+  zoneHalfWidthOf,
 } from './historical-sr/index.js';
 export type {
   HistoricalBarLike,
@@ -159,6 +163,9 @@ export type {
   HistoricalSRStrengthScore,
   HistoricalSRStrengthState,
   HistoricalReactionTrend,
+  HistoricalZoneLocationState,
+  HistoricalZoneInteractionState,
+  HistoricalZoneVersion,
 } from './historical-sr/index.js';
 export {
   selectLiveDefense,
@@ -175,3 +182,19 @@ export type {
   StructuralConfluenceState,
   StructureDefenseInterpretation,
 } from './live-defense/index.js';
+export {
+  evaluatePathContext,
+  emptyPathContext,
+  pathQualityLabel,
+  historicalStatusLabel,
+  PATH_CONTEXT_VERSION,
+  DEFAULT_PATH_CONTEXT_CONFIG,
+} from './path-context/index.js';
+export type {
+  PathContextSnapshot,
+  UpsidePathContext,
+  DownsidePathContext,
+  NextObstacle,
+  PathQuality,
+  HistoricalDetectionStatus,
+} from './path-context/index.js';

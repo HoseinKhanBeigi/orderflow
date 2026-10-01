@@ -17,6 +17,11 @@ export type {
   HistoricalReactionSample,
   StrengthHistoryPoint,
   HistoricalSRStrengthComponents,
+  HistoricalZoneLocationState,
+  HistoricalZoneInteractionState,
+  HistoricalZonePressureState,
+  HistoricalZoneVersion,
+  ZoneCenterMethod,
 } from './types.js';
 export type {
   HistoricalSRStrengthScore,
@@ -36,4 +41,19 @@ export {
   strengthStateLabel,
   strengthStateOf,
   timeframeImportanceScore,
+  classifyZoneInteraction,
+  classifyZoneLocation,
+  zoneHalfWidthOf,
+  zoneInteractionBadge,
+  zoneGeometryAsOf,
+  timeframeWidthFactor,
 } from './engine.js';
+export {
+  appendZoneVersion,
+  mergeZoneCenter,
+  expandZoneBounds,
+  updateInteractionSession,
+  pickPrimaryZone,
+  multiTfZoneConfluenceLabel,
+  zoneMetrics,
+} from './zone.js';

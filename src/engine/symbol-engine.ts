@@ -36,6 +36,11 @@ import {
 } from '../location-context/index.js';
 import { emptyLocationContext } from '../models/location-context.js';
 import { evaluateStructureDefense, emptyLiveDefense } from '../live-defense/index.js';
+import {
+  evaluatePathContext,
+  emptyPathContext,
+  type PathZoneRef,
+} from '../path-context/index.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
 import { PassiveLiquidityEngine } from '../passive-liquidity/engine.js';
@@ -626,6 +631,7 @@ export class SymbolEngine {
       marketFuel,
       locationContext: emptyLocationContext(this.symbol, now),
       liveDefense: emptyLiveDefense(now, priceEnd || priceStart),
+      pathContext: emptyPathContext(now, priceEnd || priceStart),
       tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
@@ -714,6 +720,75 @@ export class SymbolEngine {
       downResult: marketBattle.downside.price.efficiencyScore,
       sellersAbsorbed: liquidityResponse.absorption?.kind === 'SELL_ABSORPTION',
       buyersAbsorbed: liquidityResponse.absorption?.kind === 'BUY_ABSORPTION',
+    });
+
+    const px = priceEnd || priceStart;
+    const toZone = (
+      side: 'SUPPORT' | 'RESISTANCE',
+      view: { price: number; strength: number } | null | undefined,
+    ): PathZoneRef[] => {
+      if (!view || !(view.price > 0)) return [];
+      const half = view.price * 0.0008;
+      return [
+        {
+          center: view.price,
+          zoneLow: view.price - half,
+          zoneHigh: view.price + half,
+          strength: view.strength,
+          major: view.strength >= 62,
+          timeframe: window,
+        },
+      ];
+    };
+    const dq = passiveLiquidity.dataQuality;
+    const liveBookQuality =
+      !dq?.trustworthy || /stale|gap|reconnect/i.test((dq.reasons ?? []).join(' '))
+        ? (/stale/i.test((dq?.reasons ?? []).join(' ')) ? 'STALE' : 'PARTIAL')
+        : dq.score >= 60
+          ? 'GOOD'
+          : 'UNKNOWN';
+    if (String(marketBattle.dataHealth?.status || '').includes('STALE')) {
+      // Prefer trade/book staleness signal from battle health.
+    }
+    const bookQ = String(marketBattle.dataHealth?.status || '').includes('STALE')
+      ? 'STALE'
+      : liveBookQuality;
+
+    snap.pathContext = evaluatePathContext({
+      currentPrice: px,
+      timestamp: now,
+      historicalResistances: toZone('RESISTANCE', loc.nearestResistance),
+      historicalSupports: toZone('SUPPORT', loc.nearestSupport),
+      higherTfAvailable: false,
+      higherTfResistances: null,
+      higherTfSupports: null,
+      minorLevelsHidden: true,
+      historyInsufficient: !loc.nearestResistance && !loc.nearestSupport && (loc.dataQuality === 'INSUFFICIENT_DATA'),
+      liveAsk: snap.liveDefense.relevantAsk
+        ? {
+            price: snap.liveDefense.relevantAsk.price,
+            strength: snap.liveDefense.relevantAsk.strength,
+            notional: null,
+            trend: snap.liveDefense.relevantAsk.trend ?? null,
+          }
+        : null,
+      liveBid: snap.liveDefense.relevantBid
+        ? {
+            price: snap.liveDefense.relevantBid.price,
+            strength: snap.liveDefense.relevantBid.strength,
+            notional: null,
+            trend: snap.liveDefense.relevantBid.trend ?? null,
+          }
+        : null,
+      askLiquidityPresent: !!snap.liveDefense.relevantAsk || (passiveLiquidity.wallMap?.asks?.length ?? 0) > 0,
+      bidLiquidityPresent: !!snap.liveDefense.relevantBid || (passiveLiquidity.wallMap?.bids?.length ?? 0) > 0,
+      liveBookQuality: bookQ,
+      locationState: loc.locationContext,
+      interactionState: loc.candleInteraction,
+      buyAttack: marketBattle.upside.aggressive.power,
+      sellAttack: marketBattle.downside.aggressive.power,
+      upResult: marketBattle.upside.price.efficiencyScore,
+      downResult: marketBattle.downside.price.efficiencyScore,
     });
 
     snap.tradeDecision = evaluateTradeDecision(snap, this.config.tradeDecision, { now });

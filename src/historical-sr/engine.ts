@@ -21,6 +21,24 @@ import {
   secondsPerBarForTimeframe,
   type HistoricalSRStrengthConfig,
 } from './strength.js';
+import {
+  appendZoneVersion,
+  barTouchesZone,
+  classifyZoneInteraction,
+  classifyZoneLocation,
+  classifyZonePressure,
+  expandZoneBounds,
+  mergeZoneCenter,
+  multiTfZoneConfluenceLabel,
+  pickPrimaryZone,
+  timeframeWidthFactor,
+  toLegacyInteraction,
+  updateInteractionSession,
+  zoneGeometryAsOf,
+  zoneHalfWidthOf,
+  zoneInteractionBadge,
+  zoneMetrics,
+} from './zone.js';
 
 export {
   DEFAULT_HISTORICAL_SR_CONFIG,
@@ -37,6 +55,9 @@ export type {
   HistoricalLevelType,
   HistoricalSRConfig,
   HistoricalSRSnapshot,
+  HistoricalZoneLocationState,
+  HistoricalZoneInteractionState,
+  HistoricalZoneVersion,
 } from './types.js';
 export {
   computeHistoricalSRStrength,
@@ -56,6 +77,14 @@ export type {
   HistoricalReactionSample,
   StrengthHistoryPoint,
 } from './strength.js';
+export {
+  classifyZoneInteraction,
+  classifyZoneLocation,
+  zoneHalfWidthOf,
+  zoneInteractionBadge,
+  zoneGeometryAsOf,
+  timeframeWidthFactor,
+} from './zone.js';
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -77,15 +106,29 @@ function atrOf(bars: HistoricalBarLike[], period: number): number {
   return sum / n || bars[bars.length - 1]!.close * 0.002;
 }
 
-function zoneHalfWidth(price: number, atr: number, config: HistoricalSRConfig): number {
-  const fromAtr = atr * config.zoneAtrFraction;
-  const fromBps = price * (config.zoneMinBps / 10_000);
-  return Math.max(fromAtr, fromBps, price * 1e-6);
+function zoneHalfWidth(
+  price: number,
+  atr: number,
+  config: HistoricalSRConfig,
+  timeframe: string,
+): number {
+  return zoneHalfWidthOf(
+    price,
+    atr,
+    {
+      zoneAtrFraction: config.zoneAtrFraction,
+      zoneMinBps: config.zoneMinBps,
+      timeframeWidthFactor: config.timeframeAwareWidth ? timeframeWidthFactor(timeframe) : 1,
+    },
+    timeframe,
+  );
 }
 
-function bpsDistance(a: number, b: number): number {
-  if (!(a > 0) || !(b > 0)) return Number.POSITIVE_INFINITY;
-  return (Math.abs(a - b) / a) * 10_000;
+function syncZoneMetrics(level: HistoricalLevel): void {
+  const m = zoneMetrics(level.centerPrice, level.zoneLow, level.zoneHigh);
+  level.width = m.width;
+  level.widthBps = m.widthBps;
+  level.price = level.centerPrice;
 }
 
 function emptyStrengthComponents() {
@@ -108,8 +151,20 @@ function cloneLevel(level: HistoricalLevel): HistoricalLevel {
     strengthComponents: { ...level.strengthComponents },
     reactionHistory: level.reactionHistory.map((r) => ({ ...r })),
     strengthHistory: level.strengthHistory.map((h) => ({ ...h })),
+    zoneVersions: level.zoneVersions.map((v) => ({ ...v })),
     confluenceTimeframes: [...level.confluenceTimeframes],
   };
+}
+
+function legacyLocationOf(
+  state: import('./types.js').HistoricalZoneLocationState,
+): HistoricalCandleSRContext['locationContext'] {
+  if (state === 'INSIDE_SUPPORT' || state === 'ENTERING_SUPPORT') return 'AT_SUPPORT';
+  if (state === 'NEAR_SUPPORT') return 'NEAR_SUPPORT';
+  if (state === 'INSIDE_RESISTANCE' || state === 'ENTERING_RESISTANCE') return 'AT_RESISTANCE';
+  if (state === 'NEAR_RESISTANCE') return 'NEAR_RESISTANCE';
+  if (state === 'NONE' || state === 'UNKNOWN') return state === 'UNKNOWN' ? 'UNKNOWN' : 'NONE';
+  return 'BETWEEN_LEVELS';
 }
 
 /** Causal component view — ignores mutations that happened after `timestamp`. */
@@ -338,9 +393,12 @@ export class HistoricalSREngine {
   }
 
   private refreshConfluence(level: HistoricalLevel): void {
-    const tol = Math.max(this.lastAtr * this.config.clusterAtrFraction, zoneHalfWidth(level.price, this.lastAtr, this.config));
+    const tol = Math.max(
+      this.lastAtr * this.config.clusterAtrFraction,
+      zoneHalfWidth(level.centerPrice, this.lastAtr, this.config, this.timeframe),
+    );
     const result = multiTimeframeConfluenceScore(
-      { price: level.price, sourceTimeframe: level.sourceTimeframe },
+      { price: level.centerPrice, sourceTimeframe: level.sourceTimeframe },
       this.externalConfluence,
       tol,
     );
@@ -371,6 +429,18 @@ export class HistoricalSREngine {
       out.historicalStrengthBeforeBreak = null;
     }
 
+    // Causal zone geometry from version history (no future cluster expansion).
+    out.zoneVersions = (level.zoneVersions ?? []).filter((v) => v.timestamp <= timestamp);
+    const geo = zoneGeometryAsOf(out.zoneVersions, {
+      centerPrice: level.centerPrice ?? level.price,
+      zoneLow: level.zoneLow,
+      zoneHigh: level.zoneHigh,
+    }, timestamp);
+    out.centerPrice = geo.centerPrice;
+    out.zoneLow = geo.zoneLow;
+    out.zoneHigh = geo.zoneHigh;
+    syncZoneMetrics(out);
+
     // Causal reaction / strength history only.
     out.reactionHistory = (level.reactionHistory ?? []).filter((s) => s.timestamp <= timestamp);
     out.strengthHistory = (level.strengthHistory ?? []).filter((h) => h.timestamp <= timestamp);
@@ -378,21 +448,20 @@ export class HistoricalSREngine {
 
     const held = out.reactionHistory.filter((s) => s.held && s.kind !== 'BREAK');
     const broken = out.reactionHistory.filter((s) => s.kind === 'BREAK');
-    const touchEvents = this.events.filter(
-      (e) =>
-        e.levelId === level.id &&
-        e.timestamp <= timestamp &&
-        (e.type === 'LEVEL_TOUCHED' || e.type === 'LEVEL_HELD' || e.type === 'LEVEL_BROKEN'),
+    const sessions = new Set(
+      out.reactionHistory.map((r) => r.sessionId).filter((id): id is string => !!id),
     );
-    out.touchCount = Math.max(1, touchEvents.length || (out.knownAt <= timestamp ? 1 : 0));
+    out.touchCount = Math.max(sessions.size, held.length > 0 || out.knownAt <= timestamp ? 1 : 0);
     out.rejectionCount = held.length;
+    out.holdCount = held.length;
     out.breakCount = broken.length;
     out.lastInteractionAt =
       out.reactionHistory.length > 0
         ? out.reactionHistory[out.reactionHistory.length - 1]!.timestamp
         : null;
+    out.activeSessionId = null;
+    out.sessionStartedAt = null;
 
-    // Confluence: multi-TF registered at creation; same-TF cluster only if confirmed by T.
     const confirmedByT = this.events.filter(
       (e) =>
         e.levelId === level.id &&
@@ -485,7 +554,7 @@ export class HistoricalSREngine {
     atr: number;
     swingSignificance: number;
   }): void {
-    const half = zoneHalfWidth(p.price, p.atr, this.config);
+    const half = zoneHalfWidth(p.price, p.atr, this.config, this.timeframe);
     const clusterTol = Math.max(p.atr * this.config.clusterAtrFraction, half);
 
     const existing = this.levels.find(
@@ -493,15 +562,36 @@ export class HistoricalSREngine {
         l.type === p.type &&
         l.state !== 'BROKEN' &&
         l.state !== 'EXPIRED' &&
-        Math.abs(l.price - p.price) <= clusterTol,
+        Math.abs(l.centerPrice - p.price) <= clusterTol,
     );
 
     if (existing) {
       const stateBefore = existing.state;
-      existing.price = (existing.price * existing.touchCount + p.price) / (existing.touchCount + 1);
-      existing.zoneLow = Math.min(existing.zoneLow, p.price - half);
-      existing.zoneHigh = Math.max(existing.zoneHigh, p.price + half);
-      existing.touchCount += 1;
+      existing.centerPrice = mergeZoneCenter(
+        this.config.zoneCenterMethod,
+        existing.centerPrice,
+        existing.pivotWeight,
+        p.price,
+        1,
+      );
+      existing.pivotWeight += 1;
+      const expanded = expandZoneBounds(
+        { centerPrice: existing.centerPrice, zoneLow: existing.zoneLow, zoneHigh: existing.zoneHigh },
+        p.price,
+        half,
+      );
+      existing.zoneLow = expanded.zoneLow;
+      existing.zoneHigh = expanded.zoneHigh;
+      syncZoneMetrics(existing);
+      existing.zoneVersions = appendZoneVersion(existing.zoneVersions, {
+        timestamp: p.knownAt,
+        centerPrice: existing.centerPrice,
+        zoneLow: existing.zoneLow,
+        zoneHigh: existing.zoneHigh,
+        width: existing.width,
+        widthBps: existing.widthBps,
+        reason: 'CLUSTER_EXPAND',
+      });
       existing.components.independentTests += 1;
       existing.components.swingSignificance = Math.max(
         existing.components.swingSignificance,
@@ -509,16 +599,24 @@ export class HistoricalSREngine {
         78,
       );
       existing.source = 'CLUSTERED_SWING';
-      // Same-TF cluster = mild confluence, not multi-TF.
       existing.confluenceScore = Math.max(existing.confluenceScore, 35);
       existing.lastInteractionAt = p.knownAt;
       this.refreshConfluence(existing);
       this.applyLevelStrength(existing, p.knownAt, p.atr);
       this.pushEvent({
+        type: 'ZONE_EXPANDED',
+        timestamp: p.knownAt,
+        levelId: existing.id,
+        price: existing.centerPrice,
+        stateBefore,
+        stateAfter: existing.state,
+        evidence: `cluster merge pivot @ ${p.price} → zone ${existing.zoneLow}-${existing.zoneHigh}`,
+      });
+      this.pushEvent({
         type: 'LEVEL_CONFIRMED',
         timestamp: p.knownAt,
         levelId: existing.id,
-        price: existing.price,
+        price: existing.centerPrice,
         stateBefore,
         stateAfter: existing.state,
         evidence: `cluster merge pivot @ ${p.price}`,
@@ -527,12 +625,16 @@ export class HistoricalSREngine {
       return;
     }
 
+    const metrics = zoneMetrics(p.price, p.price - half, p.price + half);
     const level: HistoricalLevel = {
       id: `${p.type}:${p.source}:${p.sourceCandleTime}:${p.knownAt}:${p.price.toFixed(8)}`,
       type: p.type,
       price: p.price,
+      centerPrice: p.price,
       zoneLow: p.price - half,
       zoneHigh: p.price + half,
+      width: metrics.width,
+      widthBps: metrics.widthBps,
       source: p.source,
       sourceTimeframe: this.timeframe,
       sourceCandleTime: p.sourceCandleTime,
@@ -548,18 +650,27 @@ export class HistoricalSREngine {
       strengthComponents: emptyStrengthComponents(),
       reactionHistory: [],
       strengthHistory: [],
+      zoneVersions: [],
       roleFlipCount: 0,
       roleFlipQuality: 0,
       confluenceScore: 0,
       multiTimeframeConfluence: false,
       confluenceTimeframes: [this.timeframe],
       historicalStrengthBeforeBreak: null,
-      touchCount: 1,
+      touchCount: 0,
+      holdCount: 0,
       rejectionCount: 0,
       breakCount: 0,
       state: 'ACTIVE',
+      locationState: 'NONE',
+      interactionState: 'NONE',
+      pressureState: 'NONE',
+      activeSessionId: null,
+      sessionStartedAt: null,
+      sessionTouchBars: 0,
       beyondCloses: 0,
       initialSwingSignificance: p.swingSignificance,
+      pivotWeight: 1,
       components: {
         swingSignificance: p.swingSignificance,
         reactionCount: 0,
@@ -568,6 +679,15 @@ export class HistoricalSREngine {
         independentTests: 1,
       },
     };
+    level.zoneVersions = appendZoneVersion([], {
+      timestamp: p.knownAt,
+      centerPrice: level.centerPrice,
+      zoneLow: level.zoneLow,
+      zoneHigh: level.zoneHigh,
+      width: level.width,
+      widthBps: level.widthBps,
+      reason: 'CREATED',
+    });
     this.refreshConfluence(level);
     this.applyLevelStrength(level, p.knownAt, p.atr);
     this.levels.push(level);
@@ -575,10 +695,10 @@ export class HistoricalSREngine {
       type: 'LEVEL_CREATED',
       timestamp: p.knownAt,
       levelId: level.id,
-      price: level.price,
+      price: level.centerPrice,
       stateBefore: 'FORMING',
       stateAfter: 'ACTIVE',
-      evidence: `swing pivot confirmed (${p.source})`,
+      evidence: `swing pivot confirmed (${p.source}) zone ${level.zoneLow}-${level.zoneHigh}`,
     });
     this.upsertSegment(level);
   }
@@ -587,13 +707,18 @@ export class HistoricalSREngine {
     const major = level.strength >= this.config.majorMinStrength;
     const existing = this.segments.get(level.id);
     if (existing) {
-      existing.price = level.price;
+      existing.price = level.centerPrice;
+      existing.centerPrice = level.centerPrice;
       existing.zoneLow = level.zoneLow;
       existing.zoneHigh = level.zoneHigh;
+      existing.width = level.width;
+      existing.widthBps = level.widthBps;
       existing.strength = level.strength;
       existing.strengthState = level.strengthState;
       existing.strengthConfidence = level.strengthConfidence;
       existing.reactionTrend = level.reactionTrend;
+      existing.locationState = level.locationState;
+      existing.interactionState = level.interactionState;
       existing.state = level.state;
       existing.major = major;
       if (
@@ -612,13 +737,18 @@ export class HistoricalSREngine {
     this.segments.set(level.id, {
       levelId: level.id,
       type: level.type,
-      price: level.price,
+      price: level.centerPrice,
+      centerPrice: level.centerPrice,
       zoneLow: level.zoneLow,
       zoneHigh: level.zoneHigh,
+      width: level.width,
+      widthBps: level.widthBps,
       strength: level.strength,
       strengthState: level.strengthState,
       strengthConfidence: level.strengthConfidence,
       reactionTrend: level.reactionTrend,
+      locationState: level.locationState,
+      interactionState: level.interactionState,
       state: level.state,
       fromTime: level.knownAt,
       toTime: null,
@@ -629,31 +759,71 @@ export class HistoricalSREngine {
 
   private interactLevels(bar: HistoricalBarLike): void {
     const atr = this.lastAtr;
+    const prior = this.bars.length >= 2 ? this.bars[this.bars.length - 2]! : null;
     const known = this.levels.filter(
       (l) => l.knownAt <= bar.time && l.state !== 'EXPIRED' && l.state !== 'BROKEN',
     );
 
     for (const level of known) {
-      const interaction = this.classifyInteraction(level, bar);
-      if (interaction === 'NONE' || interaction === 'APPROACH') continue;
+      const zoneIx = classifyZoneInteraction({
+        type: level.type,
+        zoneLow: level.zoneLow,
+        zoneHigh: level.zoneHigh,
+        centerPrice: level.centerPrice,
+        bar,
+        atr,
+        breakBeyondAtrFraction: this.config.breakBeyondAtrFraction,
+        approachBps: this.config.touchApproachBps,
+        beyondCloses: level.beyondCloses,
+        breakConfirmCloses: this.config.breakConfirmCloses,
+      });
+      const interaction = toLegacyInteraction(zoneIx);
+      const touching = barTouchesZone(bar, level.zoneLow, level.zoneHigh) || zoneIx === 'APPROACHING';
+
+      const session = updateInteractionSession({
+        activeSessionId: level.activeSessionId,
+        sessionStartedAt: level.sessionStartedAt,
+        lastInsideAt: level.lastInteractionAt,
+        bar,
+        zoneLow: level.zoneLow,
+        zoneHigh: level.zoneHigh,
+        leaveBps: this.config.sessionLeaveBps,
+        touching: touching && zoneIx !== 'NONE' && zoneIx !== 'APPROACHING',
+      });
+      level.activeSessionId = session.activeSessionId;
+      level.sessionStartedAt = session.sessionStartedAt;
+      if (session.newSession) {
+        level.touchCount += 1;
+        level.sessionTouchBars = 1;
+      } else if (session.activeSessionId && touching) {
+        level.sessionTouchBars += 1;
+      }
+
+      level.locationState = classifyZoneLocation({
+        type: level.type,
+        price: bar.close,
+        zoneLow: level.zoneLow,
+        zoneHigh: level.zoneHigh,
+        nearBps: this.config.nearZoneBps,
+        priorPrice: prior?.close ?? null,
+      });
+      level.interactionState = zoneIx;
+
+      if (zoneIx === 'NONE' || zoneIx === 'APPROACHING') {
+        if (zoneIx === 'APPROACHING') level.interactionState = 'APPROACHING';
+        this.upsertSegment(level);
+        continue;
+      }
 
       const stateBefore = level.state;
       level.lastInteractionAt = bar.time;
-      level.touchCount +=
-        interaction === 'TOUCH' ||
-        interaction === 'WICK_TOUCH' ||
-        interaction === 'BODY_TOUCH' ||
-        interaction === 'CLOSE_IN_ZONE' ||
-        interaction === 'REJECTION' ||
-        interaction === 'RETEST'
-          ? 1
-          : 0;
 
-      if (interaction === 'REJECTION') {
+      if (zoneIx === 'REJECTED' || zoneIx === 'HELD') {
         level.rejectionCount += 1;
+        level.holdCount += 1;
         const sample = reactionFromBar({
           timestamp: bar.time,
-          levelPrice: level.price,
+          levelPrice: level.centerPrice,
           type: level.type,
           open: bar.open,
           high: bar.high,
@@ -663,98 +833,98 @@ export class HistoricalSREngine {
           held: true,
           kind: 'REJECTION',
         });
+        sample.sessionId = level.activeSessionId;
         level.reactionHistory.push(sample);
         const mag =
           level.type === 'SUPPORT'
-            ? ((bar.close - level.zoneLow) / Math.max(atr, level.price * 0.001)) * 25
-            : ((level.zoneHigh - bar.close) / Math.max(atr, level.price * 0.001)) * 25;
+            ? ((bar.close - level.zoneLow) / Math.max(atr, level.centerPrice * 0.001)) * 25
+            : ((level.zoneHigh - bar.close) / Math.max(atr, level.centerPrice * 0.001)) * 25;
         level.components.rejectionMagnitude = clamp(
           level.components.rejectionMagnitude * 0.6 + clamp(mag, 0, 100) * 0.4,
           0,
           100,
         );
-        level.components.independentTests += 1;
+        if (session.newSession) level.components.independentTests += 1;
         if (level.state === 'ACTIVE') level.state = 'TESTED';
+        level.pressureState = classifyZonePressure({
+          type: level.type,
+          sessionTouchBars: level.sessionTouchBars,
+          avgPullbackAtr: sample.reactionAtr,
+          held: true,
+        });
         this.pushEvent({
           type: 'LEVEL_HELD',
           timestamp: bar.time,
           levelId: level.id,
-          price: level.price,
+          price: level.centerPrice,
           stateBefore,
           stateAfter: level.state,
-          evidence: `${level.type} held via rejection`,
+          evidence: `${level.type} ${zoneIx} session=${level.activeSessionId ?? '—'}`,
         });
-      } else if (interaction === 'BREAK') {
+      } else if (zoneIx === 'BREAKING' || zoneIx === 'ACCEPTED_THROUGH') {
         level.beyondCloses += 1;
+        level.interactionState = level.beyondCloses >= this.config.breakConfirmCloses ? 'ACCEPTED_THROUGH' : 'BREAKING';
         if (level.beyondCloses >= this.config.breakConfirmCloses) {
           level.breakCount += 1;
           level.historicalStrengthBeforeBreak = level.strengthScore;
-          level.reactionHistory.push(
-            reactionFromBar({
-              timestamp: bar.time,
-              levelPrice: level.price,
-              type: level.type,
-              open: bar.open,
-              high: bar.high,
-              low: bar.low,
-              close: bar.close,
-              atr,
-              held: false,
-              kind: 'BREAK',
-            }),
-          );
+          const sample = reactionFromBar({
+            timestamp: bar.time,
+            levelPrice: level.centerPrice,
+            type: level.type,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            atr,
+            held: false,
+            kind: 'BREAK',
+          });
+          sample.sessionId = level.activeSessionId;
+          level.reactionHistory.push(sample);
           level.state = 'BROKEN';
+          level.interactionState = 'BROKEN';
           this.applyLevelStrength(level, bar.time, atr);
           this.pushEvent({
             type: 'LEVEL_BROKEN',
             timestamp: bar.time,
             levelId: level.id,
-            price: level.price,
+            price: level.centerPrice,
             stateBefore,
             stateAfter: 'BROKEN',
-            evidence: `close acceptance beyond zone (${level.beyondCloses} closes)`,
+            evidence: `accepted through zone (${level.beyondCloses} closes)`,
           });
           this.upsertSegment(level);
           this.maybeFlip(level, bar);
         }
       } else {
-        // Weak touch / stall — record low-quality sample so touch-count alone cannot inflate strength.
-        if (
-          interaction === 'WICK_TOUCH' ||
-          interaction === 'BODY_TOUCH' ||
-          interaction === 'CLOSE_IN_ZONE' ||
-          interaction === 'TOUCH' ||
-          interaction === 'RETEST'
-        ) {
-          level.reactionHistory.push(
-            reactionFromBar({
-              timestamp: bar.time,
-              levelPrice: level.price,
-              type: level.type,
-              open: bar.open,
-              high: bar.high,
-              low: bar.low,
-              close: bar.close,
-              atr,
-              held: interaction === 'RETEST',
-              kind: 'WEAK_BOUNCE',
-            }),
-          );
-        }
+        const sample = reactionFromBar({
+          timestamp: bar.time,
+          levelPrice: level.centerPrice,
+          type: level.type,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          atr,
+          held: false,
+          kind: 'WEAK_BOUNCE',
+        });
+        sample.sessionId = level.activeSessionId;
+        level.reactionHistory.push(sample);
         if (level.state === 'ACTIVE') level.state = 'TESTED';
         this.pushEvent({
           type: 'LEVEL_TOUCHED',
           timestamp: bar.time,
           levelId: level.id,
-          price: level.price,
+          price: level.centerPrice,
           stateBefore,
           stateAfter: level.state,
-          evidence: interaction,
+          evidence: `${zoneIx}/${interaction}`,
         });
       }
 
       if (level.state !== 'BROKEN') {
-        level.beyondCloses = interaction === 'CLOSE_THROUGH' ? level.beyondCloses : 0;
+        if (zoneIx !== 'BREAKING') level.beyondCloses = 0;
         this.applyLevelStrength(level, bar.time, atr);
         this.upsertSegment(level);
       }
@@ -763,17 +933,21 @@ export class HistoricalSREngine {
 
   private maybeFlip(broken: HistoricalLevel, bar: HistoricalBarLike): void {
     const atr = this.lastAtr;
-    const half = zoneHalfWidth(broken.price, atr, this.config);
+    const half = zoneHalfWidth(broken.centerPrice, atr, this.config, this.timeframe);
     const flippedType: HistoricalLevelType = broken.type === 'RESISTANCE' ? 'SUPPORT' : 'RESISTANCE';
     const flippedState: HistoricalLevelState =
       flippedType === 'SUPPORT' ? 'FLIPPED_SUPPORT' : 'FLIPPED_RESISTANCE';
+    const metrics = zoneMetrics(broken.centerPrice, broken.centerPrice - half, broken.centerPrice + half);
 
     const level: HistoricalLevel = {
       id: `${flippedType}:FLIPPED:${broken.id}:${bar.time}`,
       type: flippedType,
-      price: broken.price,
-      zoneLow: broken.price - half,
-      zoneHigh: broken.price + half,
+      price: broken.centerPrice,
+      centerPrice: broken.centerPrice,
+      zoneLow: broken.centerPrice - half,
+      zoneHigh: broken.centerPrice + half,
+      width: metrics.width,
+      widthBps: metrics.widthBps,
       source: 'FLIPPED',
       sourceTimeframe: this.timeframe,
       sourceCandleTime: broken.sourceCandleTime,
@@ -789,6 +963,7 @@ export class HistoricalSREngine {
       strengthComponents: emptyStrengthComponents(),
       reactionHistory: [],
       strengthHistory: [],
+      zoneVersions: [],
       roleFlipCount: 1,
       roleFlipQuality: clamp(broken.historicalStrengthBeforeBreak ?? broken.strengthScore, 40, 95),
       confluenceScore: broken.confluenceScore * 0.5,
@@ -796,11 +971,19 @@ export class HistoricalSREngine {
       confluenceTimeframes: [...broken.confluenceTimeframes],
       historicalStrengthBeforeBreak: null,
       touchCount: 0,
+      holdCount: 0,
       rejectionCount: 0,
       breakCount: 0,
       state: flippedState,
+      locationState: 'NONE',
+      interactionState: 'FLIPPED',
+      pressureState: 'NONE',
+      activeSessionId: null,
+      sessionStartedAt: null,
+      sessionTouchBars: 0,
       beyondCloses: 0,
       initialSwingSignificance: 70,
+      pivotWeight: 1,
       components: {
         swingSignificance: 70,
         reactionCount: 0,
@@ -809,6 +992,15 @@ export class HistoricalSREngine {
         independentTests: 1,
       },
     };
+    level.zoneVersions = appendZoneVersion([], {
+      timestamp: bar.time,
+      centerPrice: level.centerPrice,
+      zoneLow: level.zoneLow,
+      zoneHigh: level.zoneHigh,
+      width: level.width,
+      widthBps: level.widthBps,
+      reason: 'FLIP',
+    });
     this.refreshConfluence(level);
     this.applyLevelStrength(level, bar.time, atr);
     this.levels.push(level);
@@ -816,7 +1008,7 @@ export class HistoricalSREngine {
       type: 'LEVEL_FLIPPED',
       timestamp: bar.time,
       levelId: level.id,
-      price: level.price,
+      price: level.centerPrice,
       stateBefore: 'BROKEN',
       stateAfter: flippedState,
       evidence: `${broken.type} → ${flippedState}`,
@@ -825,54 +1017,20 @@ export class HistoricalSREngine {
   }
 
   private classifyInteraction(level: HistoricalLevel, bar: HistoricalBarLike): HistoricalInteraction {
-    const atr = this.lastAtr;
-    const { zoneLow, zoneHigh } = level;
-    const mid = level.price;
-    const approachBps = this.config.touchApproachBps;
-    const near = bpsDistance(bar.close, mid) <= approachBps * 1.5;
-
-    const wickIn =
-      (bar.low <= zoneHigh && bar.low >= zoneLow) ||
-      (bar.high >= zoneLow && bar.high <= zoneHigh) ||
-      (bar.low < zoneLow && bar.high > zoneHigh);
-    const bodyLow = Math.min(bar.open, bar.close);
-    const bodyHigh = Math.max(bar.open, bar.close);
-    const bodyIn = bodyLow <= zoneHigh && bodyHigh >= zoneLow;
-    const closeIn = bar.close >= zoneLow && bar.close <= zoneHigh;
-
-    const breakDist = atr * this.config.breakBeyondAtrFraction;
-
-    if (level.type === 'SUPPORT' || level.state === 'FLIPPED_SUPPORT') {
-      const wickThrough = bar.low < zoneLow - breakDist * 0.25;
-      const closeThrough = bar.close < zoneLow - breakDist;
-      if (closeThrough) return 'BREAK';
-      if (wickIn || bodyIn || closeIn) {
-        if ((wickThrough || wickIn) && bar.close > zoneLow && bar.close >= mid - atr * 0.05) {
-          return 'REJECTION';
-        }
-        if (closeIn) return 'CLOSE_IN_ZONE';
-        if (bodyIn) return 'BODY_TOUCH';
-        if (wickIn) return 'WICK_TOUCH';
-        return 'TOUCH';
-      }
-      if (near) return 'APPROACH';
-      return 'NONE';
-    }
-
-    const wickThrough = bar.high > zoneHigh + breakDist * 0.25;
-    const closeThrough = bar.close > zoneHigh + breakDist;
-    if (closeThrough) return 'BREAK';
-    if (wickIn || bodyIn || closeIn) {
-      if ((wickThrough || wickIn) && bar.close < zoneHigh && bar.close <= mid + atr * 0.05) {
-        return 'REJECTION';
-      }
-      if (closeIn) return 'CLOSE_IN_ZONE';
-      if (bodyIn) return 'BODY_TOUCH';
-      if (wickIn) return 'WICK_TOUCH';
-      return 'TOUCH';
-    }
-    if (near) return 'APPROACH';
-    return 'NONE';
+    const zoneIx = classifyZoneInteraction({
+      type: level.type,
+      zoneLow: level.zoneLow,
+      zoneHigh: level.zoneHigh,
+      centerPrice: level.centerPrice,
+      bar,
+      atr: this.lastAtr,
+      breakBeyondAtrFraction: this.config.breakBeyondAtrFraction,
+      approachBps: this.config.touchApproachBps,
+      beyondCloses: level.beyondCloses,
+      breakConfirmCloses: this.config.breakConfirmCloses,
+      levelBroken: level.state === 'BROKEN',
+    });
+    return toLegacyInteraction(zoneIx);
   }
 
   private applyDecay(now: number): void {
@@ -926,6 +1084,7 @@ export class HistoricalSREngine {
   }
 
   private buildCandleContextFrom(bar: HistoricalBarLike, known: HistoricalLevel[]): HistoricalCandleSRContext {
+    const prior = [...this.bars].reverse().find((b) => b.time < bar.time) ?? null;
     const supports = known
       .filter(
         (l) =>
@@ -933,7 +1092,7 @@ export class HistoricalSREngine {
           l.state !== 'BROKEN' &&
           l.state !== 'EXPIRED',
       )
-      .sort((a, b) => Math.abs(a.price - bar.close) - Math.abs(b.price - bar.close));
+      .sort((a, b) => Math.abs(a.centerPrice - bar.close) - Math.abs(b.centerPrice - bar.close));
     const resistances = known
       .filter(
         (l) =>
@@ -941,30 +1100,86 @@ export class HistoricalSREngine {
           l.state !== 'BROKEN' &&
           l.state !== 'EXPIRED',
       )
-      .sort((a, b) => Math.abs(a.price - bar.close) - Math.abs(b.price - bar.close));
+      .sort((a, b) => Math.abs(a.centerPrice - bar.close) - Math.abs(b.centerPrice - bar.close));
 
     const nearestKnownSupport = supports[0] ?? null;
     const nearestKnownResistance = resistances[0] ?? null;
+    const primaryZone = pickPrimaryZone(
+      [...supports, ...resistances].map((l) => ({
+        ...l,
+        centerPrice: l.centerPrice,
+        strengthScore: l.strengthScore,
+        knownAt: l.knownAt,
+        sourceTimeframe: l.sourceTimeframe,
+        type: l.type,
+      })),
+      bar.close,
+    );
 
-    const atBps = 8;
-    const nearBps = 22;
-    let locationContext: HistoricalCandleSRContext['locationContext'] = 'BETWEEN_LEVELS';
-    if (!nearestKnownSupport && !nearestKnownResistance) locationContext = 'NONE';
-    else {
-      const ds = nearestKnownSupport ? bpsDistance(bar.close, nearestKnownSupport.price) : Infinity;
-      const dr = nearestKnownResistance ? bpsDistance(bar.close, nearestKnownResistance.price) : Infinity;
-      if (nearestKnownSupport && ds <= atBps) locationContext = 'AT_SUPPORT';
-      else if (nearestKnownResistance && dr <= atBps) locationContext = 'AT_RESISTANCE';
-      else if (nearestKnownSupport && ds <= nearBps && ds <= dr) locationContext = 'NEAR_SUPPORT';
-      else if (nearestKnownResistance && dr <= nearBps) locationContext = 'NEAR_RESISTANCE';
-      else locationContext = 'BETWEEN_LEVELS';
+    const supportLocationState = nearestKnownSupport
+      ? classifyZoneLocation({
+          type: 'SUPPORT',
+          price: bar.close,
+          zoneLow: nearestKnownSupport.zoneLow,
+          zoneHigh: nearestKnownSupport.zoneHigh,
+          nearBps: this.config.nearZoneBps,
+          priorPrice: prior?.close ?? null,
+        })
+      : null;
+    const resistanceLocationState = nearestKnownResistance
+      ? classifyZoneLocation({
+          type: 'RESISTANCE',
+          price: bar.close,
+          zoneLow: nearestKnownResistance.zoneLow,
+          zoneHigh: nearestKnownResistance.zoneHigh,
+          nearBps: this.config.nearZoneBps,
+          priorPrice: prior?.close ?? null,
+        })
+      : null;
+
+    let locationState: HistoricalCandleSRContext['locationState'] = 'BETWEEN_ZONES';
+    let interactionState: HistoricalCandleSRContext['interactionState'] = 'NONE';
+    if (!primaryZone) {
+      locationState = 'NONE';
+    } else {
+      locationState = classifyZoneLocation({
+        type: primaryZone.type,
+        price: bar.close,
+        zoneLow: primaryZone.zoneLow,
+        zoneHigh: primaryZone.zoneHigh,
+        nearBps: this.config.nearZoneBps,
+        priorPrice: prior?.close ?? null,
+      });
+      interactionState = classifyZoneInteraction({
+        type: primaryZone.type,
+        zoneLow: primaryZone.zoneLow,
+        zoneHigh: primaryZone.zoneHigh,
+        centerPrice: primaryZone.centerPrice,
+        bar,
+        atr: this.lastAtr,
+        breakBeyondAtrFraction: this.config.breakBeyondAtrFraction,
+        approachBps: this.config.touchApproachBps,
+        beyondCloses: primaryZone.beyondCloses,
+        breakConfirmCloses: this.config.breakConfirmCloses,
+        levelBroken: primaryZone.state === 'BROKEN',
+      });
     }
+
+    const locationContext = legacyLocationOf(locationState);
+    const confluenceTfs = primaryZone?.confluenceTimeframes ?? [];
+    const multiTfConfluenceLabel = primaryZone
+      ? multiTfZoneConfluenceLabel(primaryZone.type, confluenceTfs)
+      : null;
 
     return {
       timestamp: bar.time,
       nearestKnownSupport,
       nearestKnownResistance,
+      primaryZone,
+      locationState,
       locationContext,
+      interactionState,
+      interactionBadge: zoneInteractionBadge(locationState, interactionState),
       supportStrength: nearestKnownSupport?.strengthScore ?? null,
       supportStrengthState: nearestKnownSupport?.strengthState ?? null,
       resistanceStrength: nearestKnownResistance?.strengthScore ?? null,
@@ -973,8 +1188,11 @@ export class HistoricalSREngine {
       resistanceInteraction: nearestKnownResistance
         ? this.classifyInteraction(nearestKnownResistance, bar)
         : 'NONE',
+      supportLocationState,
+      resistanceLocationState,
       knownSupport: supports,
       knownResistance: resistances,
+      multiTfConfluenceLabel,
     };
   }
 
