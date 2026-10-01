@@ -3989,6 +3989,15 @@ function drawFootprint(symbol = selectedSymbol) {
     drawChartPriceLine(ctx, yForPrice(livePx), '#60a5fa', `LIVE ${fmtPriceAxis(livePx)}`, leftPad, plotRight + railW);
   }
 
+  drawLocationLevelBoxes(ctx, symbol, bars, {
+    leftPad,
+    plotRight: plotRight + railW,
+    yForPrice,
+    topPad,
+    chartH,
+    livePx,
+  });
+
   const storyIdx = Math.max(0, bars.length - (lastIsLive && bars.length > 1 ? 2 : 1));
   const story = bars.length ? strategyStoryForBar(bars, storyIdx) : null;
   const meta = view.card?.querySelector('[data-fp-meta]');
@@ -4016,6 +4025,120 @@ function drawFootprint(symbol = selectedSymbol) {
     meta.title = strategyStoryTooltip(story) || '';
   }
   ctx.lineWidth = 1;
+}
+
+function chartLocationLevels(symbol, bars) {
+  const summary = symbol === selectedSymbol ? lastSummary : (summaries?.[symbol] ?? null);
+  const loc =
+    summary?.windows?.['1m']?.locationContext ??
+    summary?.windows?.['10s']?.locationContext ??
+    summary?.windows?.[String(chartTfMinutes)]?.locationContext ??
+    null;
+  let support = Number(loc?.nearestSupport?.price);
+  let resistance = Number(loc?.nearestResistance?.price);
+  if (!Number.isFinite(support)) support = null;
+  if (!Number.isFinite(resistance)) resistance = null;
+
+  if ((support == null || resistance == null) && bars?.length >= 3) {
+    const prior = bars.slice(0, Math.max(0, bars.length - (bars[bars.length - 1]?.time === fpCandleTime(Date.now()) ? 1 : 0)));
+    const swings = priorSwingLevels(prior.length ? prior : bars);
+    if (support == null) support = swings.support;
+    if (resistance == null) resistance = swings.resistance;
+  }
+
+  const price = Number(summary?.price) || bars?.[bars.length - 1]?.close || null;
+  const state = loc?.locationContext
+    ? String(loc.locationContext)
+    : inferLocationState(price, support, resistance);
+  return {
+    support,
+    resistance,
+    state,
+    supportBps: loc?.distanceToSupportBps ?? distBps(price, support),
+    resistanceBps: loc?.distanceToResistanceBps ?? distBps(price, resistance),
+    price,
+  };
+}
+
+function distBps(price, level) {
+  if (!(price > 0) || !(level > 0)) return null;
+  return (Math.abs(price - level) / price) * 10_000;
+}
+
+function inferLocationState(price, support, resistance) {
+  if (!(price > 0)) return 'UNKNOWN';
+  if (support == null && resistance == null) return 'NONE';
+  const near = Math.max((price || 1) * 0.0012, 1e-9);
+  if (support != null && Math.abs(price - support) <= near) return 'AT_SUPPORT';
+  if (resistance != null && Math.abs(price - resistance) <= near) return 'AT_RESISTANCE';
+  if (support != null && price < support) return 'BELOW_SUPPORT';
+  if (resistance != null && price > resistance) return 'ABOVE_RESISTANCE';
+  if (support != null && Math.abs(price - support) <= near * 2.5) return 'NEAR_SUPPORT';
+  if (resistance != null && Math.abs(price - resistance) <= near * 2.5) return 'NEAR_RESISTANCE';
+  if (support != null && resistance != null && price > support && price < resistance) return 'BETWEEN_LEVELS';
+  return 'UNKNOWN';
+}
+
+function locationStateLabel(state) {
+  return String(state || 'UNKNOWN').replaceAll('_', ' ');
+}
+
+function locationStateColor(state) {
+  const s = String(state || '');
+  if (s.includes('SUPPORT')) return '#34d399';
+  if (s.includes('RESISTANCE')) return '#f87171';
+  if (s === 'BETWEEN_LEVELS') return '#93c5fd';
+  if (s.includes('ABOVE') || s.includes('BREAKOUT')) return '#fb923c';
+  if (s.includes('BELOW') || s.includes('BREAKDOWN')) return '#c084fc';
+  return '#94a3b8';
+}
+
+/**
+ * Location kind label on the footprint chart (AT SUPPORT / ABOVE RESISTANCE / …).
+ * Zone bands themselves are not drawn.
+ */
+function drawLocationLevelBoxes(ctx, symbol, bars, layout) {
+  const { plotRight, topPad, livePx } = layout;
+  const levels = chartLocationLevels(symbol, bars);
+  void livePx;
+
+  ctx.save();
+  const state = levels.state || 'UNKNOWN';
+  const color = locationStateColor(state);
+  let detail = locationStateLabel(state);
+  if (state.includes('SUPPORT') && levels.supportBps != null) {
+    detail += ` · ${Math.round(levels.supportBps)} bps`;
+  } else if (state.includes('RESISTANCE') && levels.resistanceBps != null) {
+    detail += ` · ${Math.round(levels.resistanceBps)} bps`;
+  } else if (levels.support != null && levels.resistance != null) {
+    detail += ` · S ${fmtPriceAxis(levels.support)} / R ${fmtPriceAxis(levels.resistance)}`;
+  }
+  ctx.font = '700 11px Inter, system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(detail).width;
+  const bx = plotRight - tw - 22;
+  const by = topPad + 8;
+  ctx.fillStyle = 'rgba(8, 11, 16, 0.92)';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.25;
+  roundRectPath(ctx, bx, by, tw + 16, 22, 5);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.fillText(detail, bx + 8, by + 11);
+  ctx.restore();
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
 }
 
 function drawChartPriceLine(ctx, y, color, label, leftPad, plotRight, labelOffset = 0) {

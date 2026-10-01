@@ -153,24 +153,7 @@ body {
   position: relative;
 }
 .decision-panel {
-  position: absolute;
-  top: 2.7rem;
-  right: 0.45rem;
-  z-index: 6;
-  width: 16.5rem;
-  max-height: calc(100% - 3.4rem);
-  overflow: auto;
-  padding: 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(12, 16, 22, 0.94);
-  font-family: var(--mono);
-  font-size: 0.66rem;
-  color: var(--text);
-  pointer-events: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  display: none !important;
 }
 .decision-empty { margin: 0; color: var(--muted); }
 .decision-card {
