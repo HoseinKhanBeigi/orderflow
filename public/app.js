@@ -4223,11 +4223,19 @@ function hsrScoreLevel(level, asOf, atr) {
       weakening = hsrClamp(12 + Math.max(0, hist.length - 2) * 5, 12, 35);
     }
   }
-  let score = hsrClamp(
+  // Untested / lightly tested pivots: structure-led floor so RES/SUP stay visible as major.
+  // One weak touch must not collapse score below majorMin and hide the level.
+  const structureLed = hsrClamp(structure * 0.55 + 58 * 0.25 + recency * 0.2, 0, 72);
+  const reactionLed = hsrClamp(
     structure * 0.2 + reactionQuality * 0.3 + holdQuality * 0.25 + recency * 0.15 + 58 * 0.1 - weakening,
     0,
     100,
   );
+  let score = hist.length === 0
+    ? structureLed
+    : hist.length <= 2
+      ? Math.max(structureLed * 0.9, reactionLed)
+      : reactionLed;
   if (hist.length <= 1) score = Math.min(score, 72);
   const confidence = hsrClamp(25 + Math.min(40, hist.length * 12) + Math.min(20, holds.length * 8), 15, 98);
   let state = 'MODERATE';

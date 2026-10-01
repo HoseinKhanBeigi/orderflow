@@ -231,7 +231,16 @@ export function computeHistoricalSRStrength(input: {
     weakeningPenalty = 10;
   }
 
-  const raw =
+  // Untested levels: structure + timeframe carry the score (empty reaction/hold weights hid new pivots).
+  // Lightly tested: keep a structure floor so one weak touch does not erase the level from major view.
+  const untested = history.length === 0;
+  const lightlyTested = history.length > 0 && history.length <= 2;
+  const structureLed =
+    structureSignificance * 0.55 +
+    timeframeScore * 0.25 +
+    recencyScore * 0.15 +
+    confluenceScore * 0.05;
+  const evidenceLed =
     structureSignificance * w.structureSignificance +
     reactionQuality * w.reactionQuality +
     holdQuality * w.holdQuality +
@@ -239,6 +248,11 @@ export function computeHistoricalSRStrength(input: {
     timeframeScore * w.timeframeImportance +
     roleFlipScore * w.roleFlip +
     confluenceScore * w.confluence;
+  const raw = untested
+    ? structureLed
+    : lightlyTested
+      ? Math.max(structureLed * 0.9, evidenceLed)
+      : evidenceLed;
 
   const scoreBeforePenalty = clamp(raw, 0, 100);
   let strengthScore = clamp(raw - weakeningPenalty, 0, 100);
