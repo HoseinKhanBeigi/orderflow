@@ -153,3 +153,18 @@ export type {
   HistoricalSRSnapshot,
   HistoricalCandleSRContext,
 } from './historical-sr/index.js';
+export {
+  selectLiveDefense,
+  evaluateStructureDefense,
+  emptyLiveDefense,
+  liveDefenseLabel,
+  DEFAULT_LIVE_DEFENSE_CONFIG,
+  LIVE_DEFENSE_VERSION,
+} from './live-defense/index.js';
+export type {
+  LiveDefenseSnapshot,
+  LiveDefenseWall,
+  LiveDefenseConfig,
+  StructuralConfluenceState,
+  StructureDefenseInterpretation,
+} from './live-defense/index.js';

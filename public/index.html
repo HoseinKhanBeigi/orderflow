@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-sr-boxes-v1" />
+  <link rel="stylesheet" href="/styles.css?v=fp-live-defense-v1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -58,6 +58,9 @@
   <div class="alert-toasts" id="alert-toasts" aria-live="assertive"></div>
 
   <div class="app-shell app-shell-grid">
+    <aside class="decision-panel" id="decision-panel" aria-label="Structure and live defense">
+      <p class="decision-empty">Waiting for market read</p>
+    </aside>
     <main class="layout layout-chart-grid">
       <section class="panel chart-panel chart-panel-grid">
         <div class="panel-head">

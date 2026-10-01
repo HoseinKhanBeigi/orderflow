@@ -23,6 +23,7 @@ export type {
 export type {
   LocationContextState,
   ContactType,
+  CandleInteraction,
   SupportReactionState,
   ResistanceReactionState,
   LocationDataQuality,

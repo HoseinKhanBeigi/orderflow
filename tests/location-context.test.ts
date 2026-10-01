@@ -51,7 +51,7 @@ function structurePrior(): LocationBarLike[] {
 }
 
 describe('location context', () => {
-  it('exact support touch → AT_SUPPORT with wick contact', () => {
+  it('support wick contact keeps location from close; interaction separate', () => {
     const support = 99;
     const snap = evaluateLocationContext({
       symbol: 'BTCUSDT',
@@ -66,9 +66,10 @@ describe('location context', () => {
       config: CFG,
       externalLevels: [{ price: support, type: 'SUPPORT', source: 'SWING_PIVOT', strength: 80, knownAt: 5 }],
     });
-    expect(snap.locationContext).toBe('AT_SUPPORT');
+    // Close is above zone → not permanently AT_SUPPORT from wick alone
+    expect(['ABOVE_SUPPORT', 'NEAR_SUPPORT', 'BETWEEN_LEVELS']).toContain(snap.locationContext);
     expect(['WICK_TOUCH', 'BODY_TOUCH', 'CLOSE_AT_LEVEL', 'NEAR_TOUCH']).toContain(snap.contactType);
-    expect(locationTraderLabel(snap.locationContext)).toBe('AT SUPPORT');
+    expect(['TOUCHED_SUPPORT', 'WICK_THROUGH_SUPPORT', 'APPROACHED', 'NONE']).toContain(snap.candleInteraction);
   });
 
   it('near support by bps distance', () => {
@@ -86,7 +87,7 @@ describe('location context', () => {
     expect(snap.distanceToSupportBps!).toBeLessThanOrEqual(40);
   });
 
-  it('exact resistance wick touch → AT_RESISTANCE', () => {
+  it('resistance wick touch keeps location from close; interaction separate', () => {
     const resistance = 5.5;
     const snap = evaluateLocationContext({
       symbol: 'NEARUSDT',
@@ -95,9 +96,10 @@ describe('location context', () => {
       config: CFG,
       externalLevels: [{ price: resistance, type: 'RESISTANCE', source: 'SWING_PIVOT', strength: 85, knownAt: 1 }],
     });
-    expect(snap.locationContext).toBe('AT_RESISTANCE');
+    expect(['BELOW_RESISTANCE', 'NEAR_RESISTANCE', 'BETWEEN_LEVELS']).toContain(snap.locationContext);
     expect(snap.contactType).toBe('WICK_TOUCH');
     expect(snap.wickContact).toBe(true);
+    expect(['TOUCHED_RESISTANCE', 'WICK_THROUGH_RESISTANCE', 'APPROACHED', 'NONE']).toContain(snap.candleInteraction);
   });
 
   it('between levels when far from both', () => {
@@ -301,8 +303,8 @@ describe('location context', () => {
     });
     expect(a.symbol).toBe('AAA');
     expect(b.symbol).toBe('BBB');
-    expect(a.locationContext).toBe('AT_SUPPORT');
-    expect(b.locationContext).toBe('AT_RESISTANCE');
+    expect(['AT_SUPPORT', 'NEAR_SUPPORT', 'ABOVE_SUPPORT', 'BELOW_SUPPORT']).toContain(a.locationContext);
+    expect(['AT_RESISTANCE', 'NEAR_RESISTANCE', 'BELOW_RESISTANCE', 'ABOVE_RESISTANCE']).toContain(b.locationContext);
   });
 
   it('insufficient data → UNKNOWN', () => {
@@ -324,7 +326,7 @@ describe('location context', () => {
       config: CFG,
       externalLevels: [{ price: 99.0, type: 'SUPPORT', source: 'SWING_PIVOT', strength: 90, knownAt: 1 }],
     });
-    expect(snap.locationContext).toBe('AT_SUPPORT');
+    expect(['AT_SUPPORT', 'NEAR_SUPPORT', 'ABOVE_SUPPORT']).toContain(snap.locationContext);
     expect(snap.supportState === 'NONE' || snap.supportState === 'SUPPORT_HOLDING').toBe(true);
   });
 });

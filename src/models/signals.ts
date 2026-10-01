@@ -10,6 +10,7 @@ import type { MarketBattleSnapshot } from './market-battle.js';
 import type { MarketFuelSnapshot } from './market-fuel.js';
 import type { TradeDecisionSnapshot } from './trade-decision.js';
 import type { LocationContextSnapshot } from './location-context.js';
+import type { LiveDefenseSnapshot } from '../live-defense/types.js';
 
 export interface AbsorptionResult {
   detected: boolean;
@@ -99,6 +100,8 @@ export interface WindowSnapshot {
   marketFuel: MarketFuelSnapshot;
   /** Where price sits vs support/resistance — context only, never a trade signal. */
   locationContext: LocationContextSnapshot;
+  /** Live ask/bid defense (order book) — separate from historical S/R. */
+  liveDefense: LiveDefenseSnapshot;
   /** Simple LONG / SHORT / WAIT decision from attack + defense + price confirm. */
   tradeDecision: TradeDecisionSnapshot;
 }

@@ -700,7 +700,8 @@ function renderMarketDecision(summary) {
   const battle = w.marketBattle;
   const passive = w.passiveStrength;
   const map = w.wallMap;
-  const view = buildDecisionView(td, battle, passive, map, summary?.price, w?.locationContext);
+  const liveDefense = w.liveDefense ?? null;
+  const view = buildDecisionView(td, battle, passive, map, summary?.price, w?.locationContext, liveDefense);
 
   el.innerHTML = decisionAdvanced
     ? renderDecisionAdvanced(view, map)
@@ -713,22 +714,26 @@ function renderMarketDecision(summary) {
   });
 }
 
-function buildDecisionView(td, battle, passive, map, price, locationContext = null) {
+function buildDecisionView(td, battle, passive, map, price, locationContext = null, liveDefense = null) {
   const metrics = td?.metrics ?? {};
+  const liveAsk = liveDefense?.relevantAsk ?? map?.strongestRelevantAsk ?? battle?.upside?.relevantWall ?? null;
+  const liveBid = liveDefense?.relevantBid ?? map?.strongestRelevantBid ?? battle?.downside?.relevantWall ?? null;
   const askDef = Math.round(
+    liveAsk?.strength ??
     passive?.asks?.strength ??
     metrics.passiveSellerDefense ??
     battle?.upside?.passive?.defensePower ??
     0,
   );
   const bidDef = Math.round(
+    liveBid?.strength ??
     passive?.bids?.strength ??
     metrics.passiveBuyerDefense ??
     battle?.downside?.passive?.defensePower ??
     0,
   );
-  const askTrend = decisionTrendArrow(passive?.asks?.trend);
-  const bidTrend = decisionTrendArrow(passive?.bids?.trend);
+  const askTrend = decisionTrendArrow(liveAsk?.trend ?? passive?.asks?.trend);
+  const bidTrend = decisionTrendArrow(liveBid?.trend ?? passive?.bids?.trend);
   const adv = bidDef - askDef;
   const advantage = Math.abs(adv) < 8 ? 'BALANCED'
     : adv > 0 ? `BIDS +${Math.abs(adv)}`
@@ -749,16 +754,15 @@ function buildDecisionView(td, battle, passive, map, price, locationContext = nu
     controlSide = 'SELLERS';
     controlScore = Math.round(battle.downside?.aggressive?.power ?? 60);
   }
-  const controlTrend = controlSide === 'BUYERS' ? decisionTrendArrow(passive?.bids?.trend)
-    : controlSide === 'SELLERS' ? decisionTrendArrow(passive?.asks?.trend)
+  const controlTrend = controlSide === 'BUYERS' ? bidTrend
+    : controlSide === 'SELLERS' ? askTrend
       : '→';
 
   const current = pickCurrentBattle(battle, map, metrics, {
     askDef,
     bidDef,
-  });
+  }, liveDefense);
   const decision = mapDecision(td, current);
-  // Only surface data quality when it actually blocks or is bad — not routine PARTIAL warm-up.
   const dataBad = metrics.dataQuality === 'NO_DATA' || metrics.dataQuality === 'STALE' || metrics.dataQuality === 'LOW_CONFIDENCE'
     ? metrics.dataQuality
     : battle?.dataHealth?.status === 'STALE_TRADES' || battle?.dataHealth?.status === 'NO_TRADES'
@@ -769,6 +773,9 @@ function buildDecisionView(td, battle, passive, map, price, locationContext = nu
   const locationState = loc?.locationContext
     ? String(loc.locationContext).replaceAll('_', ' ')
     : 'UNKNOWN';
+  const interp = liveDefense?.interpretation
+    ? String(liveDefense.interpretation).replaceAll('_', ' ')
+    : null;
 
   return {
     price,
@@ -783,8 +790,8 @@ function buildDecisionView(td, battle, passive, map, price, locationContext = nu
     current,
     decision,
     dataBad,
-    relevantAsk: map?.strongestRelevantAsk ?? battle?.upside?.relevantWall ?? null,
-    relevantBid: map?.strongestRelevantBid ?? battle?.downside?.relevantWall ?? null,
+    relevantAsk: liveAsk,
+    relevantBid: liveBid,
     strongestAsk: map?.strongestOverallAsk ?? map?.strongestAsk ?? null,
     strongestBid: map?.strongestOverallBid ?? map?.strongestBid ?? null,
     locationState,
@@ -793,51 +800,68 @@ function buildDecisionView(td, battle, passive, map, price, locationContext = nu
     locationResistance: loc?.nearestResistance?.price != null ? fmtPx(loc.nearestResistance.price) : null,
     locationSupportBps: loc?.distanceToSupportBps ?? null,
     locationResistanceBps: loc?.distanceToResistanceBps ?? null,
+    candleInteraction: loc?.candleInteraction ? String(loc.candleInteraction).replaceAll('_', ' ') : null,
+    liveInterpretation: interp,
+    confluence: liveDefense?.alignment?.confluenceState ?? 'NONE',
+    bidAtSupport: !!liveDefense?.alignment?.bidAtSupport,
+    askAtResistance: !!liveDefense?.alignment?.askAtResistance,
   };
 }
 
-function pickCurrentBattle(battle, map, metrics = {}, defense = {}) {
+function pickCurrentBattle(battle, map, metrics = {}, defense = {}, liveDefense = null) {
   const up = battle?.upside;
   const down = battle?.downside;
 
   const buyAttack = Number(up?.aggressive?.power ?? up?.aggressive?.score ?? metrics.buyerControl ?? 0);
   const sellAttack = Number(down?.aggressive?.power ?? down?.aggressive?.score ?? metrics.sellerControl ?? 0);
   const askDefense = Number(
+    liveDefense?.relevantAsk?.strength ??
     up?.passive?.defensePower ?? up?.passive?.strength ?? metrics.passiveSellerDefense ?? defense.askDef ?? 0,
   );
   const bidDefense = Number(
+    liveDefense?.relevantBid?.strength ??
     down?.passive?.defensePower ?? down?.passive?.strength ?? metrics.passiveBuyerDefense ?? defense.bidDef ?? 0,
   );
 
   const upScore = Number(up?.battleScore ?? 0);
   const downScore = Number(down?.battleScore ?? 0);
-  // Prefer the live interaction: higher battle score, else stronger attack.
   const useUp = upScore === downScore ? buyAttack >= sellAttack : upScore > downScore;
+
+  const interp = liveDefense?.interpretation;
+  if (interp && String(interp).includes('SUPPORT')) {
+    const wall = liveDefense?.relevantBid ?? down?.relevantWall ?? map?.strongestRelevantBid ?? null;
+    const state = humanBattleState(interp, 'DOWN');
+    return packBattle('DOWN', 'Sell Attack', 'Live Bid Defense', Math.round(sellAttack), Math.round(bidDefense), state, wall?.price ?? null, 'BID');
+  }
+  if (interp && String(interp).includes('RESISTANCE')) {
+    const wall = liveDefense?.relevantAsk ?? up?.relevantWall ?? map?.strongestRelevantAsk ?? null;
+    const state = humanBattleState(interp, 'UP');
+    return packBattle('UP', 'Buy Attack', 'Live Ask Defense', Math.round(buyAttack), Math.round(askDefense), state, wall?.price ?? null, 'ASK');
+  }
 
   const wallBattle = map?.battle;
   if (wallBattle?.attackSide === 'BUY' && (wallBattle.currentlyAttackedAsk || wallBattle.attacked)) {
     const target = wallBattle.currentlyAttackedAsk || wallBattle.attacked;
     const attack = Math.round(wallBattle.attackPower ?? buyAttack);
     const def = Math.round(target.wallStrength ?? target.strength ?? askDefense);
-    return packBattle('UP', 'Buy Attack', 'Ask Defense', attack, def, humanBattleState(wallBattle.verdict || up?.state, 'UP'), target.price, 'ASK');
+    return packBattle('UP', 'Buy Attack', 'Live Ask Defense', attack, def, humanBattleState(wallBattle.verdict || up?.state, 'UP'), target.price, 'ASK');
   }
   if (wallBattle?.attackSide === 'SELL' && (wallBattle.currentlyAttackedBid || wallBattle.attacked)) {
     const target = wallBattle.currentlyAttackedBid || wallBattle.attacked;
     const attack = Math.round(wallBattle.attackPower ?? sellAttack);
     const def = Math.round(target.wallStrength ?? target.strength ?? bidDefense);
-    return packBattle('DOWN', 'Sell Attack', 'Bid Defense', attack, def, humanBattleState(wallBattle.verdict || down?.state, 'DOWN'), target.price, 'BID');
+    return packBattle('DOWN', 'Sell Attack', 'Live Bid Defense', attack, def, humanBattleState(wallBattle.verdict || down?.state, 'DOWN'), target.price, 'BID');
   }
 
   if (useUp) {
     const state = humanBattleState(up?.state, 'UP');
-    const wall = up?.relevantWall ?? map?.strongestRelevantAsk ?? null;
-    // Even when engine says NO_MEANINGFUL, still show attack vs ask defense numbers.
-    return packBattle('UP', 'Buy Attack', 'Ask Defense', Math.round(buyAttack), Math.round(askDefense), state, wall?.price ?? null, 'ASK');
+    const wall = liveDefense?.relevantAsk ?? up?.relevantWall ?? map?.strongestRelevantAsk ?? null;
+    return packBattle('UP', 'Buy Attack', 'Live Ask Defense', Math.round(buyAttack), Math.round(askDefense), state, wall?.price ?? null, 'ASK');
   }
 
   const state = humanBattleState(down?.state, 'DOWN');
-  const wall = down?.relevantWall ?? map?.strongestRelevantBid ?? null;
-  return packBattle('DOWN', 'Sell Attack', 'Bid Defense', Math.round(sellAttack), Math.round(bidDefense), state, wall?.price ?? null, 'BID');
+  const wall = liveDefense?.relevantBid ?? down?.relevantWall ?? map?.strongestRelevantBid ?? null;
+  return packBattle('DOWN', 'Sell Attack', 'Live Bid Defense', Math.round(sellAttack), Math.round(bidDefense), state, wall?.price ?? null, 'BID');
 }
 
 function packBattle(kind, attackLabel, defenseLabel, attack, defense, state, wallPrice, wallSide) {
@@ -1035,56 +1059,76 @@ function strengthBar(value) {
 
 function askDefenseTip(view) {
   const a = view.relevantAsk;
-  if (!a) return 'Ask defense summary';
-  return `Relevant ask ${fmtPx(a.price)} · strength ${Math.round(a.strength)}`;
+  if (!a) return 'LIVE ASK DEFENSE · NONE';
+  const d = a.diagnostics || {};
+  return [
+    'LIVE ASK DEFENSE',
+    `Price ${fmtPx(a.price)}`,
+    `Strength ${Math.round(a.strength)}`,
+    a.confidence != null ? `Confidence ${Math.round(a.confidence)}%` : '',
+    a.trend ? `Trend ${String(a.trend)}` : '',
+    d.refill != null ? `Refill ${Math.round(d.refill)}` : '',
+    d.survival != null ? `Survival ${Math.round(d.survival)}` : '',
+    d.consumption != null ? `Consumption ${Math.round(d.consumption)}` : '',
+    d.cancellation != null ? `Cancellation ${Math.round(d.cancellation)}` : '',
+    d.persistenceSec != null ? `Persistence ${Number(d.persistenceSec).toFixed(1)}s` : '',
+    a.lifecycle ? `Lifecycle ${a.lifecycle}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function bidDefenseTip(view) {
   const b = view.relevantBid;
-  if (!b) return 'Bid defense summary';
-  return `Relevant bid ${fmtPx(b.price)} · strength ${Math.round(b.strength)}`;
+  if (!b) return 'LIVE BID DEFENSE · NONE';
+  const d = b.diagnostics || {};
+  return [
+    'LIVE BID DEFENSE',
+    `Price ${fmtPx(b.price)}`,
+    `Strength ${Math.round(b.strength)}`,
+    b.confidence != null ? `Confidence ${Math.round(b.confidence)}%` : '',
+    b.trend ? `Trend ${String(b.trend)}` : '',
+    d.refill != null ? `Refill ${Math.round(d.refill)}` : '',
+    d.survival != null ? `Survival ${Math.round(d.survival)}` : '',
+    d.consumption != null ? `Consumption ${Math.round(d.consumption)}` : '',
+    d.cancellation != null ? `Cancellation ${Math.round(d.cancellation)}` : '',
+    d.persistenceSec != null ? `Persistence ${Number(d.persistenceSec).toFixed(1)}s` : '',
+    b.lifecycle ? `Lifecycle ${b.lifecycle}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function renderDecisionDefault(view) {
   const d = view.decision;
   const c = view.current;
-  const wallLine = c.wallPrice != null
-    ? `<div class="decision-wall">${c.wallSide} ${fmtPx(c.wallPrice)}</div>`
-    : '';
   const dataLine = view.dataBad
-    ? `<div class="decision-data-warn">DATA QUALITY ${String(view.dataBad).replaceAll('_', ' ')}</div>`
+    ? `<div class="decision-data-warn">DATA ${String(view.dataBad).replaceAll('_', ' ')}</div>`
     : '';
-  const confLine = (d.label === 'LONG' || d.label === 'SHORT' || d.label.includes('FORMING'))
-    ? `<div class="decision-conf">Confidence ${d.confidence}%</div>`
-    : '';
-  // WAIT / FORMING: one blocker or need. LONG / SHORT: up to 3 reasons. Never both.
-  let detailLine = '';
-  if (d.label === 'LONG' || d.label === 'SHORT') {
-    if (d.reasons.length) detailLine = `<div class="decision-why">${d.reasons.map(escapeHtml).join(' · ')}</div>`;
-    else if (d.headline) detailLine = `<div class="decision-why">${escapeHtml(d.headline)}</div>`;
-  } else if (d.label.includes('FORMING') && d.need) {
-    detailLine = `<div class="decision-blocker">Need: ${escapeHtml(d.need)}</div>`;
-  } else if (d.blocker) {
-    detailLine = `<div class="decision-blocker">${escapeHtml(d.blocker)}</div>`;
-  }
+  const reason = d.blocker || d.need || d.headline || (d.reasons?.[0] ?? '') || view.liveInterpretation || '';
+  const askPx = view.relevantAsk?.price != null ? fmtPx(view.relevantAsk.price) : null;
+  const bidPx = view.relevantBid?.price != null ? fmtPx(view.relevantBid.price) : null;
 
   return `
-    <section class="decision-card decision-card-main ${d.tone}">
-      <div class="decision-kicker">TRADE DECISION</div>
-      <div class="decision-action">${escapeHtml(d.label)}</div>
-      ${confLine}
-      ${detailLine}
-      ${dataLine}
-    </section>
-
     <section class="decision-card decision-card-compact">
-      <div class="decision-kicker">MARKET LOCATION</div>
+      <div class="decision-kicker">LOCATION</div>
       <div class="decision-location-state">${escapeHtml(view.locationState || 'UNKNOWN')}</div>
       <div class="decision-location-grid">
-        <div><span>Price</span><strong>${fmtPx(view.locationPrice)}</strong></div>
         <div><span>Support</span><strong>${view.locationSupport ?? '—'}${view.locationSupportBps != null ? ` · ${Math.round(view.locationSupportBps)} bps` : ''}</strong></div>
         <div><span>Resistance</span><strong>${view.locationResistance ?? '—'}${view.locationResistanceBps != null ? ` · ${Math.round(view.locationResistanceBps)} bps` : ''}</strong></div>
       </div>
+      ${view.candleInteraction ? `<div class="decision-why">Candle ${escapeHtml(view.candleInteraction)}</div>` : ''}
+    </section>
+
+    <section class="decision-card">
+      <div class="decision-kicker">LIVE DEFENSE</div>
+      <div class="decision-battle-row">
+        <span title="${escapeHtml(askDefenseTip(view))}">Ask${askPx ? ` ${askPx}` : ''}</span>
+        <strong>${view.relevantAsk ? `${view.askDef} ${view.askTrend}` : 'NONE'}</strong>
+      </div>
+      <div class="decision-battle-row">
+        <span title="${escapeHtml(bidDefenseTip(view))}">Bid${bidPx ? ` ${bidPx}` : ''}</span>
+        <strong>${view.relevantBid ? `${view.bidDef} ${view.bidTrend}` : 'NONE'}</strong>
+      </div>
+      ${view.bidAtSupport || view.askAtResistance
+        ? `<div class="decision-why">${view.bidAtSupport ? 'BID @ SUPPORT' : ''}${view.bidAtSupport && view.askAtResistance ? ' · ' : ''}${view.askAtResistance ? 'ASK @ RESISTANCE' : ''}</div>`
+        : ''}
     </section>
 
     <section class="decision-card">
@@ -1099,34 +1143,17 @@ function renderDecisionDefault(view) {
         <strong>${c.defense} ${c.defenseTrend}</strong>
       </div>
       ${strengthBar(c.defense)}
-      <div class="decision-state">${escapeHtml(c.state)}</div>
-      ${wallLine}
+      <div class="decision-battle-state">${escapeHtml(c.state)}</div>
     </section>
 
-    <section class="decision-card decision-card-compact decision-hide-narrow">
-      <div class="decision-kicker">MARKET CONTROL</div>
-      <div class="decision-control ${view.controlSide.toLowerCase()}">
-        <strong>${escapeHtml(view.controlSide)}</strong>
-        <span>${view.controlScore} ${view.controlTrend}</span>
-      </div>
+    <section class="decision-card decision-card-main ${d.tone}">
+      <div class="decision-kicker">DECISION</div>
+      <div class="decision-action">${escapeHtml(d.label)}</div>
+      ${reason ? `<div class="decision-why">${escapeHtml(reason)}</div>` : ''}
+      ${dataLine}
     </section>
 
-    <section class="decision-card decision-hide-narrow">
-      <div class="decision-kicker">PASSIVE DEFENSE</div>
-      <div class="decision-battle-row" title="${escapeHtml(askDefenseTip(view))}">
-        <span>Asks</span><strong>${view.askDef} ${view.askTrend}</strong>
-      </div>
-      <div class="decision-battle-row" title="${escapeHtml(bidDefenseTip(view))}">
-        <span>Bids</span><strong>${view.bidDef} ${view.bidTrend}</strong>
-      </div>
-      <div class="decision-advantage">Advantage ${escapeHtml(view.advantage)}</div>
-      <div class="decision-relevant">
-        Rel ask ${view.relevantAsk ? `${fmtPx(view.relevantAsk.price)} · ${Math.round(view.relevantAsk.strength)}` : '—'}
-        · Rel bid ${view.relevantBid ? `${fmtPx(view.relevantBid.price)} · ${Math.round(view.relevantBid.strength)}` : '—'}
-      </div>
-    </section>
-
-    <button type="button" class="decision-toggle" data-decision-toggle>View liquidity details</button>
+    <button type="button" class="decision-toggle" data-decision-toggle>${decisionAdvanced ? 'Simple' : 'Liquidity details'}</button>
   `;
 }
 
@@ -4003,6 +4030,15 @@ function drawFootprint(symbol = selectedSymbol) {
     barWidth,
   });
 
+  drawLiveDefenseMarkers(ctx, symbol, {
+    leftPad,
+    plotRight: plotRight + railW,
+    yForPrice,
+    topPad,
+    chartH,
+    livePx,
+  });
+
   drawLocationLevelBoxes(ctx, symbol, bars, {
     leftPad,
     plotRight: plotRight + railW,
@@ -4365,6 +4401,67 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
     }
   }
   ctx.restore();
+}
+
+/**
+ * Short right-edge live defense markers only — never full-width historical lines.
+ */
+function drawLiveDefenseMarkers(ctx, symbol, layout) {
+  const { plotRight, yForPrice, topPad, chartH, livePx } = layout;
+  const summary = symbol === selectedSymbol ? lastSummary : (summaries?.[symbol] ?? null);
+  const w =
+    summary?.windows?.['1m'] ??
+    summary?.windows?.['10s'] ??
+    summary?.windows?.[selectedTf] ??
+    null;
+  const live = w?.liveDefense;
+  const ask = live?.relevantAsk ?? w?.wallMap?.strongestRelevantAsk ?? null;
+  const bid = live?.relevantBid ?? w?.wallMap?.strongestRelevantBid ?? null;
+  if (!ask && !bid) return;
+
+  const markerW = 72;
+  const x1 = plotRight - 4;
+  const x0 = x1 - markerW;
+
+  const paint = (wall, side) => {
+    if (!wall || !(wall.price > 0)) return;
+    const y = yForPrice(wall.price);
+    if (y < topPad - 4 || y > topPad + chartH + 4) return;
+    const color = side === 'ASK' ? '#f87171' : '#34d399';
+    const arrow = decisionTrendArrow(wall.trend);
+    const label = `${side} ${fmtPriceAxis(wall.price)} · ${Math.round(wall.strength)} ${arrow}`;
+
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+
+    // small tick toward price
+    ctx.beginPath();
+    ctx.moveTo(x0, y - 3);
+    ctx.lineTo(x0, y + 3);
+    ctx.stroke();
+
+    ctx.font = '700 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    const ly = y + (side === 'ASK' ? -9 : 9);
+    ctx.fillStyle = 'rgba(8, 11, 16, 0.82)';
+    ctx.fillRect(x1 - tw - 6, ly - 7, tw + 6, 14);
+    ctx.fillStyle = color;
+    ctx.fillText(label, x1 - 3, ly);
+    ctx.restore();
+  };
+
+  paint(ask, 'ASK');
+  paint(bid, 'BID');
+  void livePx;
 }
 
 /**

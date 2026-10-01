@@ -8,11 +8,28 @@ export const LOCATION_CONTEXT_VERSION = 'LOCATION_CONTEXT_V1';
 export type LocationContextState =
   | 'AT_SUPPORT'
   | 'NEAR_SUPPORT'
+  | 'INSIDE_SUPPORT'
+  | 'ABOVE_SUPPORT'
+  | 'BELOW_SUPPORT'
   | 'AT_RESISTANCE'
   | 'NEAR_RESISTANCE'
+  | 'INSIDE_RESISTANCE'
+  | 'BELOW_RESISTANCE'
+  | 'ABOVE_RESISTANCE'
   | 'BETWEEN_LEVELS'
   | 'NONE'
   | 'UNKNOWN';
+
+/** Candle interaction with a level — separate from current price location. */
+export type CandleInteraction =
+  | 'NONE'
+  | 'APPROACHED'
+  | 'TOUCHED_SUPPORT'
+  | 'TOUCHED_RESISTANCE'
+  | 'WICK_THROUGH_SUPPORT'
+  | 'WICK_THROUGH_RESISTANCE'
+  | 'CLOSED_THROUGH_SUPPORT'
+  | 'CLOSED_THROUGH_RESISTANCE';
 
 export type StructuralLevelType = 'SUPPORT' | 'RESISTANCE';
 
@@ -151,6 +168,8 @@ export interface LocationContextSnapshot {
   locationContext: LocationContextState;
   locationArea: LocationArea;
   contactType: ContactType;
+  /** Candle interaction vs current price location (may differ). */
+  candleInteraction: CandleInteraction;
 
   nearestSupport: LocationLevelView | null;
   nearestResistance: LocationLevelView | null;
@@ -184,6 +203,7 @@ export function emptyLocationContext(symbol = '', timestamp = 0): LocationContex
     locationContext: 'UNKNOWN',
     locationArea: 'UNKNOWN',
     contactType: 'NO_TOUCH',
+    candleInteraction: 'NONE',
     nearestSupport: null,
     nearestResistance: null,
     strongestNearbySupport: null,
@@ -209,13 +229,23 @@ export function emptyLocationContext(symbol = '', timestamp = 0): LocationContex
 export function locationTraderLabel(state: LocationContextState): string {
   switch (state) {
     case 'AT_SUPPORT':
+    case 'INSIDE_SUPPORT':
       return 'AT SUPPORT';
     case 'NEAR_SUPPORT':
       return 'NEAR SUPPORT';
+    case 'ABOVE_SUPPORT':
+      return 'ABOVE SUPPORT';
+    case 'BELOW_SUPPORT':
+      return 'BELOW SUPPORT';
     case 'AT_RESISTANCE':
+    case 'INSIDE_RESISTANCE':
       return 'AT RESISTANCE';
     case 'NEAR_RESISTANCE':
       return 'NEAR RESISTANCE';
+    case 'BELOW_RESISTANCE':
+      return 'BELOW RESISTANCE';
+    case 'ABOVE_RESISTANCE':
+      return 'ABOVE RESISTANCE';
     case 'BETWEEN_LEVELS':
       return 'BETWEEN LEVELS';
     case 'NONE':

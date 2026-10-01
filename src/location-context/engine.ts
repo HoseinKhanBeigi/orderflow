@@ -6,6 +6,7 @@ import {
   distanceBps,
   emptyLocationContext,
   type ContactType,
+  type CandleInteraction,
   type LocationArea,
   type LocationContextConfig,
   type LocationContextSnapshot,
@@ -126,7 +127,15 @@ export class LocationContextEngine {
 
     const primary = pickPrimaryLevel(nearestSupport, nearestResistance, bar, atBps, nearBps);
     const contact = contactAgainst(bar, primary.level, primary.side, atBps, nearBps);
-    const locationContext = classifyLocation(primary, contact, atBps, nearBps);
+    // Current LOCATION from close vs zone — not wick contact.
+    const locationContext = classifyLocationFromPrice(
+      bar.close,
+      nearestSupport,
+      nearestResistance,
+      atBps,
+      nearBps,
+    );
+    const candleInteraction = candleInteractionOf(contact, primary.side, bar, nearestSupport, nearestResistance, atBps);
     const locationArea = areaOf(locationContext, contact, bar, nearestSupport, nearestResistance, atBps);
 
     const supportState = supportReaction(
@@ -177,6 +186,7 @@ export class LocationContextEngine {
       locationContext,
       locationArea,
       contactType: contact.contactType,
+      candleInteraction,
       nearestSupport: supportView,
       nearestResistance: resistanceView,
       strongestNearbySupport: strongSupportView,
@@ -634,6 +644,126 @@ function contactAgainst(
   return { contactType, wickContact, bodyContact, closeAtLevel, closeThroughLevel, distance };
 }
 
+function classifyLocationFromPrice(
+  close: number,
+  support: StructuralLevel | null,
+  resistance: StructuralLevel | null,
+  atBps: number,
+  nearBps: number,
+): LocationContextState {
+  if (!support && !resistance) return 'NONE';
+
+  const supportZone = support ? (support.price * atBps) / 10_000 : 0;
+  const resistZone = resistance ? (resistance.price * atBps) / 10_000 : 0;
+
+  type Tag =
+    | 'INSIDE_SUPPORT'
+    | 'NEAR_SUPPORT'
+    | 'BELOW_SUPPORT'
+    | 'ABOVE_SUPPORT'
+    | 'INSIDE_RESISTANCE'
+    | 'NEAR_RESISTANCE'
+    | 'ABOVE_RESISTANCE'
+    | 'BELOW_RESISTANCE';
+
+  let supportTag: Tag | null = null;
+  if (support) {
+    const ds = distanceBps(close, support.price);
+    if (close < support.price - supportZone) supportTag = 'BELOW_SUPPORT';
+    else if (close >= support.price - supportZone && close <= support.price + supportZone) {
+      supportTag = 'INSIDE_SUPPORT';
+    } else if (ds <= nearBps && close > support.price) supportTag = 'NEAR_SUPPORT';
+    else if (close > support.price) supportTag = 'ABOVE_SUPPORT';
+  }
+
+  let resistTag: Tag | null = null;
+  if (resistance) {
+    const dr = distanceBps(close, resistance.price);
+    if (close > resistance.price + resistZone) resistTag = 'ABOVE_RESISTANCE';
+    else if (close >= resistance.price - resistZone && close <= resistance.price + resistZone) {
+      resistTag = 'INSIDE_RESISTANCE';
+    } else if (dr <= nearBps && close < resistance.price) resistTag = 'NEAR_RESISTANCE';
+    else if (close < resistance.price) resistTag = 'BELOW_RESISTANCE';
+  }
+
+  const alias = (s: Tag): LocationContextState => {
+    if (s === 'INSIDE_SUPPORT') return 'AT_SUPPORT';
+    if (s === 'INSIDE_RESISTANCE') return 'AT_RESISTANCE';
+    return s;
+  };
+
+  const interesting = (t: Tag | null): boolean =>
+    t === 'INSIDE_SUPPORT' ||
+    t === 'NEAR_SUPPORT' ||
+    t === 'BELOW_SUPPORT' ||
+    t === 'INSIDE_RESISTANCE' ||
+    t === 'NEAR_RESISTANCE' ||
+    t === 'ABOVE_RESISTANCE';
+
+  // Mid-range: above support and below resistance, neither near.
+  if (supportTag === 'ABOVE_SUPPORT' && resistTag === 'BELOW_RESISTANCE') {
+    return 'BETWEEN_LEVELS';
+  }
+
+  if (interesting(supportTag) && interesting(resistTag)) {
+    const rank = (t: Tag): number => {
+      if (t === 'INSIDE_SUPPORT' || t === 'INSIDE_RESISTANCE') return 5;
+      if (t === 'NEAR_SUPPORT' || t === 'NEAR_RESISTANCE') return 4;
+      if (t === 'BELOW_SUPPORT' || t === 'ABOVE_RESISTANCE') return 3;
+      return 1;
+    };
+    const sr = distanceBps(close, support!.price);
+    const rr = distanceBps(close, resistance!.price);
+    if (rank(supportTag!) > rank(resistTag!)) return alias(supportTag!);
+    if (rank(resistTag!) > rank(supportTag!)) return alias(resistTag!);
+    return alias(sr <= rr ? supportTag! : resistTag!);
+  }
+  if (interesting(supportTag)) return alias(supportTag!);
+  if (interesting(resistTag)) return alias(resistTag!);
+  if (supportTag) return alias(supportTag);
+  if (resistTag) return alias(resistTag);
+  return 'BETWEEN_LEVELS';
+}
+
+function candleInteractionOf(
+  contact: { contactType: ContactType; wickContact: boolean; closeThroughLevel: boolean },
+  side: 'SUPPORT' | 'RESISTANCE' | null,
+  bar: LocationBarLike,
+  support: StructuralLevel | null,
+  resistance: StructuralLevel | null,
+  atBps: number,
+): CandleInteraction {
+  if (contact.contactType === 'NO_TOUCH' && !side) return 'NONE';
+
+  if (support) {
+    const zone = (support.price * atBps) / 10_000;
+    if (bar.close < support.price - zone && contact.closeThroughLevel) return 'CLOSED_THROUGH_SUPPORT';
+    if (bar.low < support.price - zone && bar.close >= support.price - zone) return 'WICK_THROUGH_SUPPORT';
+    if (
+      contact.contactType === 'WICK_TOUCH' ||
+      contact.contactType === 'BODY_TOUCH' ||
+      contact.contactType === 'CLOSE_AT_LEVEL'
+    ) {
+      if (side === 'SUPPORT' || Math.abs(bar.low - support.price) <= zone * 2) return 'TOUCHED_SUPPORT';
+    }
+  }
+  if (resistance) {
+    const zone = (resistance.price * atBps) / 10_000;
+    if (bar.close > resistance.price + zone && contact.closeThroughLevel) return 'CLOSED_THROUGH_RESISTANCE';
+    if (bar.high > resistance.price + zone && bar.close <= resistance.price + zone) return 'WICK_THROUGH_RESISTANCE';
+    if (
+      contact.contactType === 'WICK_TOUCH' ||
+      contact.contactType === 'BODY_TOUCH' ||
+      contact.contactType === 'CLOSE_AT_LEVEL'
+    ) {
+      if (side === 'RESISTANCE' || Math.abs(bar.high - resistance.price) <= zone * 2) return 'TOUCHED_RESISTANCE';
+    }
+  }
+  if (contact.contactType === 'NEAR_TOUCH') return 'APPROACHED';
+  return 'NONE';
+}
+
+/** @deprecated wick-based — kept for tests that call via old path; prefer classifyLocationFromPrice */
 function classifyLocation(
   primary: { level: StructuralLevel | null; side: 'SUPPORT' | 'RESISTANCE' | null; distance: number },
   contact: { contactType: ContactType; distance: number },
@@ -641,22 +771,17 @@ function classifyLocation(
   nearBps: number,
 ): LocationContextState {
   if (!primary.level || !primary.side) return 'NONE';
-  const dist = contact.distance;
-  const at =
-    dist <= atBps ||
-    contact.contactType === 'WICK_TOUCH' ||
-    contact.contactType === 'BODY_TOUCH' ||
-    contact.contactType === 'CLOSE_AT_LEVEL' ||
-    contact.contactType === 'CLOSE_THROUGH_LEVEL';
-  const near = !at && dist <= nearBps;
-
+  // Price-relative: use distance of close, ignore wick for AT.
+  const dist = primary.distance;
   if (primary.side === 'SUPPORT') {
-    if (at) return 'AT_SUPPORT';
-    if (near) return 'NEAR_SUPPORT';
-  } else {
-    if (at) return 'AT_RESISTANCE';
-    if (near) return 'NEAR_RESISTANCE';
+    if (dist <= atBps) return 'AT_SUPPORT';
+    if (dist <= nearBps) return 'NEAR_SUPPORT';
+    // Infer above/below from contact distance sign is not available — return BETWEEN
+    return 'BETWEEN_LEVELS';
   }
+  if (dist <= atBps) return 'AT_RESISTANCE';
+  if (dist <= nearBps) return 'NEAR_RESISTANCE';
+  void contact;
   return 'BETWEEN_LEVELS';
 }
 
@@ -668,8 +793,24 @@ function areaOf(
   resistance: StructuralLevel | null,
   atBps: number,
 ): LocationArea {
-  if (location === 'AT_SUPPORT' || location === 'NEAR_SUPPORT') return 'AT_SUPPORT';
-  if (location === 'AT_RESISTANCE' || location === 'NEAR_RESISTANCE') return 'AT_RESISTANCE';
+  if (
+    location === 'AT_SUPPORT' ||
+    location === 'NEAR_SUPPORT' ||
+    location === 'INSIDE_SUPPORT' ||
+    location === 'ABOVE_SUPPORT'
+  ) {
+    return 'AT_SUPPORT';
+  }
+  if (
+    location === 'AT_RESISTANCE' ||
+    location === 'NEAR_RESISTANCE' ||
+    location === 'INSIDE_RESISTANCE' ||
+    location === 'BELOW_RESISTANCE'
+  ) {
+    return 'AT_RESISTANCE';
+  }
+  if (location === 'BELOW_SUPPORT') return 'BREAKDOWN_AREA';
+  if (location === 'ABOVE_RESISTANCE') return 'BREAKOUT_AREA';
   if (location === 'UNKNOWN') return 'UNKNOWN';
   if (resistance && contact.contactType === 'CLOSE_THROUGH_LEVEL' && bar.close > resistance.price) {
     return 'BREAKOUT_AREA';
@@ -697,11 +838,17 @@ function supportReaction(
   reaction: LocationReactionHints | undefined,
   config: LocationContextConfig,
 ): SupportReactionState {
-  if (!support || (location !== 'AT_SUPPORT' && location !== 'NEAR_SUPPORT' && contact.contactType === 'NO_TOUCH')) {
+  const supportLoc =
+    location === 'AT_SUPPORT' ||
+    location === 'NEAR_SUPPORT' ||
+    location === 'INSIDE_SUPPORT' ||
+    location === 'ABOVE_SUPPORT' ||
+    location === 'BELOW_SUPPORT';
+  if (!support || (!supportLoc && contact.contactType === 'NO_TOUCH')) {
     return 'NONE';
   }
   const zone = (support.price * atBps) / 10_000;
-  if (bar.close < support.price - zone && contact.closeThroughLevel) {
+  if (bar.close < support.price - zone && (contact.closeThroughLevel || location === 'BELOW_SUPPORT')) {
     const sell = reaction?.sellEffort;
     const def = reaction?.buyerDefense;
     const down = reaction?.downResult;
@@ -744,14 +891,17 @@ function resistanceReaction(
   reaction: LocationReactionHints | undefined,
   config: LocationContextConfig,
 ): ResistanceReactionState {
-  if (
-    !resistance ||
-    (location !== 'AT_RESISTANCE' && location !== 'NEAR_RESISTANCE' && contact.contactType === 'NO_TOUCH')
-  ) {
+  const resistLoc =
+    location === 'AT_RESISTANCE' ||
+    location === 'NEAR_RESISTANCE' ||
+    location === 'INSIDE_RESISTANCE' ||
+    location === 'BELOW_RESISTANCE' ||
+    location === 'ABOVE_RESISTANCE';
+  if (!resistance || (!resistLoc && contact.contactType === 'NO_TOUCH')) {
     return 'NONE';
   }
   const zone = (resistance.price * atBps) / 10_000;
-  if (bar.close > resistance.price + zone && contact.closeThroughLevel) {
+  if (bar.close > resistance.price + zone && (contact.closeThroughLevel || location === 'ABOVE_RESISTANCE')) {
     const buy = reaction?.buyEffort;
     const def = reaction?.sellerDefense;
     const up = reaction?.upResult;

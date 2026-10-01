@@ -32,10 +32,10 @@ import {
 import { AggressiveFlowEngine } from '../aggressive-flow/engine.js';
 import {
   LocationContextEngine,
-  wallsAsExternalLevels,
   type LocationBarLike,
 } from '../location-context/index.js';
 import { emptyLocationContext } from '../models/location-context.js';
+import { evaluateStructureDefense, emptyLiveDefense } from '../live-defense/index.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
 import { PassiveLiquidityEngine } from '../passive-liquidity/engine.js';
@@ -625,6 +625,7 @@ export class SymbolEngine {
       marketBattle,
       marketFuel,
       locationContext: emptyLocationContext(this.symbol, now),
+      liveDefense: emptyLiveDefense(now, priceEnd || priceStart),
       tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
@@ -649,24 +650,14 @@ export class SymbolEngine {
       totalSell: agg.sellVolume,
     };
     const priorLoc: LocationBarLike[] = [];
-    const wall = passiveLiquidity.wallMap;
-    const external = wallsAsExternalLevels({
-      knownAt: locBar.time,
-      bidWalls: [
-        wall.strongestBid,
-        wall.strongestRelevantBid,
-        ...(wall.bids ?? []).slice(0, 3),
-      ]
-        .filter(Boolean)
-        .map((r) => ({ price: r!.price, strength: r!.strength ?? null })),
-      askWalls: [
-        wall.strongestAsk,
-        wall.strongestRelevantAsk,
-        ...(wall.asks ?? []).slice(0, 3),
-      ]
-        .filter(Boolean)
-        .map((r) => ({ price: r!.price, strength: r!.strength ?? null })),
-    });
+    // Historical structure only — do NOT inject live order-book walls (cross-contamination).
+    const external: Array<{
+      price: number;
+      type: 'SUPPORT' | 'RESISTANCE';
+      source: 'STRUCTURE_SWING';
+      strength: number;
+      knownAt: number;
+    }> = [];
     const structure = liquidityResponse.structure;
     if (structure?.swingLow != null) {
       external.push({
@@ -699,6 +690,30 @@ export class SymbolEngine {
         upResult: marketBattle.upside.price.efficiencyScore,
         downResult: marketBattle.downside.price.efficiencyScore,
       },
+    });
+
+    const loc = snap.locationContext;
+    snap.liveDefense = evaluateStructureDefense({
+      timestamp: now,
+      currentPrice: priceEnd || priceStart,
+      wallMap: passiveLiquidity.wallMap,
+      nearestSupport: loc.nearestSupport
+        ? { price: loc.nearestSupport.price, strength: loc.nearestSupport.strength, distanceBps: loc.nearestSupport.distanceBps }
+        : null,
+      nearestResistance: loc.nearestResistance
+        ? {
+            price: loc.nearestResistance.price,
+            strength: loc.nearestResistance.strength,
+            distanceBps: loc.nearestResistance.distanceBps,
+          }
+        : null,
+      locationState: loc.locationContext,
+      buyAttack: marketBattle.upside.aggressive.power,
+      sellAttack: marketBattle.downside.aggressive.power,
+      upResult: marketBattle.upside.price.efficiencyScore,
+      downResult: marketBattle.downside.price.efficiencyScore,
+      sellersAbsorbed: liquidityResponse.absorption?.kind === 'SELL_ABSORPTION',
+      buyersAbsorbed: liquidityResponse.absorption?.kind === 'BUY_ABSORPTION',
     });
 
     snap.tradeDecision = evaluateTradeDecision(snap, this.config.tradeDecision, { now });
