@@ -8,7 +8,12 @@ export const LIVE_DEFENSE_VERSION = 'LIVE_DEFENSE_V1';
 
 export type LiveDefenseTrend = 'STRENGTHENING' | 'WEAKENING' | 'STABLE';
 
-export type StructuralConfluenceState = 'NONE' | 'LOW' | 'MODERATE' | 'HIGH';
+export type StructuralConfluenceState =
+  | 'NONE'
+  | 'LOW'
+  | 'MODERATE'
+  | 'HIGH'
+  | 'STRUCTURAL_CONFLUENCE_HIGH';
 
 export type StructureDefenseInterpretation =
   | 'NONE'

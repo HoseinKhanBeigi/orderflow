@@ -88,6 +88,44 @@ export interface HistoricalBarLike {
   totalSell?: number;
 }
 
+export type HistoricalSRStrengthState =
+  | 'VERY_STRONG'
+  | 'STRONG'
+  | 'STRONG_BUT_WEAKENING'
+  | 'MODERATE'
+  | 'WEAK'
+  | 'BROKEN';
+
+export type HistoricalReactionTrend = 'STRENGTHENING' | 'STABLE' | 'WEAKENING';
+
+export interface HistoricalReactionSample {
+  timestamp: number;
+  /** Absolute reaction move as fraction of price (0.02 = 2%). */
+  reactionFraction: number;
+  /** Same move in ATR units. */
+  reactionAtr: number;
+  held: boolean;
+  kind: 'REJECTION' | 'HOLD' | 'WEAK_BOUNCE' | 'FALSE_BREAK' | 'BREAK';
+}
+
+export interface StrengthHistoryPoint {
+  timestamp: number;
+  strength: number;
+  state: HistoricalSRStrengthState;
+  confidence: number;
+}
+
+export interface HistoricalSRStrengthComponents {
+  structureSignificance: number;
+  reactionQuality: number;
+  holdQuality: number;
+  recencyScore: number;
+  timeframeScore: number;
+  roleFlipScore: number;
+  confluenceScore: number;
+  weakeningPenalty: number;
+}
+
 export interface HistoricalLevel {
   id: string;
   type: HistoricalLevelType;
@@ -101,12 +139,29 @@ export interface HistoricalLevel {
   createdAt: number;
   firstSeenAt: number;
   lastInteractionAt: number | null;
+  /** Alias of strengthScore — historical structural importance 0–100. */
   strength: number;
+  strengthScore: number;
+  strengthState: HistoricalSRStrengthState;
+  strengthConfidence: number;
+  reactionTrend: HistoricalReactionTrend;
+  strengthComponents: HistoricalSRStrengthComponents;
+  reactionHistory: HistoricalReactionSample[];
+  strengthHistory: StrengthHistoryPoint[];
+  roleFlipCount: number;
+  roleFlipQuality: number;
+  confluenceScore: number;
+  multiTimeframeConfluence: boolean;
+  confluenceTimeframes: string[];
+  /** Strength retained when level breaks — not deleted. */
+  historicalStrengthBeforeBreak: number | null;
   touchCount: number;
   rejectionCount: number;
   breakCount: number;
   state: HistoricalLevelState;
   beyondCloses: number;
+  /** Frozen at creation — used for causal snapshot reconstruction. */
+  initialSwingSignificance: number;
   components: {
     swingSignificance: number;
     reactionCount: number;
@@ -133,6 +188,9 @@ export interface HistoricalLevelSegment {
   zoneLow: number;
   zoneHigh: number;
   strength: number;
+  strengthState: HistoricalSRStrengthState;
+  strengthConfidence: number;
+  reactionTrend: HistoricalReactionTrend;
   state: HistoricalLevelState;
   /** Inclusive start (unix seconds typically). */
   fromTime: number;
@@ -154,6 +212,10 @@ export interface HistoricalCandleSRContext {
     | 'BETWEEN_LEVELS'
     | 'NONE'
     | 'UNKNOWN';
+  supportStrength: number | null;
+  supportStrengthState: HistoricalSRStrengthState | null;
+  resistanceStrength: number | null;
+  resistanceStrengthState: HistoricalSRStrengthState | null;
   supportInteraction: HistoricalInteraction;
   resistanceInteraction: HistoricalInteraction;
   knownSupport: HistoricalLevel[];

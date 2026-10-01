@@ -1,10 +1,3 @@
-export {
-  HistoricalSREngine,
-  detectConfirmedPivots,
-  assertNoLookahead,
-  DEFAULT_HISTORICAL_SR_CONFIG,
-  HISTORICAL_SR_VERSION,
-} from './engine.js';
 export type {
   HistoricalBarLike,
   HistoricalCandleSRContext,
@@ -19,4 +12,28 @@ export type {
   HistoricalLevelEventType,
   HistoricalLevelSource,
   HistoricalTimeframe,
+  HistoricalSRStrengthState,
+  HistoricalReactionTrend,
+  HistoricalReactionSample,
+  StrengthHistoryPoint,
+  HistoricalSRStrengthComponents,
 } from './types.js';
+export type {
+  HistoricalSRStrengthScore,
+  HistoricalSRStrengthConfig,
+} from './strength.js';
+export {
+  HistoricalSREngine,
+  detectConfirmedPivots,
+  assertNoLookahead,
+  DEFAULT_HISTORICAL_SR_CONFIG,
+  HISTORICAL_SR_VERSION,
+  computeHistoricalSRStrength,
+  DEFAULT_SR_STRENGTH_CONFIG,
+  multiTimeframeConfluenceScore,
+  reactionFromBar,
+  reactionTrendOf,
+  strengthStateLabel,
+  strengthStateOf,
+  timeframeImportanceScore,
+} from './engine.js';

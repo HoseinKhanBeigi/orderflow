@@ -12,6 +12,15 @@ import {
   type HistoricalSRConfig,
   type HistoricalSRSnapshot,
 } from './types.js';
+import {
+  appendStrengthHistory,
+  computeHistoricalSRStrength,
+  DEFAULT_SR_STRENGTH_CONFIG,
+  multiTimeframeConfluenceScore,
+  reactionFromBar,
+  secondsPerBarForTimeframe,
+  type HistoricalSRStrengthConfig,
+} from './strength.js';
 
 export {
   DEFAULT_HISTORICAL_SR_CONFIG,
@@ -29,6 +38,24 @@ export type {
   HistoricalSRConfig,
   HistoricalSRSnapshot,
 } from './types.js';
+export {
+  computeHistoricalSRStrength,
+  DEFAULT_SR_STRENGTH_CONFIG,
+  multiTimeframeConfluenceScore,
+  reactionFromBar,
+  reactionTrendOf,
+  strengthStateLabel,
+  strengthStateOf,
+  timeframeImportanceScore,
+} from './strength.js';
+export type {
+  HistoricalSRStrengthScore,
+  HistoricalSRStrengthConfig,
+  HistoricalSRStrengthState,
+  HistoricalReactionTrend,
+  HistoricalReactionSample,
+  StrengthHistoryPoint,
+} from './strength.js';
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -61,30 +88,71 @@ function bpsDistance(a: number, b: number): number {
   return (Math.abs(a - b) / a) * 10_000;
 }
 
+function emptyStrengthComponents() {
+  return {
+    structureSignificance: 0,
+    reactionQuality: 0,
+    holdQuality: 0,
+    recencyScore: 0,
+    timeframeScore: 0,
+    roleFlipScore: 0,
+    confluenceScore: 0,
+    weakeningPenalty: 0,
+  };
+}
+
 function cloneLevel(level: HistoricalLevel): HistoricalLevel {
   return {
     ...level,
     components: { ...level.components },
+    strengthComponents: { ...level.strengthComponents },
+    reactionHistory: level.reactionHistory.map((r) => ({ ...r })),
+    strengthHistory: level.strengthHistory.map((h) => ({ ...h })),
+    confluenceTimeframes: [...level.confluenceTimeframes],
   };
 }
 
-function recomputeStrength(level: HistoricalLevel, now: number, atr: number): number {
-  const ageBarsProxy = Math.max(0, (now - level.knownAt) / Math.max(1, atr > 0 ? 1 : 1));
-  void ageBarsProxy;
-  const swing = level.components.swingSignificance;
-  const reactions = clamp(level.touchCount * 14 + level.rejectionCount * 18, 0, 100);
-  const mag = clamp(level.components.rejectionMagnitude, 0, 100);
-  const tests = clamp(level.components.independentTests * 16, 0, 100);
-  const recency = level.lastInteractionAt
-    ? clamp(100 - ((now - level.lastInteractionAt) / 60) * 0.5, 20, 100)
-    : clamp(100 - ((now - level.knownAt) / 60) * 0.35, 25, 100);
-  level.components.reactionCount = reactions;
-  level.components.recency = recency;
-  return clamp(swing * 0.28 + reactions * 0.22 + mag * 0.2 + tests * 0.15 + recency * 0.15, 0, 100);
+/** Causal component view — ignores mutations that happened after `timestamp`. */
+function componentsAsOf(
+  level: HistoricalLevel,
+  timestamp: number,
+  events: HistoricalLevelEvent[],
+): HistoricalLevel['components'] {
+  const reactions = (level.reactionHistory ?? []).filter((s) => s.timestamp <= timestamp);
+  const held = reactions.filter((s) => s.held && s.kind !== 'BREAK');
+  const confirmedAfterCreate = events.filter(
+    (e) =>
+      e.levelId === level.id &&
+      e.type === 'LEVEL_CONFIRMED' &&
+      e.timestamp <= timestamp &&
+      e.timestamp >= level.knownAt,
+  ).length;
+  const swingSignificance =
+    confirmedAfterCreate > 0
+      ? Math.max(level.initialSwingSignificance, 78)
+      : level.initialSwingSignificance;
+
+  const rejectionMagnitude =
+    held.length > 0
+      ? clamp(
+          held.reduce((a, s) => a + Math.min(100, s.reactionAtr * 25), 0) / held.length,
+          0,
+          100,
+        )
+      : 0;
+
+  return {
+    swingSignificance,
+    reactionCount: reactions.length,
+    rejectionMagnitude,
+    recency: 0,
+    independentTests: 1 + confirmedAfterCreate + held.length,
+  };
 }
 
 export class HistoricalSREngine {
   private readonly config: HistoricalSRConfig;
+  private readonly strengthConfig: HistoricalSRStrengthConfig;
   private readonly timeframe: string;
   private bars: HistoricalBarLike[] = [];
   private levels: HistoricalLevel[] = [];
@@ -92,10 +160,24 @@ export class HistoricalSREngine {
   private segments: Map<string, HistoricalLevelSegment> = new Map();
   private lastAtr = 0;
   private lastContext: HistoricalCandleSRContext | null = null;
+  /** External TF levels for confluence (not owned / mutated). */
+  private externalConfluence: Array<{ price: number; sourceTimeframe: string }> = [];
 
-  constructor(timeframe = '15m', config: Partial<HistoricalSRConfig> = {}) {
+  constructor(
+    timeframe = '15m',
+    config: Partial<HistoricalSRConfig> = {},
+    strengthConfig: Partial<HistoricalSRStrengthConfig> = {},
+  ) {
     this.timeframe = timeframe;
     this.config = { ...DEFAULT_HISTORICAL_SR_CONFIG, ...config };
+    this.strengthConfig = {
+      ...DEFAULT_SR_STRENGTH_CONFIG,
+      ...strengthConfig,
+      weights: { ...DEFAULT_SR_STRENGTH_CONFIG.weights, ...(strengthConfig.weights ?? {}) },
+      thresholds: { ...DEFAULT_SR_STRENGTH_CONFIG.thresholds, ...(strengthConfig.thresholds ?? {}) },
+      secondsPerBarHint:
+        strengthConfig.secondsPerBarHint ?? secondsPerBarForTimeframe(timeframe),
+    };
   }
 
   reset(): void {
@@ -105,6 +187,11 @@ export class HistoricalSREngine {
     this.segments.clear();
     this.lastAtr = 0;
     this.lastContext = null;
+  }
+
+  /** Register overlapping levels from other timeframes (confluence only). */
+  setExternalConfluenceLevels(levels: Array<{ price: number; sourceTimeframe: string }>): void {
+    this.externalConfluence = levels.slice();
   }
 
   getLevels(): HistoricalLevel[] {
@@ -157,6 +244,7 @@ export class HistoricalSREngine {
 
   /**
    * Levels known at or before timestamp T (inclusive).
+   * Strength at T uses only reactions/history known at T.
    */
   snapshotAt(timestamp: number): HistoricalSRSnapshot {
     const known = this.levels
@@ -206,7 +294,6 @@ export class HistoricalSREngine {
       if (s.fromTime > asOf) return false;
       if (majorOnly && !s.major) return false;
       if (!includeBroken && s.broken && (s.toTime == null || s.toTime <= asOf)) {
-        // still show broken segment history if includeBroken; default hide live broken stubs
         if (s.toTime != null && s.toTime < asOf) return true;
         if (!includeBroken && s.broken) return s.toTime != null;
       }
@@ -217,9 +304,55 @@ export class HistoricalSREngine {
 
   // --- internal ---
 
+  private applyLevelStrength(level: HistoricalLevel, asOf: number, atr: number): void {
+    const last = level.lastInteractionAt ?? level.knownAt;
+    const idleBars = this.bars.filter((b) => b.time > last && b.time <= asOf).length;
+    const scored = computeHistoricalSRStrength({
+      level,
+      asOf,
+      atr,
+      barsHint: idleBars,
+      config: this.strengthConfig,
+    });
+
+    // Preserve pre-break historical score when broken.
+    if (level.state === 'BROKEN' && level.historicalStrengthBeforeBreak != null) {
+      level.strengthScore = level.historicalStrengthBeforeBreak;
+      level.strength = level.historicalStrengthBeforeBreak;
+    } else {
+      level.strengthScore = scored.strengthScore;
+      level.strength = scored.strengthScore;
+    }
+    level.strengthState = scored.strengthState;
+    level.strengthConfidence = scored.strengthConfidence;
+    level.reactionTrend = scored.reactionTrend;
+    level.strengthComponents = scored.components;
+    level.components.reactionCount = scored.testCount;
+    level.components.recency = scored.components.recencyScore;
+    level.strengthHistory = appendStrengthHistory(level.strengthHistory, {
+      timestamp: asOf,
+      strength: level.strengthScore,
+      state: level.strengthState,
+      confidence: level.strengthConfidence,
+    });
+  }
+
+  private refreshConfluence(level: HistoricalLevel): void {
+    const tol = Math.max(this.lastAtr * this.config.clusterAtrFraction, zoneHalfWidth(level.price, this.lastAtr, this.config));
+    const result = multiTimeframeConfluenceScore(
+      { price: level.price, sourceTimeframe: level.sourceTimeframe },
+      this.externalConfluence,
+      tol,
+    );
+    level.multiTimeframeConfluence = result.multiTimeframeConfluence;
+    level.confluenceScore = Math.max(level.confluenceScore, result.confluenceScore);
+    if (result.multiTimeframeConfluence) {
+      level.confluenceTimeframes = result.confluenceTimeframes;
+    }
+  }
+
   private levelAsOf(level: HistoricalLevel, timestamp: number): HistoricalLevel {
     const out = cloneLevel(level);
-    // Historical state at T: if broken/flipped after T, present pre-break view for snapshot honesty
     const breakEvt = this.events.find(
       (e) =>
         e.levelId === level.id &&
@@ -227,7 +360,6 @@ export class HistoricalSREngine {
         e.timestamp > timestamp,
     );
     if (breakEvt && level.knownAt <= timestamp) {
-      // Keep current object but if break was after T, restore ACTIVE/TESTED from events before T
       const lastBefore = [...this.events]
         .filter((e) => e.levelId === level.id && e.timestamp <= timestamp)
         .pop();
@@ -236,7 +368,63 @@ export class HistoricalSREngine {
       } else {
         out.state = 'ACTIVE';
       }
+      out.historicalStrengthBeforeBreak = null;
     }
+
+    // Causal reaction / strength history only.
+    out.reactionHistory = (level.reactionHistory ?? []).filter((s) => s.timestamp <= timestamp);
+    out.strengthHistory = (level.strengthHistory ?? []).filter((h) => h.timestamp <= timestamp);
+    out.components = componentsAsOf(level, timestamp, this.events);
+
+    const held = out.reactionHistory.filter((s) => s.held && s.kind !== 'BREAK');
+    const broken = out.reactionHistory.filter((s) => s.kind === 'BREAK');
+    const touchEvents = this.events.filter(
+      (e) =>
+        e.levelId === level.id &&
+        e.timestamp <= timestamp &&
+        (e.type === 'LEVEL_TOUCHED' || e.type === 'LEVEL_HELD' || e.type === 'LEVEL_BROKEN'),
+    );
+    out.touchCount = Math.max(1, touchEvents.length || (out.knownAt <= timestamp ? 1 : 0));
+    out.rejectionCount = held.length;
+    out.breakCount = broken.length;
+    out.lastInteractionAt =
+      out.reactionHistory.length > 0
+        ? out.reactionHistory[out.reactionHistory.length - 1]!.timestamp
+        : null;
+
+    // Confluence: multi-TF registered at creation; same-TF cluster only if confirmed by T.
+    const confirmedByT = this.events.filter(
+      (e) =>
+        e.levelId === level.id &&
+        e.type === 'LEVEL_CONFIRMED' &&
+        e.timestamp <= timestamp,
+    ).length;
+    if (level.multiTimeframeConfluence) {
+      out.confluenceScore = level.confluenceScore;
+    } else {
+      out.confluenceScore = confirmedByT > 0 ? 35 : 0;
+    }
+
+    const last = out.lastInteractionAt ?? out.knownAt;
+    const idleBars = this.bars.filter((b) => b.time > last && b.time <= timestamp).length;
+    const scored = computeHistoricalSRStrength({
+      level: out,
+      asOf: timestamp,
+      atr: this.lastAtr,
+      barsHint: idleBars,
+      config: this.strengthConfig,
+    });
+    out.strengthScore = scored.strengthScore;
+    out.strength = scored.strengthScore;
+    out.strengthState = scored.strengthState;
+    out.strengthConfidence = scored.strengthConfidence;
+    out.reactionTrend = scored.reactionTrend;
+    out.strengthComponents = scored.components;
+    out.components = {
+      ...out.components,
+      reactionCount: scored.testCount,
+      recency: scored.components.recencyScore,
+    };
     return out;
   }
 
@@ -245,7 +433,6 @@ export class HistoricalSREngine {
     const bars = this.bars;
     if (bars.length < confirm * 2 + 1) return;
 
-    // Pivot index that just became confirmable: last bar is right[confirm-1]
     const pivotIdx = bars.length - 1 - confirm;
     if (pivotIdx < confirm) return;
 
@@ -255,11 +442,15 @@ export class HistoricalSREngine {
     if (left.length < confirm || right.length < confirm) return;
 
     const knownAt = right[right.length - 1]!.time;
-    if (knownAt !== now) return; // only confirm on the exact confirmation bar
+    if (knownAt !== now) return;
 
     const atr = this.lastAtr;
     const isLow = left.every((b) => pivot.low <= b.low) && right.every((b) => pivot.low <= b.low);
     const isHigh = left.every((b) => pivot.high >= b.high) && right.every((b) => pivot.high >= b.high);
+
+    const confirmClose = right[right.length - 1]!.close;
+    const moveAway = atr > 0 ? Math.abs(confirmClose - pivot.low) / atr : 1;
+    const moveAwayHigh = atr > 0 ? Math.abs(confirmClose - pivot.high) / atr : 1;
 
     if (isLow) {
       this.addOrMergeLevel({
@@ -269,6 +460,7 @@ export class HistoricalSREngine {
         sourceCandleTime: pivot.time,
         knownAt,
         atr,
+        swingSignificance: clamp(42 + moveAway * 18, 40, 95),
       });
     }
     if (isHigh) {
@@ -279,6 +471,7 @@ export class HistoricalSREngine {
         sourceCandleTime: pivot.time,
         knownAt,
         atr,
+        swingSignificance: clamp(42 + moveAwayHigh * 18, 40, 95),
       });
     }
   }
@@ -290,6 +483,7 @@ export class HistoricalSREngine {
     sourceCandleTime: number;
     knownAt: number;
     atr: number;
+    swingSignificance: number;
   }): void {
     const half = zoneHalfWidth(p.price, p.atr, this.config);
     const clusterTol = Math.max(p.atr * this.config.clusterAtrFraction, half);
@@ -309,10 +503,17 @@ export class HistoricalSREngine {
       existing.zoneHigh = Math.max(existing.zoneHigh, p.price + half);
       existing.touchCount += 1;
       existing.components.independentTests += 1;
-      existing.components.swingSignificance = Math.max(existing.components.swingSignificance, 78);
+      existing.components.swingSignificance = Math.max(
+        existing.components.swingSignificance,
+        p.swingSignificance,
+        78,
+      );
       existing.source = 'CLUSTERED_SWING';
-      existing.strength = recomputeStrength(existing, p.knownAt, p.atr);
+      // Same-TF cluster = mild confluence, not multi-TF.
+      existing.confluenceScore = Math.max(existing.confluenceScore, 35);
       existing.lastInteractionAt = p.knownAt;
+      this.refreshConfluence(existing);
+      this.applyLevelStrength(existing, p.knownAt, p.atr);
       this.pushEvent({
         type: 'LEVEL_CONFIRMED',
         timestamp: p.knownAt,
@@ -340,20 +541,35 @@ export class HistoricalSREngine {
       firstSeenAt: p.knownAt,
       lastInteractionAt: null,
       strength: 0,
+      strengthScore: 0,
+      strengthState: 'MODERATE',
+      strengthConfidence: 25,
+      reactionTrend: 'STABLE',
+      strengthComponents: emptyStrengthComponents(),
+      reactionHistory: [],
+      strengthHistory: [],
+      roleFlipCount: 0,
+      roleFlipQuality: 0,
+      confluenceScore: 0,
+      multiTimeframeConfluence: false,
+      confluenceTimeframes: [this.timeframe],
+      historicalStrengthBeforeBreak: null,
       touchCount: 1,
       rejectionCount: 0,
       breakCount: 0,
       state: 'ACTIVE',
       beyondCloses: 0,
+      initialSwingSignificance: p.swingSignificance,
       components: {
-        swingSignificance: 78,
-        reactionCount: 20,
+        swingSignificance: p.swingSignificance,
+        reactionCount: 0,
         rejectionMagnitude: 0,
         recency: 90,
         independentTests: 1,
       },
     };
-    level.strength = recomputeStrength(level, p.knownAt, p.atr);
+    this.refreshConfluence(level);
+    this.applyLevelStrength(level, p.knownAt, p.atr);
     this.levels.push(level);
     this.pushEvent({
       type: 'LEVEL_CREATED',
@@ -375,6 +591,9 @@ export class HistoricalSREngine {
       existing.zoneLow = level.zoneLow;
       existing.zoneHigh = level.zoneHigh;
       existing.strength = level.strength;
+      existing.strengthState = level.strengthState;
+      existing.strengthConfidence = level.strengthConfidence;
+      existing.reactionTrend = level.reactionTrend;
       existing.state = level.state;
       existing.major = major;
       if (
@@ -397,6 +616,9 @@ export class HistoricalSREngine {
       zoneLow: level.zoneLow,
       zoneHigh: level.zoneHigh,
       strength: level.strength,
+      strengthState: level.strengthState,
+      strengthConfidence: level.strengthConfidence,
+      reactionTrend: level.reactionTrend,
       state: level.state,
       fromTime: level.knownAt,
       toTime: null,
@@ -408,27 +630,40 @@ export class HistoricalSREngine {
   private interactLevels(bar: HistoricalBarLike): void {
     const atr = this.lastAtr;
     const known = this.levels.filter(
-      (l) =>
-        l.knownAt <= bar.time &&
-        l.state !== 'EXPIRED' &&
-        l.state !== 'BROKEN',
+      (l) => l.knownAt <= bar.time && l.state !== 'EXPIRED' && l.state !== 'BROKEN',
     );
 
     for (const level of known) {
-      // Skip interaction on the confirmation bar itself for brand-new levels
-      if (level.knownAt === bar.time && level.sourceCandleTime !== bar.time) {
-        // allow flip retests later; new pivot may still not "touch" itself meaningfully
-      }
-
       const interaction = this.classifyInteraction(level, bar);
       if (interaction === 'NONE' || interaction === 'APPROACH') continue;
 
       const stateBefore = level.state;
       level.lastInteractionAt = bar.time;
-      level.touchCount += interaction === 'TOUCH' || interaction === 'WICK_TOUCH' || interaction === 'BODY_TOUCH' || interaction === 'CLOSE_IN_ZONE' || interaction === 'REJECTION' || interaction === 'RETEST' ? 1 : 0;
+      level.touchCount +=
+        interaction === 'TOUCH' ||
+        interaction === 'WICK_TOUCH' ||
+        interaction === 'BODY_TOUCH' ||
+        interaction === 'CLOSE_IN_ZONE' ||
+        interaction === 'REJECTION' ||
+        interaction === 'RETEST'
+          ? 1
+          : 0;
 
       if (interaction === 'REJECTION') {
         level.rejectionCount += 1;
+        const sample = reactionFromBar({
+          timestamp: bar.time,
+          levelPrice: level.price,
+          type: level.type,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          atr,
+          held: true,
+          kind: 'REJECTION',
+        });
+        level.reactionHistory.push(sample);
         const mag =
           level.type === 'SUPPORT'
             ? ((bar.close - level.zoneLow) / Math.max(atr, level.price * 0.001)) * 25
@@ -453,7 +688,23 @@ export class HistoricalSREngine {
         level.beyondCloses += 1;
         if (level.beyondCloses >= this.config.breakConfirmCloses) {
           level.breakCount += 1;
+          level.historicalStrengthBeforeBreak = level.strengthScore;
+          level.reactionHistory.push(
+            reactionFromBar({
+              timestamp: bar.time,
+              levelPrice: level.price,
+              type: level.type,
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              atr,
+              held: false,
+              kind: 'BREAK',
+            }),
+          );
           level.state = 'BROKEN';
+          this.applyLevelStrength(level, bar.time, atr);
           this.pushEvent({
             type: 'LEVEL_BROKEN',
             timestamp: bar.time,
@@ -467,6 +718,29 @@ export class HistoricalSREngine {
           this.maybeFlip(level, bar);
         }
       } else {
+        // Weak touch / stall — record low-quality sample so touch-count alone cannot inflate strength.
+        if (
+          interaction === 'WICK_TOUCH' ||
+          interaction === 'BODY_TOUCH' ||
+          interaction === 'CLOSE_IN_ZONE' ||
+          interaction === 'TOUCH' ||
+          interaction === 'RETEST'
+        ) {
+          level.reactionHistory.push(
+            reactionFromBar({
+              timestamp: bar.time,
+              levelPrice: level.price,
+              type: level.type,
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              atr,
+              held: interaction === 'RETEST',
+              kind: 'WEAK_BOUNCE',
+            }),
+          );
+        }
         if (level.state === 'ACTIVE') level.state = 'TESTED';
         this.pushEvent({
           type: 'LEVEL_TOUCHED',
@@ -481,7 +755,7 @@ export class HistoricalSREngine {
 
       if (level.state !== 'BROKEN') {
         level.beyondCloses = interaction === 'CLOSE_THROUGH' ? level.beyondCloses : 0;
-        level.strength = recomputeStrength(level, bar.time, atr);
+        this.applyLevelStrength(level, bar.time, atr);
         this.upsertSegment(level);
       }
     }
@@ -498,8 +772,8 @@ export class HistoricalSREngine {
       id: `${flippedType}:FLIPPED:${broken.id}:${bar.time}`,
       type: flippedType,
       price: broken.price,
-      zoneLow: broken.zoneLow,
-      zoneHigh: broken.zoneHigh,
+      zoneLow: broken.price - half,
+      zoneHigh: broken.price + half,
       source: 'FLIPPED',
       sourceTimeframe: this.timeframe,
       sourceCandleTime: broken.sourceCandleTime,
@@ -507,23 +781,36 @@ export class HistoricalSREngine {
       createdAt: bar.time,
       firstSeenAt: bar.time,
       lastInteractionAt: bar.time,
-      strength: clamp(broken.strength * 0.85, 40, 95),
+      strength: 0,
+      strengthScore: 0,
+      strengthState: 'MODERATE',
+      strengthConfidence: 30,
+      reactionTrend: 'STABLE',
+      strengthComponents: emptyStrengthComponents(),
+      reactionHistory: [],
+      strengthHistory: [],
+      roleFlipCount: 1,
+      roleFlipQuality: clamp(broken.historicalStrengthBeforeBreak ?? broken.strengthScore, 40, 95),
+      confluenceScore: broken.confluenceScore * 0.5,
+      multiTimeframeConfluence: broken.multiTimeframeConfluence,
+      confluenceTimeframes: [...broken.confluenceTimeframes],
+      historicalStrengthBeforeBreak: null,
       touchCount: 0,
       rejectionCount: 0,
       breakCount: 0,
       state: flippedState,
       beyondCloses: 0,
+      initialSwingSignificance: 70,
       components: {
         swingSignificance: 70,
-        reactionCount: 10,
+        reactionCount: 0,
         rejectionMagnitude: broken.components.rejectionMagnitude * 0.5,
         recency: 95,
         independentTests: 1,
       },
     };
-    // Expand zone slightly around flip
-    level.zoneLow = broken.price - half;
-    level.zoneHigh = broken.price + half;
+    this.refreshConfluence(level);
+    this.applyLevelStrength(level, bar.time, atr);
     this.levels.push(level);
     this.pushEvent({
       type: 'LEVEL_FLIPPED',
@@ -560,7 +847,6 @@ export class HistoricalSREngine {
       const closeThrough = bar.close < zoneLow - breakDist;
       if (closeThrough) return 'BREAK';
       if (wickIn || bodyIn || closeIn) {
-        // Rejection: wicked into/through zone but closed back above zone mid
         if ((wickThrough || wickIn) && bar.close > zoneLow && bar.close >= mid - atr * 0.05) {
           return 'REJECTION';
         }
@@ -573,7 +859,6 @@ export class HistoricalSREngine {
       return 'NONE';
     }
 
-    // Resistance
     const wickThrough = bar.high > zoneHigh + breakDist * 0.25;
     const closeThrough = bar.close > zoneHigh + breakDist;
     if (closeThrough) return 'BREAK';
@@ -596,29 +881,27 @@ export class HistoricalSREngine {
       if (level.state === 'BROKEN' || level.state === 'EXPIRED') continue;
       if (level.knownAt > now) continue;
       const last = level.lastInteractionAt ?? level.knownAt;
-      // Approximate idle bars via bar count after last
       const idle = this.bars.filter((b) => b.time > last && b.time <= now).length;
-      if (idle >= this.config.decayIdleBars) {
-        level.strength = clamp(level.strength - this.config.decayStrengthPerIdle, 0, 100);
-        if (level.strength < 28) {
-          const before = level.state;
-          level.state = 'EXPIRED';
-          this.pushEvent({
-            type: 'LEVEL_EXPIRED',
-            timestamp: now,
-            levelId: level.id,
-            price: level.price,
-            stateBefore: before,
-            stateAfter: 'EXPIRED',
-            evidence: `idle ${idle} bars`,
-          });
-          this.upsertSegment(level);
-        } else if (level.state === 'TESTED' || level.state === 'ACTIVE') {
-          level.state = 'WEAKENING';
-          this.upsertSegment(level);
-        }
+      this.applyLevelStrength(level, now, atr);
+      if (idle >= this.config.decayIdleBars && level.strength < 28) {
+        const before = level.state;
+        level.state = 'EXPIRED';
+        level.strengthState = 'BROKEN';
+        this.pushEvent({
+          type: 'LEVEL_EXPIRED',
+          timestamp: now,
+          levelId: level.id,
+          price: level.price,
+          stateBefore: before,
+          stateAfter: 'EXPIRED',
+          evidence: `idle ${idle} bars`,
+        });
+        this.upsertSegment(level);
+      } else if (idle >= this.config.decayIdleBars && (level.state === 'TESTED' || level.state === 'ACTIVE')) {
+        level.state = 'WEAKENING';
+        this.upsertSegment(level);
       } else {
-        level.strength = recomputeStrength(level, now, atr);
+        this.upsertSegment(level);
       }
     }
   }
@@ -631,13 +914,14 @@ export class HistoricalSREngine {
     for (const weak of active.slice(this.config.maxActiveLevels)) {
       if (weak.state === 'WEAKENING') {
         weak.state = 'EXPIRED';
+        weak.strengthState = 'BROKEN';
         this.upsertSegment(weak);
       }
     }
   }
 
   private buildCandleContext(bar: HistoricalBarLike): HistoricalCandleSRContext {
-    const known = this.levels.filter((l) => l.knownAt <= bar.time).map(cloneLevel);
+    const known = this.levels.filter((l) => l.knownAt <= bar.time).map((l) => this.levelAsOf(l, bar.time));
     return this.buildCandleContextFrom(bar, known);
   }
 
@@ -681,6 +965,10 @@ export class HistoricalSREngine {
       nearestKnownSupport,
       nearestKnownResistance,
       locationContext,
+      supportStrength: nearestKnownSupport?.strengthScore ?? null,
+      supportStrengthState: nearestKnownSupport?.strengthState ?? null,
+      resistanceStrength: nearestKnownResistance?.strengthScore ?? null,
+      resistanceStrengthState: nearestKnownResistance?.strengthState ?? null,
       supportInteraction: nearestKnownSupport ? this.classifyInteraction(nearestKnownSupport, bar) : 'NONE',
       resistanceInteraction: nearestKnownResistance
         ? this.classifyInteraction(nearestKnownResistance, bar)
@@ -753,9 +1041,18 @@ export function assertNoLookahead(
     for (const id of onlineIds) {
       if (!fullIds.has(id)) return `id ${id} missing in full snapshot at T=${t}`;
     }
-    // Full engine must not know levels earlier than online
     for (const l of [...atT.knownSupport, ...atT.knownResistance]) {
       if (l.knownAt > t) return `lookahead: level ${l.id} knownAt ${l.knownAt} > T ${t}`;
+    }
+    // Strength at T must not exceed online engine's causal strength for same id.
+    for (const l of [...atT.knownSupport, ...atT.knownResistance]) {
+      const onlineLevel = [...online.snapshotAt(t).knownSupport, ...online.snapshotAt(t).knownResistance].find(
+        (x) => x.id === l.id,
+      );
+      if (!onlineLevel) continue;
+      if (Math.abs(onlineLevel.strengthScore - l.strengthScore) > 2) {
+        return `strength lookahead at T=${t} id=${l.id}: online=${onlineLevel.strengthScore} snap=${l.strengthScore}`;
+      }
     }
   }
   return null;

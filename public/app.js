@@ -3573,6 +3573,21 @@ function showPatternTip(symbol, event) {
   const rect = view.canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+
+  const hsrHit = (view.hsrHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (hsrHit?.tip) {
+    tip.classList.remove('hidden');
+    tip.innerHTML = escapeHtml(hsrHit.tip)
+      .split('\n')
+      .map((line, i) => (i === 0 ? `<strong>${line}</strong>` : `<span>${line}</span>`))
+      .join('');
+    const host = view.card?.querySelector('.fp-card-canvas');
+    const maxX = (host?.clientWidth ?? 200) - 220;
+    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+    tip.style.top = `${Math.max(8, y + 14)}px`;
+    return;
+  }
+
   const hit = (view.patternHits ?? []).find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
   if (!hit?.marker) {
     tip.classList.add('hidden');
@@ -4029,6 +4044,7 @@ function drawFootprint(symbol = selectedSymbol) {
     stride,
     barWidth,
   });
+  view.hsrHits = drawHistoricalSROverlay._hits ?? [];
 
   drawLiveDefenseMarkers(ctx, symbol, {
     leftPad,
@@ -4146,6 +4162,7 @@ function locationStateColor(state) {
 /**
  * Causal historical S/R for chart overlay (mirrors src/historical-sr engine).
  * Levels appear only from knownAt (pivot confirmation close) forward — no lookahead.
+ * Strength = reaction quality / holds / structure — not raw touch count.
  */
 const HSR_PIVOT_CONFIRM = 2;
 const HSR_MAJOR_MIN = 62;
@@ -4174,6 +4191,92 @@ function hsrZoneHalf(price, atr) {
   return Math.max(atr * 0.22, price * 0.0004, price * 1e-6);
 }
 
+function hsrClamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/** Client-side mirror of historical SR strength (causal samples only). */
+function hsrScoreLevel(level, asOf, atr) {
+  const hist = (level.reactions || []).filter((r) => r.t <= asOf);
+  const holds = hist.filter((r) => r.held);
+  const structure = level.swingSig ?? 72;
+  const reactionQuality =
+    hist.length > 0
+      ? hist.reduce((a, r) => a + hsrClamp((r.atrMove / 2.5) * 55 + (r.pct / 0.025) * 35 + (r.held ? 10 : 0), 0, 100), 0) /
+        hist.length
+      : 35;
+  const holdRatio = hist.length ? holds.length / hist.length : 0;
+  const holdQuality = hsrClamp(holdRatio * 55 + Math.min(15, holds.length * 6), 0, 100);
+  const last = level.lastTouch ?? level.knownAt;
+  const idleBars = Math.max(0, (asOf - last) / 60);
+  const recency = hsrClamp(100 * Math.exp(-idleBars / 40), 15, 100);
+  let weakening = 0;
+  let trend = 'STABLE';
+  if (hist.length >= 3) {
+    const recent = hist.slice(-4);
+    let decaying = 0;
+    for (let i = 1; i < recent.length; i++) {
+      if (recent[i].atrMove < recent[i - 1].atrMove * 0.85) decaying += 1;
+    }
+    if (decaying >= recent.length - 1) {
+      trend = 'WEAKENING';
+      weakening = hsrClamp(12 + Math.max(0, hist.length - 2) * 5, 12, 35);
+    }
+  }
+  let score = hsrClamp(
+    structure * 0.2 + reactionQuality * 0.3 + holdQuality * 0.25 + recency * 0.15 + 58 * 0.1 - weakening,
+    0,
+    100,
+  );
+  if (hist.length <= 1) score = Math.min(score, 72);
+  const confidence = hsrClamp(25 + Math.min(40, hist.length * 12) + Math.min(20, holds.length * 8), 15, 98);
+  let state = 'MODERATE';
+  if (level.broken) state = 'BROKEN';
+  else if (score < 30) state = 'WEAK';
+  else if (score < 55) state = 'MODERATE';
+  else if (trend === 'WEAKENING') state = 'STRONG_BUT_WEAKENING';
+  else if (score >= 75 && confidence >= 45) state = 'VERY_STRONG';
+  else state = 'STRONG';
+  const avgPct = holds.length ? holds.reduce((a, r) => a + r.pct, 0) / holds.length : 0;
+  const maxPct = holds.length ? Math.max(...holds.map((r) => r.pct)) : 0;
+  return {
+    score,
+    state,
+    confidence,
+    trend,
+    tests: hist.length,
+    holds: holds.length,
+    avgPct,
+    maxPct,
+  };
+}
+
+function hsrStateLabel(state) {
+  if (state === 'VERY_STRONG') return 'VERY STRONG';
+  if (state === 'STRONG_BUT_WEAKENING') return 'STRONG ↓';
+  if (state === 'STRONG') return 'STRONG';
+  if (state === 'MODERATE') return 'MODERATE';
+  if (state === 'WEAK') return 'WEAK';
+  if (state === 'BROKEN') return 'BROKEN';
+  return '';
+}
+
+function hsrLineWidth(state, broken) {
+  if (broken) return 1;
+  if (state === 'VERY_STRONG') return 2.1;
+  if (state === 'STRONG' || state === 'STRONG_BUT_WEAKENING') return 1.7;
+  if (state === 'MODERATE') return 1.35;
+  return 1;
+}
+
+function hsrAlpha(state, broken) {
+  if (broken) return 0.35;
+  if (state === 'VERY_STRONG') return 0.88;
+  if (state === 'STRONG' || state === 'STRONG_BUT_WEAKENING') return 0.8;
+  if (state === 'MODERATE') return 0.7;
+  return 0.5;
+}
+
 /** Completed bars only — exclude live forming candle. */
 function hsrCompletedBars(bars) {
   if (!bars?.length) return [];
@@ -4183,7 +4286,7 @@ function hsrCompletedBars(bars) {
 }
 
 /**
- * @returns {{ segments: Array<{id,type,price,zoneLow,zoneHigh,strength,fromTime,toTime,broken,major}>, byId: Map }}
+ * @returns {{ segments: Array, levels: Array }}
  */
 function buildHistoricalSRSegments(bars) {
   const completed = hsrCompletedBars(bars);
@@ -4196,6 +4299,15 @@ function buildHistoricalSRSegments(bars) {
   const segments = [];
 
   function upsertSeg(level) {
+    const scored = hsrScoreLevel(level, level.lastTouch ?? level.knownAt, level.lastAtr || 1);
+    level.strength = scored.score;
+    level.strengthState = scored.state;
+    level.strengthConfidence = scored.confidence;
+    level.reactionTrend = scored.trend;
+    level.avgReactionPct = scored.avgPct;
+    level.maxReactionPct = scored.maxPct;
+    level.testCount = scored.tests;
+    level.holdCount = scored.holds;
     let seg = segments.find((s) => s.id === level.id);
     if (!seg) {
       seg = {
@@ -4205,6 +4317,13 @@ function buildHistoricalSRSegments(bars) {
         zoneLow: level.zoneLow,
         zoneHigh: level.zoneHigh,
         strength: level.strength,
+        strengthState: level.strengthState,
+        strengthConfidence: level.strengthConfidence,
+        reactionTrend: level.reactionTrend,
+        avgReactionPct: level.avgReactionPct,
+        maxReactionPct: level.maxReactionPct,
+        testCount: level.testCount,
+        holdCount: level.holdCount,
         fromTime: level.knownAt,
         toTime: null,
         broken: false,
@@ -4216,12 +4335,35 @@ function buildHistoricalSRSegments(bars) {
       seg.zoneLow = level.zoneLow;
       seg.zoneHigh = level.zoneHigh;
       seg.strength = level.strength;
+      seg.strengthState = level.strengthState;
+      seg.strengthConfidence = level.strengthConfidence;
+      seg.reactionTrend = level.reactionTrend;
+      seg.avgReactionPct = level.avgReactionPct;
+      seg.maxReactionPct = level.maxReactionPct;
+      seg.testCount = level.testCount;
+      seg.holdCount = level.holdCount;
       seg.major = level.strength >= HSR_MAJOR_MIN;
       if (level.broken) {
         seg.broken = true;
+        seg.strengthState = 'BROKEN';
         seg.toTime = level.brokenAt ?? seg.toTime;
       }
     }
+  }
+
+  function pushReaction(level, bar, atr, held) {
+    const excursion =
+      level.type === 'SUPPORT'
+        ? Math.max(0, bar.close - level.price, bar.high - level.price)
+        : Math.max(0, level.price - bar.close, level.price - bar.low);
+    level.reactions.push({
+      t: bar.time,
+      atrMove: atr > 0 ? excursion / atr : 0,
+      pct: level.price > 0 ? excursion / level.price : 0,
+      held,
+    });
+    level.lastTouch = bar.time;
+    level.lastAtr = atr;
   }
 
   for (let end = 0; end < completed.length; end++) {
@@ -4229,7 +4371,6 @@ function buildHistoricalSRSegments(bars) {
     const atr = hsrAtr(completed.slice(0, end + 1));
     const clusterTol = Math.max(atr * 0.3, hsrZoneHalf(bar.close, atr));
 
-    // Confirm pivot that just became knowable
     const pivotIdx = end - confirm;
     if (pivotIdx >= confirm) {
       const pivot = completed[pivotIdx];
@@ -4242,6 +4383,8 @@ function buildHistoricalSRSegments(bars) {
           const isHigh = left.every((b) => pivot.high >= b.high) && right.every((b) => pivot.high >= b.high);
           const tryAdd = (type, price) => {
             const half = hsrZoneHalf(price, atr);
+            const moveAway = atr > 0 ? Math.abs(bar.close - price) / atr : 1;
+            const swingSig = hsrClamp(42 + moveAway * 18, 40, 95);
             const existing = levels.find(
               (l) => !l.broken && l.type === type && Math.abs(l.price - price) <= clusterTol,
             );
@@ -4250,7 +4393,9 @@ function buildHistoricalSRSegments(bars) {
               existing.zoneLow = Math.min(existing.zoneLow, price - half);
               existing.zoneHigh = Math.max(existing.zoneHigh, price + half);
               existing.touches += 1;
-              existing.strength = Math.min(100, existing.strength + 6);
+              existing.swingSig = Math.max(existing.swingSig, swingSig, 78);
+              existing.lastTouch = knownAt;
+              existing.lastAtr = atr;
               upsertSeg(existing);
               return;
             }
@@ -4262,8 +4407,15 @@ function buildHistoricalSRSegments(bars) {
               zoneHigh: price + half,
               knownAt,
               sourceCandleTime: pivot.time,
-              strength: type === 'RESISTANCE' || type === 'SUPPORT' ? 72 : 60,
+              strength: 0,
+              strengthState: 'MODERATE',
+              strengthConfidence: 25,
+              reactionTrend: 'STABLE',
+              swingSig,
               touches: 1,
+              reactions: [],
+              lastTouch: null,
+              lastAtr: atr,
               broken: false,
               brokenAt: null,
               beyond: 0,
@@ -4277,7 +4429,6 @@ function buildHistoricalSRSegments(bars) {
       }
     }
 
-    // Interact known levels with this bar
     for (const level of levels) {
       if (level.broken || level.knownAt > bar.time) continue;
       const breakDist = atr * 0.15;
@@ -4287,30 +4438,36 @@ function buildHistoricalSRSegments(bars) {
           if (level.beyond >= 1) {
             level.broken = true;
             level.brokenAt = bar.time;
+            pushReaction(level, bar, atr, false);
             upsertSeg(level);
           }
         } else if (bar.low <= level.zoneHigh && bar.close >= level.zoneLow) {
           if (bar.low < level.zoneLow || (bar.low <= level.price && bar.close > level.price)) {
-            level.strength = Math.min(100, level.strength + 4);
+            pushReaction(level, bar, atr, true);
+            upsertSeg(level);
+          } else {
+            pushReaction(level, bar, atr, false);
             upsertSeg(level);
           }
           level.beyond = 0;
         }
-      } else {
-        if (bar.close > level.zoneHigh + breakDist) {
-          level.beyond += 1;
-          if (level.beyond >= 1) {
-            level.broken = true;
-            level.brokenAt = bar.time;
-            upsertSeg(level);
-          }
-        } else if (bar.high >= level.zoneLow && bar.close <= level.zoneHigh) {
-          if (bar.high > level.zoneHigh || (bar.high >= level.price && bar.close < level.price)) {
-            level.strength = Math.min(100, level.strength + 4);
-            upsertSeg(level);
-          }
-          level.beyond = 0;
+      } else if (bar.close > level.zoneHigh + breakDist) {
+        level.beyond += 1;
+        if (level.beyond >= 1) {
+          level.broken = true;
+          level.brokenAt = bar.time;
+          pushReaction(level, bar, atr, false);
+          upsertSeg(level);
         }
+      } else if (bar.high >= level.zoneLow && bar.close <= level.zoneHigh) {
+        if (bar.high > level.zoneHigh || (bar.high >= level.price && bar.close < level.price)) {
+          pushReaction(level, bar, atr, true);
+          upsertSeg(level);
+        } else {
+          pushReaction(level, bar, atr, false);
+          upsertSeg(level);
+        }
+        level.beyond = 0;
       }
     }
   }
@@ -4324,6 +4481,28 @@ function buildHistoricalSRSegments(bars) {
   return result;
 }
 
+function hsrTooltipText(seg) {
+  const side = seg.type === 'SUPPORT' ? 'SUPPORT' : 'RESISTANCE';
+  const holdRatio =
+    seg.testCount > 0 ? `${Math.round((seg.holdCount / seg.testCount) * 100)}%` : '—';
+  const avg = seg.avgReactionPct != null ? `${(seg.avgReactionPct * 100).toFixed(2)}%` : '—';
+  const max = seg.maxReactionPct != null ? `${(seg.maxReactionPct * 100).toFixed(2)}%` : '—';
+  const weakenNote =
+    seg.strengthState === 'STRONG_BUT_WEAKENING' ? '\nRepeated tests producing smaller reactions.' : '';
+  return [
+    `${side} ${fmtPriceAxis(seg.price)}`,
+    `Strength: ${Math.round(seg.strength)} / 100`,
+    `Confidence: ${Math.round(seg.strengthConfidence ?? 0)}%`,
+    `State: ${hsrStateLabel(seg.strengthState)}`,
+    `Tests: ${seg.testCount ?? 0}`,
+    `Successful Holds: ${seg.holdCount ?? 0}`,
+    `Hold Ratio: ${holdRatio}`,
+    `Average Reaction: ${avg}`,
+    `Largest Reaction: ${max}`,
+    `Reaction Trend: ${seg.reactionTrend ?? 'STABLE'}`,
+  ].join('\n') + weakenNote;
+}
+
 function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
   const { leftPad, plotRight, yForPrice, topPad, chartH, stride } = layout;
   const { segments } = buildHistoricalSRSegments(allBars);
@@ -4333,7 +4512,6 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
   const timeToX = (t) => {
     const idx = visible.findIndex((b) => b.time >= t);
     if (idx < 0) {
-      // level known before visible window — start at left
       if (visible[0] && t < visible[0].time) return leftPad;
       return null;
     }
@@ -4342,6 +4520,7 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
 
   const viewEnd = visible[visible.length - 1]?.time ?? Infinity;
   const viewStart = visible[0]?.time ?? 0;
+  const hitTargets = [];
 
   ctx.save();
   for (const seg of segments) {
@@ -4364,9 +4543,9 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
     const isSup = seg.type === 'SUPPORT';
     const color = isSup ? '#34d399' : '#f87171';
     const broken = seg.broken;
+    const state = seg.strengthState || 'MODERATE';
 
-    // Zone band — restrained, under footprint numbers (drawn after candles but low alpha)
-    ctx.globalAlpha = broken ? 0.06 : 0.1;
+    ctx.globalAlpha = broken ? 0.06 : state === 'WEAK' ? 0.06 : 0.1;
     ctx.fillStyle = color;
     const bandTop = Math.min(yTop, yBot);
     const bandH = Math.max(2, Math.abs(yBot - yTop));
@@ -4374,9 +4553,9 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
       ctx.fillRect(Math.max(leftPad, x0), bandTop, Math.min(plotRight, x1) - Math.max(leftPad, x0), bandH);
     }
 
-    ctx.globalAlpha = broken ? 0.35 : 0.75;
+    ctx.globalAlpha = hsrAlpha(state, broken);
     ctx.strokeStyle = color;
-    ctx.lineWidth = broken ? 1 : 1.35;
+    ctx.lineWidth = hsrLineWidth(state, broken);
     ctx.setLineDash(broken ? [3, 4] : []);
     ctx.beginPath();
     ctx.moveTo(Math.max(leftPad, x0), yMid);
@@ -4384,23 +4563,41 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Compact right-edge label: SUP/RES · price · strength
-    const label = `${isSup ? 'SUP' : 'RES'} ${fmtPriceAxis(seg.price)} ${Math.round(seg.strength)}`;
+    const scoreBit =
+      state === 'STRONG_BUT_WEAKENING'
+        ? `${Math.round(seg.strength)} ↓`
+        : `${Math.round(seg.strength)}`;
+    const label = `${isSup ? 'SUP' : 'RES'} ${fmtPriceAxis(seg.price)} · ${scoreBit}`;
+    const stateLabel = hsrStateLabel(state);
     ctx.globalAlpha = broken ? 0.45 : 0.9;
     ctx.font = '700 9px JetBrains Mono, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const lx = Math.min(plotRight, x1) - ctx.measureText(label).width - 6;
+    const tw = Math.max(ctx.measureText(label).width, ctx.measureText(stateLabel).width);
+    const lx = Math.min(plotRight, x1) - tw - 6;
     const ly = yMid - (isSup ? -10 : 10);
     if (ly > topPad && ly < topPad + chartH && lx > leftPad) {
       ctx.fillStyle = 'rgba(8, 11, 16, 0.75)';
-      const tw = ctx.measureText(label).width;
-      ctx.fillRect(lx - 3, ly - 7, tw + 6, 14);
+      ctx.fillRect(lx - 3, ly - 12, tw + 6, stateLabel ? 22 : 14);
       ctx.fillStyle = color;
-      ctx.fillText(label, lx, ly);
+      ctx.fillText(label, lx, ly - 4);
+      if (stateLabel) {
+        ctx.font = '600 8px JetBrains Mono, monospace';
+        ctx.globalAlpha = broken ? 0.4 : 0.75;
+        ctx.fillText(stateLabel, lx, ly + 7);
+      }
+      hitTargets.push({
+        x0: lx - 3,
+        x1: lx + tw + 3,
+        y0: ly - 12,
+        y1: ly + 10,
+        tip: hsrTooltipText(seg),
+        seg,
+      });
     }
   }
   ctx.restore();
+  drawHistoricalSROverlay._hits = hitTargets;
 }
 
 /**

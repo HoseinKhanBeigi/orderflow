@@ -257,6 +257,19 @@ function confluenceOf(p: {
   const nearSupport = /SUPPORT/.test(loc) && !/BELOW_SUPPORT|ABOVE_RESISTANCE/.test(loc);
   const nearResist = /RESISTANCE/.test(loc) && !/ABOVE_RESISTANCE|BELOW_SUPPORT/.test(loc);
 
+  const supportStrong = !!p.support && (p.support.strength ?? 0) >= 75;
+  const resistanceStrong = !!p.resistance && (p.resistance.strength ?? 0) >= 75;
+  const bidStrong = !!p.bid && p.bid.strength >= 70 && p.bid.trend !== 'WEAKENING';
+  const askStrong = !!p.ask && p.ask.strength >= 70 && p.ask.trend !== 'WEAKENING';
+
+  // Keep historical strength and live defense separate — high confluence is alignment, not average.
+  if (nearSupport && supportStrong && p.bidAtSupport && bidStrong) {
+    return 'STRUCTURAL_CONFLUENCE_HIGH';
+  }
+  if (nearResist && resistanceStrong && p.askAtResistance && askStrong) {
+    return 'STRUCTURAL_CONFLUENCE_HIGH';
+  }
+
   if (nearSupport && p.support && (p.support.strength ?? 0) >= 65) score += 1;
   if (nearResist && p.resistance && (p.resistance.strength ?? 0) >= 65) score += 1;
   if (p.bidAtSupport && p.bid && p.bid.strength >= 60) score += 2;

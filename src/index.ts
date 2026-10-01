@@ -143,6 +143,10 @@ export {
   assertNoLookahead,
   DEFAULT_HISTORICAL_SR_CONFIG,
   HISTORICAL_SR_VERSION,
+  computeHistoricalSRStrength,
+  DEFAULT_SR_STRENGTH_CONFIG,
+  strengthStateLabel,
+  multiTimeframeConfluenceScore,
 } from './historical-sr/index.js';
 export type {
   HistoricalBarLike,
@@ -152,6 +156,9 @@ export type {
   HistoricalSRConfig,
   HistoricalSRSnapshot,
   HistoricalCandleSRContext,
+  HistoricalSRStrengthScore,
+  HistoricalSRStrengthState,
+  HistoricalReactionTrend,
 } from './historical-sr/index.js';
 export {
   selectLiveDefense,
