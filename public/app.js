@@ -1473,6 +1473,9 @@ function setupDataMode() {
     if (Number.isFinite(n) && n >= 1.2) imbalanceRatio = n;
     scheduleDraw();
   });
+  $('hsr-minor')?.addEventListener('change', () => {
+    scheduleDraw();
+  });
 }
 
 function applyDataMode(mode) {
@@ -2110,6 +2113,7 @@ function initChart() {
       if (!btn) return;
       chartTfMinutes = Number(btn.dataset.ctf);
       document.querySelectorAll('#chart-tf-tabs .chart-tf-tab').forEach((b) => b.classList.toggle('active', b === btn));
+      HSR_CACHE.clear();
       snapChartToLive();
       seedFootprintKlines();
     });
@@ -3989,6 +3993,16 @@ function drawFootprint(symbol = selectedSymbol) {
     drawChartPriceLine(ctx, yForPrice(livePx), '#60a5fa', `LIVE ${fmtPriceAxis(livePx)}`, leftPad, plotRight + railW);
   }
 
+  drawHistoricalSROverlay(ctx, bars, visible, startIdx, {
+    leftPad,
+    plotRight: plotRight + railW,
+    yForPrice,
+    topPad,
+    chartH,
+    stride,
+    barWidth,
+  });
+
   drawLocationLevelBoxes(ctx, symbol, bars, {
     leftPad,
     plotRight: plotRight + railW,
@@ -4091,6 +4105,266 @@ function locationStateColor(state) {
   if (s.includes('ABOVE') || s.includes('BREAKOUT')) return '#fb923c';
   if (s.includes('BELOW') || s.includes('BREAKDOWN')) return '#c084fc';
   return '#94a3b8';
+}
+
+/**
+ * Causal historical S/R for chart overlay (mirrors src/historical-sr engine).
+ * Levels appear only from knownAt (pivot confirmation close) forward — no lookahead.
+ */
+const HSR_PIVOT_CONFIRM = 2;
+const HSR_MAJOR_MIN = 62;
+const HSR_CACHE = new Map();
+
+function hsrShowMinor() {
+  return !!document.getElementById('hsr-minor')?.checked;
+}
+
+function hsrAtr(bars, period = 14) {
+  if (bars.length < 2) {
+    const b = bars[bars.length - 1];
+    return b ? Math.max(b.high - b.low, b.close * 0.002) : 0;
+  }
+  const n = Math.min(period, bars.length - 1);
+  let sum = 0;
+  for (let i = bars.length - n; i < bars.length; i++) {
+    const cur = bars[i];
+    const prev = bars[i - 1];
+    sum += Math.max(cur.high - cur.low, Math.abs(cur.high - prev.close), Math.abs(cur.low - prev.close));
+  }
+  return sum / n || bars[bars.length - 1].close * 0.002;
+}
+
+function hsrZoneHalf(price, atr) {
+  return Math.max(atr * 0.22, price * 0.0004, price * 1e-6);
+}
+
+/** Completed bars only — exclude live forming candle. */
+function hsrCompletedBars(bars) {
+  if (!bars?.length) return [];
+  const nowBucket = fpCandleTime(Date.now(), chartTfMinutes);
+  if (bars[bars.length - 1]?.time === nowBucket && bars.length > 1) return bars.slice(0, -1);
+  return bars;
+}
+
+/**
+ * @returns {{ segments: Array<{id,type,price,zoneLow,zoneHigh,strength,fromTime,toTime,broken,major}>, byId: Map }}
+ */
+function buildHistoricalSRSegments(bars) {
+  const completed = hsrCompletedBars(bars);
+  const key = `${completed.length}:${completed[0]?.time ?? 0}:${completed[completed.length - 1]?.time ?? 0}:${HSR_PIVOT_CONFIRM}`;
+  const cached = HSR_CACHE.get(key);
+  if (cached) return cached;
+
+  const confirm = HSR_PIVOT_CONFIRM;
+  const levels = [];
+  const segments = [];
+
+  function upsertSeg(level) {
+    let seg = segments.find((s) => s.id === level.id);
+    if (!seg) {
+      seg = {
+        id: level.id,
+        type: level.type,
+        price: level.price,
+        zoneLow: level.zoneLow,
+        zoneHigh: level.zoneHigh,
+        strength: level.strength,
+        fromTime: level.knownAt,
+        toTime: null,
+        broken: false,
+        major: level.strength >= HSR_MAJOR_MIN,
+      };
+      segments.push(seg);
+    } else {
+      seg.price = level.price;
+      seg.zoneLow = level.zoneLow;
+      seg.zoneHigh = level.zoneHigh;
+      seg.strength = level.strength;
+      seg.major = level.strength >= HSR_MAJOR_MIN;
+      if (level.broken) {
+        seg.broken = true;
+        seg.toTime = level.brokenAt ?? seg.toTime;
+      }
+    }
+  }
+
+  for (let end = 0; end < completed.length; end++) {
+    const bar = completed[end];
+    const atr = hsrAtr(completed.slice(0, end + 1));
+    const clusterTol = Math.max(atr * 0.3, hsrZoneHalf(bar.close, atr));
+
+    // Confirm pivot that just became knowable
+    const pivotIdx = end - confirm;
+    if (pivotIdx >= confirm) {
+      const pivot = completed[pivotIdx];
+      const left = completed.slice(pivotIdx - confirm, pivotIdx);
+      const right = completed.slice(pivotIdx + 1, pivotIdx + 1 + confirm);
+      if (left.length === confirm && right.length === confirm) {
+        const knownAt = right[right.length - 1].time;
+        if (knownAt === bar.time) {
+          const isLow = left.every((b) => pivot.low <= b.low) && right.every((b) => pivot.low <= b.low);
+          const isHigh = left.every((b) => pivot.high >= b.high) && right.every((b) => pivot.high >= b.high);
+          const tryAdd = (type, price) => {
+            const half = hsrZoneHalf(price, atr);
+            const existing = levels.find(
+              (l) => !l.broken && l.type === type && Math.abs(l.price - price) <= clusterTol,
+            );
+            if (existing) {
+              existing.price = (existing.price * existing.touches + price) / (existing.touches + 1);
+              existing.zoneLow = Math.min(existing.zoneLow, price - half);
+              existing.zoneHigh = Math.max(existing.zoneHigh, price + half);
+              existing.touches += 1;
+              existing.strength = Math.min(100, existing.strength + 6);
+              upsertSeg(existing);
+              return;
+            }
+            const level = {
+              id: `${type}:${pivot.time}:${knownAt}:${price.toFixed(6)}`,
+              type,
+              price,
+              zoneLow: price - half,
+              zoneHigh: price + half,
+              knownAt,
+              sourceCandleTime: pivot.time,
+              strength: type === 'RESISTANCE' || type === 'SUPPORT' ? 72 : 60,
+              touches: 1,
+              broken: false,
+              brokenAt: null,
+              beyond: 0,
+            };
+            levels.push(level);
+            upsertSeg(level);
+          };
+          if (isLow) tryAdd('SUPPORT', pivot.low);
+          if (isHigh) tryAdd('RESISTANCE', pivot.high);
+        }
+      }
+    }
+
+    // Interact known levels with this bar
+    for (const level of levels) {
+      if (level.broken || level.knownAt > bar.time) continue;
+      const breakDist = atr * 0.15;
+      if (level.type === 'SUPPORT') {
+        if (bar.close < level.zoneLow - breakDist) {
+          level.beyond += 1;
+          if (level.beyond >= 1) {
+            level.broken = true;
+            level.brokenAt = bar.time;
+            upsertSeg(level);
+          }
+        } else if (bar.low <= level.zoneHigh && bar.close >= level.zoneLow) {
+          if (bar.low < level.zoneLow || (bar.low <= level.price && bar.close > level.price)) {
+            level.strength = Math.min(100, level.strength + 4);
+            upsertSeg(level);
+          }
+          level.beyond = 0;
+        }
+      } else {
+        if (bar.close > level.zoneHigh + breakDist) {
+          level.beyond += 1;
+          if (level.beyond >= 1) {
+            level.broken = true;
+            level.brokenAt = bar.time;
+            upsertSeg(level);
+          }
+        } else if (bar.high >= level.zoneLow && bar.close <= level.zoneHigh) {
+          if (bar.high > level.zoneHigh || (bar.high >= level.price && bar.close < level.price)) {
+            level.strength = Math.min(100, level.strength + 4);
+            upsertSeg(level);
+          }
+          level.beyond = 0;
+        }
+      }
+    }
+  }
+
+  const result = { segments, levels };
+  HSR_CACHE.set(key, result);
+  if (HSR_CACHE.size > 24) {
+    const first = HSR_CACHE.keys().next().value;
+    HSR_CACHE.delete(first);
+  }
+  return result;
+}
+
+function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
+  const { leftPad, plotRight, yForPrice, topPad, chartH, stride } = layout;
+  const { segments } = buildHistoricalSRSegments(allBars);
+  if (!segments.length) return;
+
+  const showMinor = hsrShowMinor();
+  const timeToX = (t) => {
+    const idx = visible.findIndex((b) => b.time >= t);
+    if (idx < 0) {
+      // level known before visible window — start at left
+      if (visible[0] && t < visible[0].time) return leftPad;
+      return null;
+    }
+    return plotRight - (visible.length - idx) * stride;
+  };
+
+  const viewEnd = visible[visible.length - 1]?.time ?? Infinity;
+  const viewStart = visible[0]?.time ?? 0;
+
+  ctx.save();
+  for (const seg of segments) {
+    if (!showMinor && !seg.major) continue;
+    if (seg.fromTime > viewEnd) continue;
+    if (seg.toTime != null && seg.toTime < viewStart) continue;
+
+    const x0 = timeToX(seg.fromTime);
+    if (x0 == null) continue;
+    let x1 = plotRight;
+    if (seg.toTime != null) {
+      const xb = timeToX(seg.toTime);
+      if (xb != null) x1 = Math.max(x0, xb + stride * 0.5);
+    }
+    if (x1 <= leftPad || x0 >= plotRight) continue;
+
+    const yMid = yForPrice(seg.price);
+    const yTop = yForPrice(seg.zoneHigh);
+    const yBot = yForPrice(seg.zoneLow);
+    const isSup = seg.type === 'SUPPORT';
+    const color = isSup ? '#34d399' : '#f87171';
+    const broken = seg.broken;
+
+    // Zone band — restrained, under footprint numbers (drawn after candles but low alpha)
+    ctx.globalAlpha = broken ? 0.06 : 0.1;
+    ctx.fillStyle = color;
+    const bandTop = Math.min(yTop, yBot);
+    const bandH = Math.max(2, Math.abs(yBot - yTop));
+    if (bandTop >= topPad - 2 && bandTop <= topPad + chartH) {
+      ctx.fillRect(Math.max(leftPad, x0), bandTop, Math.min(plotRight, x1) - Math.max(leftPad, x0), bandH);
+    }
+
+    ctx.globalAlpha = broken ? 0.35 : 0.75;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = broken ? 1 : 1.35;
+    ctx.setLineDash(broken ? [3, 4] : []);
+    ctx.beginPath();
+    ctx.moveTo(Math.max(leftPad, x0), yMid);
+    ctx.lineTo(Math.min(plotRight, x1), yMid);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Compact right-edge label: SUP/RES · price · strength
+    const label = `${isSup ? 'SUP' : 'RES'} ${fmtPriceAxis(seg.price)} ${Math.round(seg.strength)}`;
+    ctx.globalAlpha = broken ? 0.45 : 0.9;
+    ctx.font = '700 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const lx = Math.min(plotRight, x1) - ctx.measureText(label).width - 6;
+    const ly = yMid - (isSup ? -10 : 10);
+    if (ly > topPad && ly < topPad + chartH && lx > leftPad) {
+      ctx.fillStyle = 'rgba(8, 11, 16, 0.75)';
+      const tw = ctx.measureText(label).width;
+      ctx.fillRect(lx - 3, ly - 7, tw + 6, 14);
+      ctx.fillStyle = color;
+      ctx.fillText(label, lx, ly);
+    }
+  }
+  ctx.restore();
 }
 
 /**

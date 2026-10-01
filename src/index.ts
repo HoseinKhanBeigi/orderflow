@@ -137,3 +137,19 @@ export type {
   LocationContextState,
   ContactType,
 } from './location-context/index.js';
+export {
+  HistoricalSREngine,
+  detectConfirmedPivots,
+  assertNoLookahead,
+  DEFAULT_HISTORICAL_SR_CONFIG,
+  HISTORICAL_SR_VERSION,
+} from './historical-sr/index.js';
+export type {
+  HistoricalBarLike,
+  HistoricalLevel,
+  HistoricalLevelEvent,
+  HistoricalLevelSegment,
+  HistoricalSRConfig,
+  HistoricalSRSnapshot,
+  HistoricalCandleSRContext,
+} from './historical-sr/index.js';
