@@ -3067,11 +3067,17 @@ function flowMetricsTooltip(m) {
 
 /**
  * Four readings per candle, summing to 100%.
- * Footprint buy/sell here is aggressive flow (market orders), not resting book.
- * Resting ask/bid is passive liquidity — separate from this split.
- * Aggressive buy that lifted the close = successful buy aggression (consumed ask).
- * Aggressive sell that pushed the close down = successful sell aggression (consumed bid).
- * Buy/sell that failed to move price = absorbed by the opposite passive side.
+ *
+ * Footprint buy/sell = aggressive (taker) flow only.
+ * Resting ask/bid = passive book — not shown here as volume, only as outcome.
+ *
+ * Consumption (aggressive succeeded):
+ *   Ask cons  = aggressive buy lifted close → resting ask was consumed
+ *   Bid cons  = aggressive sell pushed close → resting bid was consumed
+ *
+ * Absorption (passive held — aggressor failed):
+ *   Sellers abs = aggressive sell failed to push down → passive bids absorbed sellers
+ *   Buyers abs  = aggressive buy failed to lift → passive asks absorbed buyers
  */
 function barBattlePercents(bar) {
   const buy = bar.totalBuy ?? 0;
@@ -3083,10 +3089,10 @@ function barBattlePercents(bar) {
   const buyShare = buy / vol;
   const sellShare = sell / vol;
   const rows = [
-    { text: 'Agg buy', color: '#22c55e', weight: buyShare * closePos },
-    { text: 'Agg sell', color: '#ef4444', weight: sellShare * (1 - closePos) },
-    { text: 'Sell abs', color: '#60a5fa', weight: sellShare * closePos },
-    { text: 'Buy abs', color: '#fbbf24', weight: buyShare * (1 - closePos) },
+    { text: 'Ask cons', color: '#22c55e', weight: buyShare * closePos },
+    { text: 'Bid cons', color: '#ef4444', weight: sellShare * (1 - closePos) },
+    { text: 'Sellers abs', color: '#60a5fa', weight: sellShare * closePos },
+    { text: 'Buyers abs', color: '#fbbf24', weight: buyShare * (1 - closePos) },
   ];
   const pcts = percentsSum100(rows.map((row) => row.weight));
   let best = 0;
@@ -3601,11 +3607,11 @@ function strategyStoryForBar(allBars, idx) {
   let sellerDefense = null;
   let buyerDefense = null;
   if (battle) {
-    const buyAbs = battle.find((r) => r.text === 'Buy abs');
-    const sellAbs = battle.find((r) => r.text === 'Sell abs');
-    // Proxy defense from failed aggression share on the candle.
-    sellerDefense = buyAbs?.pct ?? null;
-    buyerDefense = sellAbs?.pct ?? null;
+    const buyersAbs = battle.find((r) => r.text === 'Buyers abs');
+    const sellersAbs = battle.find((r) => r.text === 'Sellers abs');
+    // Proxy defense from failed aggression share on the candle (passive held).
+    sellerDefense = buyersAbs?.pct ?? null;
+    buyerDefense = sellersAbs?.pct ?? null;
   }
   const er = evaluateEffortResultForBar(bar, prior, sellerDefense, buyerDefense);
   const erStory = effortResultStory(er);
@@ -4399,7 +4405,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 108;
+  const bottomPad = 156;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -4695,8 +4701,12 @@ function drawFootprint(symbol = selectedSymbol) {
       });
     }
 
+    // Absorption / aggression battle % under every candle
+    const battle = barBattlePercents(bar);
+    drawBarBattlePercents(ctx, battle, cx, footY + 66, barWidth - 2);
+
     if (isLiveBar) {
-      drawForcedFlowUnderBar(ctx, symbol, cx, footY + 68, barWidth - 2);
+      drawForcedFlowUnderBar(ctx, symbol, cx, footY + 114, barWidth - 2);
     }
   }
 
