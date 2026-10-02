@@ -167,14 +167,45 @@ function intervalMs(interval: string): number {
 
 const UA = { 'User-Agent': 'oderFlow/1.0' };
 
-type KlineRow = [number, string, string, string, string, string];
+/** Binance-shaped kline: ot,o,h,l,c,vol[,quote,takerBuyBase] */
+type KlineRow = [number, string, string, string, string, string, string?, string?];
 
-function asKline(openTime: number, open: string | number, high: string | number, low: string | number, close: string | number, volume: string | number = '0'): KlineRow {
-  return [openTime, String(open), String(high), String(low), String(close), String(volume)];
+function asKline(
+  openTime: number,
+  open: string | number,
+  high: string | number,
+  low: string | number,
+  close: string | number,
+  volume: string | number = '0',
+  quote: string | number = '0',
+  takerBuyBase: string | number = '',
+): KlineRow {
+  const row: KlineRow = [
+    openTime,
+    String(open),
+    String(high),
+    String(low),
+    String(close),
+    String(volume),
+    String(quote ?? '0'),
+  ];
+  if (takerBuyBase !== '' && Number.isFinite(Number(takerBuyBase))) {
+    row[7] = String(takerBuyBase);
+  }
+  return row;
 }
 
 function rowKline(k: Array<string | number | undefined>): KlineRow {
-  return asKline(Number(k[0]), k[1] ?? '0', k[2] ?? '0', k[3] ?? '0', k[4] ?? '0', k[5] ?? '0');
+  return asKline(
+    Number(k[0]),
+    k[1] ?? '0',
+    k[2] ?? '0',
+    k[3] ?? '0',
+    k[4] ?? '0',
+    k[5] ?? '0',
+    k[7] ?? k[6] ?? '0',
+    k[9] ?? '',
+  );
 }
 
 function sortKlines(rows: KlineRow[]): KlineRow[] {
@@ -187,13 +218,17 @@ function aggregateKlines(rows: KlineRow[], bucketMs: number): KlineRow[] {
     const t = row[0] - (row[0] % bucketMs);
     const last = out[out.length - 1];
     if (!last || last[0] !== t) {
-      out.push([t, row[1], row[2], row[3], row[4], row[5]]);
+      out.push([t, row[1], row[2], row[3], row[4], row[5], row[6] ?? '0', row[7]]);
       continue;
     }
     last[2] = String(Math.max(Number(last[2]), Number(row[2])));
     last[3] = String(Math.min(Number(last[3]), Number(row[3])));
     last[4] = row[4];
     last[5] = String(Number(last[5]) + Number(row[5]));
+    last[6] = String(Number(last[6] ?? 0) + Number(row[6] ?? 0));
+    if (row[7] != null || last[7] != null) {
+      last[7] = String(Number(last[7] ?? 0) + Number(row[7] ?? 0));
+    }
   }
   return out;
 }
@@ -237,7 +272,16 @@ export async function fetchVenueKlines(
     if (!Array.isArray(data)) return [];
     return data.map((k) => {
       const row = k as unknown[];
-      return asKline(Number(row[0]), String(row[1]), String(row[2]), String(row[3]), String(row[4]), String(row[5] ?? '0'));
+      return asKline(
+        Number(row[0]),
+        String(row[1]),
+        String(row[2]),
+        String(row[3]),
+        String(row[4]),
+        String(row[5] ?? '0'),
+        String(row[7] ?? '0'),
+        String(row[9] ?? ''),
+      );
     });
   }
 

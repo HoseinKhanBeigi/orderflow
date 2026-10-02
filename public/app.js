@@ -1813,6 +1813,7 @@ async function seedFromKlines() {
       ).then((r) => r.json());
       if (req !== fpKlineReq || tf !== chartTfMinutes || klineExchange() !== exchange) return;
       if (!Array.isArray(rows) || !rows.length) return;
+      // /api/klines (venues.ts): [t,o,h,l,c,vol,quote,takerBuyBase]
       let candles = rows
         .map((k) => ({
           time: Math.floor(Number(k[0]) / 1000),
@@ -1821,8 +1822,8 @@ async function seedFromKlines() {
           low: Number(k[3]),
           close: Number(k[4]),
           volume: Number(k[5] ?? 0),
-          quote: Number(k[7] ?? k[6] ?? 0),
-          takerBuy: Number(k[10] ?? k[9] ?? NaN),
+          quote: Number(k[6] ?? 0),
+          takerBuy: Number(k[7] ?? NaN),
         }))
         .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open) && Number.isFinite(c.close));
       if (tf === 45) candles = aggregateToMinutes(candles, 45);
@@ -1857,19 +1858,33 @@ function klineQuoteUsd(volume, quote, high, low, close) {
   return volume * typical;
 }
 
+/**
+ * Kline backfill for OHLC shell + optional aggressor split.
+ * Uses Binance taker-buy base when present (PARTIAL).
+ * Never invents buy/sell from candle color — that is not true CVD.
+ */
 function fillKlineProxyLevels(bar, volume, quote, takerBuy) {
   const usd = klineQuoteUsd(volume, quote, bar.high, bar.low, bar.close);
-  if (usd <= 0) return bar;
-  const range = Math.max(bar.high - bar.low, tickSize((bar.high + bar.low) / 2));
-  const body = range > 0 ? Math.abs(bar.close - bar.open) / range : 0;
-  let buyFrac = 0.5;
-  if (Number.isFinite(takerBuy) && takerBuy >= 0 && volume > 0) {
-    buyFrac = Math.min(0.9, Math.max(0.1, takerBuy / volume));
-  } else if (bar.close > bar.open) {
-    buyFrac = 0.52 + 0.28 * Math.min(1, body);
-  } else if (bar.close < bar.open) {
-    buyFrac = 0.48 - 0.28 * Math.min(1, body);
+  bar.levels = new Map();
+  bar.totalBuy = 0;
+  bar.totalSell = 0;
+  bar.hasFootprint = false;
+  bar.flowSource = 'KLINE';
+
+  if (usd <= 0) {
+    bar.flowQuality = 'UNAVAILABLE';
+    return bar;
   }
+
+  const hasTaker =
+    Number.isFinite(takerBuy) && takerBuy >= 0 && Number.isFinite(volume) && volume > 0;
+  if (!hasTaker) {
+    bar.flowQuality = 'UNAVAILABLE';
+    return bar;
+  }
+
+  const buyFrac = Math.min(0.95, Math.max(0.05, takerBuy / volume));
+  // Split quote notional by taker-buy base fraction (same units on both sides).
   const buyUsd = usd * buyFrac;
   const sellUsd = usd - buyUsd;
   const tick = tickSize((bar.high + bar.low) / 2);
@@ -1891,9 +1906,10 @@ function fillKlineProxyLevels(bar, volume, quote, takerBuy) {
   const span = Math.max(hi - lo, step);
   const weights = prices.map((p) => Math.max(0.12, 1 - Math.abs(p - peak) / span));
   const wsum = weights.reduce((a, b) => a + b, 0) || 1;
-  bar.levels = new Map();
   bar.totalBuy = buyUsd;
   bar.totalSell = sellUsd;
+  bar.flowQuality = 'PARTIAL';
+  bar.flowSource = 'KLINE_TAKER_BUY';
   prices.forEach((p, i) => {
     const w = weights[i] / wsum;
     bar.levels.set(p.toFixed(6), { price: p, buy: buyUsd * w, sell: sellUsd * w });
@@ -1987,6 +2003,7 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
   const kline = tf >= 5 ? getFpKlineSeed(symbol, tf) : new Map();
   if (hist.size === 0 && kline.size === 0 && live.size === 0) return [];
 
+  const liveOpenT = fpCandleTime(Date.now(), tf);
   const out = new Map();
   for (const bar of hist.values()) out.set(bar.time, cloneFpBar(bar));
   for (const bar of live.values()) {
@@ -1997,13 +2014,28 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     const existing = out.get(k.time);
     if (!existing) {
       out.set(k.time, cloneFpBar(k));
-    } else if ((k.totalBuy + k.totalSell) > 0 && levelCoverage(existing) < 0.5) {
+      continue;
+    }
+    // Open candle footprint comes from live 1m — do not inject kline proxy into it.
+    if (k.time === liveOpenT) continue;
+    // Closed candles: keep / restore backfill levels when coverage is thin.
+    // Never inject UNAVAILABLE / fabricated kline sides into CVD.
+    if (
+      (k.totalBuy + k.totalSell) > 0 &&
+      k.flowQuality !== 'UNAVAILABLE' &&
+      levelCoverage(existing) < 0.5
+    ) {
       for (const [key, lv] of k.levels) {
         if (!existing.levels.has(key)) {
           existing.levels.set(key, { price: lv.price, buy: lv.buy, sell: lv.sell });
           existing.totalBuy += lv.buy;
           existing.totalSell += lv.sell;
         }
+      }
+      if (!existing.flowQuality || existing.flowQuality === 'UNAVAILABLE') {
+        existing.flowQuality = k.flowQuality ?? 'PARTIAL';
+        existing.hasFootprint = false;
+        existing.flowSource = k.flowSource ?? 'KLINE_TAKER_BUY';
       }
     }
   }
@@ -2806,6 +2838,122 @@ function fmtPriceAxis(p) {
   return p.toFixed(5);
 }
 
+/**
+ * Signed body displacement + range + body efficiency.
+ * Displacement = close − open (never high − low).
+ */
+function computeBarDisplacement(bar, atr = null, neutralBps = 1) {
+  const open = Number(bar?.open);
+  const high = Number(bar?.high);
+  const low = Number(bar?.low);
+  const close = Number(bar?.close);
+  if (![open, high, low, close].every(Number.isFinite) || open <= 0) {
+    return {
+      displacementRaw: 0,
+      displacementPct: 0,
+      displacementBps: 0,
+      rangeRaw: 0,
+      rangeBps: 0,
+      bodyEfficiency: 0,
+      displacementATR: null,
+      direction: 'NEUTRAL',
+    };
+  }
+  const displacementRaw = close - open;
+  const displacementBps = (displacementRaw / open) * 10_000;
+  const rangeRaw = Math.max(0, high - low);
+  const rangeBps = (rangeRaw / open) * 10_000;
+  const bodyEfficiency = Math.abs(displacementRaw) / Math.max(rangeRaw, 1e-12);
+  let direction = 'NEUTRAL';
+  if (displacementBps > neutralBps) direction = 'BULLISH';
+  else if (displacementBps < -neutralBps) direction = 'BEARISH';
+  return {
+    displacementRaw,
+    displacementPct: (displacementRaw / open) * 100,
+    displacementBps,
+    rangeRaw,
+    rangeBps,
+    bodyEfficiency: Math.min(1, Math.max(0, bodyEfficiency)),
+    displacementATR: atr != null && atr > 0 ? displacementRaw / atr : null,
+    direction,
+  };
+}
+
+function barFlowQuality(bar) {
+  if (bar?.flowQuality) return bar.flowQuality;
+  const buy = bar?.totalBuy ?? 0;
+  const sell = bar?.totalSell ?? 0;
+  if (buy + sell <= 0) return 'UNAVAILABLE';
+  if (bar?.hasFootprint === false) return 'PARTIAL';
+  return 'GOOD';
+}
+
+function utcDayStartSec(barTimeSec) {
+  const d = new Date(barTimeSec * 1000);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+}
+
+/** Default chart CVD reset: UTC day (= SESSION for 24/7 crypto). */
+const CVD_RESET_MODE = 'UTC_DAY';
+
+/**
+ * Annotate bars with displacement + CVD. Oldest → newest. No lookahead.
+ * UNAVAILABLE flow contributes 0 delta (does not fabricate sides).
+ */
+function annotateBarsDisplacementCvd(bars, { lastIsLive = false, resetMode = CVD_RESET_MODE } = {}) {
+  let cvd = 0;
+  let cvdStart = bars[0]?.time ?? null;
+  let prevTime = null;
+  const out = [];
+  for (let i = 0; i < bars.length; i++) {
+    const bar = bars[i];
+    const quality = barFlowQuality(bar);
+    if (
+      (resetMode === 'UTC_DAY' || resetMode === 'SESSION') &&
+      (prevTime == null || utcDayStartSec(bar.time) !== utcDayStartSec(prevTime))
+    ) {
+      cvd = 0;
+      cvdStart = bar.time;
+    } else if (resetMode === 'FROM_LOADED_HISTORY' && i === 0) {
+      cvd = 0;
+      cvdStart = bar.time;
+    }
+    const buy = bar.totalBuy ?? 0;
+    const sell = bar.totalSell ?? 0;
+    const delta = quality === 'UNAVAILABLE' ? 0 : buy - sell;
+    cvd += delta;
+    const disp = computeBarDisplacement(bar);
+    out.push({
+      ...disp,
+      aggressiveBuy: buy,
+      aggressiveSell: sell,
+      delta,
+      cvd,
+      cvdChange: delta,
+      dataQuality: quality,
+      cvdResetMode: resetMode,
+      cvdStartTimestamp: cvdStart,
+      incomplete: lastIsLive && i === bars.length - 1,
+      time: bar.time,
+    });
+    prevTime = bar.time;
+  }
+  return out;
+}
+
+function formatDispBp(bps) {
+  if (!Number.isFinite(bps)) return '0 bp';
+  const sign = bps > 0 ? '+' : bps < 0 ? '−' : '';
+  const abs = Math.abs(bps);
+  return `${sign}${abs >= 10 ? abs.toFixed(0) : abs.toFixed(1)} bp`;
+}
+
+function formatCvdLabel(cvd) {
+  if (!Number.isFinite(cvd)) return 'CVD —';
+  const sign = cvd > 0 ? '+' : cvd < 0 ? '−' : '';
+  return `CVD ${sign}${fmtVolShort(Math.abs(cvd))}`;
+}
+
 function drawFootprint(symbol = selectedSymbol) {
   const view = fpViews.get(symbol);
   if (!view?.ctx || !view.canvas) return;
@@ -2831,7 +2979,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 100;
+  const bottomPad = 156;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -2937,6 +3085,12 @@ function drawFootprint(symbol = selectedSymbol) {
   for (const marker of patternMarkersFor(symbol)) {
     if (marker?.t != null) patternByTime.set(marker.t, marker);
   }
+
+  const flowMetrics = annotateBarsDisplacementCvd(bars, {
+    lastIsLive: lastIsLive && endIdx === bars.length,
+    resetMode: CVD_RESET_MODE,
+  });
+  const flowByTime = new Map(flowMetrics.map((m) => [m.time, m]));
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -3073,16 +3227,48 @@ function drawFootprint(symbol = selectedSymbol) {
     }
     ctx.fillText(timeLabel, cx, topPad + chartH + 14);
 
-    const delta = bar.totalBuy - bar.totalSell;
-    const barUsd = bar.totalBuy + bar.totalSell;
-    if (barUsd > 0) {
-      ctx.font = 'bold 11px JetBrains Mono, monospace';
-      ctx.fillStyle = delta >= 0 ? '#4ade80' : '#f87171';
-      ctx.fillText(`${delta >= 0 ? '+' : '-'}${fmtVolShort(Math.abs(delta))}`, x + barWidth / 2, topPad + chartH + 28);
+    const footY = topPad + chartH;
+    const metrics = flowByTime.get(bar.time);
+    if (metrics) {
+      // Compact under each candle: Displacement · Delta · CVD
+      ctx.font = '600 10px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = metrics.incomplete ? 0.65 : 0.92;
+
+      const dispColor =
+        metrics.displacementBps > 0 ? '#86efac'
+          : metrics.displacementBps < 0 ? '#fca5a5'
+            : '#94a3b8';
+      ctx.fillStyle = dispColor;
+      const dispLabel = metrics.incomplete
+        ? `${formatDispBp(metrics.displacementBps)} · LIVE`
+        : formatDispBp(metrics.displacementBps);
+      ctx.fillText(dispLabel, cx, footY + 28, barWidth - 2);
+
+      const hasFlow = metrics.dataQuality !== 'UNAVAILABLE';
+      if (hasFlow) {
+        ctx.fillStyle = metrics.delta >= 0 ? '#86efac' : '#fca5a5';
+        const dSign = metrics.delta >= 0 ? '+' : '−';
+        ctx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 40, barWidth - 2);
+        ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
+        ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 52, barWidth - 2);
+      } else {
+        const seriesHasFlow = flowMetrics.some((m) => m.dataQuality !== 'UNAVAILABLE');
+        ctx.fillStyle = '#64748b';
+        ctx.fillText('Δ —', cx, footY + 40, barWidth - 2);
+        if (seriesHasFlow) {
+          ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
+          ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 52, barWidth - 2);
+        } else {
+          ctx.fillText('CVD —', cx, footY + 52, barWidth - 2);
+        }
+      }
+      ctx.globalAlpha = 1;
     }
+
     const battle = barBattlePercents(bar);
-    drawBarRaceSummary(ctx, barRaceSummary(battle), cx, topPad + chartH + 40, barWidth - 2);
-    drawBarBattlePercents(ctx, battle, cx, topPad + chartH + 52, barWidth - 2);
+    drawBarRaceSummary(ctx, barRaceSummary(battle), cx, footY + 66, barWidth - 2);
+    drawBarBattlePercents(ctx, battle, cx, footY + 80, barWidth - 2);
   }
 
   if (railW > 0) {
