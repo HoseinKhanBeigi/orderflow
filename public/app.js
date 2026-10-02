@@ -2172,69 +2172,6 @@ function barBattlePercents(bar) {
   return rows.map((row, i) => ({ text: row.text, color: row.color, pct: pcts[i], strong: i === best && pcts[i] > 0 }));
 }
 
-/**
- * One-line race read from the four battle %.
- * Consume = follow-through; abs = printed but failed to keep the close.
- */
-function barRaceSummary(rows) {
-  if (!rows?.length) return null;
-  const pct = (name) => rows.find((r) => r.text === name)?.pct ?? 0;
-  const asks = pct('Asks');
-  const bids = pct('Bids');
-  const sellAbs = pct('Sell abs');
-  const buyAbs = pct('Buy abs');
-
-  let won;
-  let wonColor;
-  if (asks >= bids + 8) {
-    won = 'buyers won';
-    wonColor = '#22c55e';
-  } else if (bids >= asks + 8) {
-    won = 'sellers won';
-    wonColor = '#ef4444';
-  } else {
-    won = 'no clear winner';
-    wonColor = '#8b949e';
-  }
-
-  let trap = '';
-  let trapColor = '#c5ccd6';
-  if (buyAbs >= 18 && buyAbs >= sellAbs + 4) {
-    trap = 'buyers trapped';
-    trapColor = '#fbbf24';
-  } else if (sellAbs >= 18 && sellAbs >= buyAbs + 4) {
-    trap = 'sellers trapped';
-    trapColor = '#60a5fa';
-  } else if (buyAbs >= 15 && sellAbs >= 15) {
-    trap = 'both trapped';
-    trapColor = '#c5ccd6';
-  } else if (Math.max(asks, bids) >= 55 && Math.max(buyAbs, sellAbs) < 15) {
-    trap = 'clean follow-through';
-    trapColor = wonColor;
-  }
-
-  return {
-    text: trap ? `${won} · ${trap}` : won,
-    color: trap ? trapColor : wonColor,
-    wonColor,
-  };
-}
-
-function drawBarRaceSummary(ctx, summary, cx, y, maxW) {
-  if (!summary?.text) return;
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '600 9px Inter, system-ui, sans-serif';
-  ctx.lineWidth = 3;
-  ctx.lineJoin = 'round';
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-  ctx.strokeText(summary.text, cx, y, maxW);
-  ctx.fillStyle = summary.color;
-  ctx.fillText(summary.text, cx, y, maxW);
-  ctx.restore();
-}
-
 function barAbsorbed(bar) {
   const vol = (bar.totalBuy ?? 0) + (bar.totalSell ?? 0);
   const delta = (bar.totalBuy ?? 0) - (bar.totalSell ?? 0);
@@ -2979,7 +2916,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 156;
+  const bottomPad = 140;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -3267,8 +3204,7 @@ function drawFootprint(symbol = selectedSymbol) {
     }
 
     const battle = barBattlePercents(bar);
-    drawBarRaceSummary(ctx, barRaceSummary(battle), cx, footY + 66, barWidth - 2);
-    drawBarBattlePercents(ctx, battle, cx, footY + 80, barWidth - 2);
+    drawBarBattlePercents(ctx, battle, cx, footY + 66, barWidth - 2);
   }
 
   if (railW > 0) {
