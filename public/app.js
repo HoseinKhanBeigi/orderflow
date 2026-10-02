@@ -1722,12 +1722,6 @@ function setupDataMode() {
     if (Number.isFinite(n) && n >= 1.2) imbalanceRatio = n;
     scheduleDraw();
   });
-  $('hsr-minor')?.addEventListener('change', () => {
-    scheduleDraw();
-  });
-  $('p15-lines')?.addEventListener('change', () => scheduleDraw());
-  $('p15-body')?.addEventListener('change', () => scheduleDraw());
-  $('swing-lines')?.addEventListener('change', () => scheduleDraw());
   $('lz-zones')?.addEventListener('change', () => scheduleDraw());
 }
 
@@ -2429,6 +2423,9 @@ function cloneFpBar(bar) {
     sellTrades: bar.sellTrades ?? 0,
     largestBuy: bar.largestBuy ?? 0,
     largestSell: bar.largestSell ?? 0,
+    hasFootprint: bar.hasFootprint !== false,
+    flowQuality: bar.flowQuality ?? null,
+    flowSource: bar.flowSource ?? null,
     levels,
   };
 }
@@ -2459,6 +2456,9 @@ function wireBarToFp(w) {
     sellTrades: w.st ?? 0,
     largestBuy: w.lb ?? 0,
     largestSell: w.ls ?? 0,
+    hasFootprint: true,
+    flowQuality: 'GOOD',
+    flowSource: 'FOOTPRINT',
     levels,
   };
 }
@@ -2568,16 +2568,22 @@ async function seedFromKlines() {
       if (req !== fpKlineReq || tf !== chartTfMinutes || klineExchange() !== exchange) return;
       if (!Array.isArray(rows) || !rows.length) return;
       let candles = rows
-        .map((k) => ({
-          time: Math.floor(Number(k[0]) / 1000),
-          open: Number(k[1]),
-          high: Number(k[2]),
-          low: Number(k[3]),
-          close: Number(k[4]),
-          volume: Number(k[5] ?? 0),
-          quote: Number(k[7] ?? k[6] ?? 0),
-          takerBuy: Number(k[10] ?? k[9] ?? NaN),
-        }))
+        .map((k) => {
+          const volume = Number(k[5] ?? 0);
+          // /api/klines (venues.ts): [t,o,h,l,c,vol,quote,takerBuyBase]
+          const quote = Number(k[6] ?? 0);
+          const takerBuy = Number(k[7] ?? NaN);
+          return {
+            time: Math.floor(Number(k[0]) / 1000),
+            open: Number(k[1]),
+            high: Number(k[2]),
+            low: Number(k[3]),
+            close: Number(k[4]),
+            volume,
+            quote,
+            takerBuy,
+          };
+        })
         .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open) && Number.isFinite(c.close));
       if (tf === 45) candles = aggregateToMinutes(candles, 45);
       const seed = getFpKlineSeed(coin.symbol, tf, exchange);
@@ -2631,19 +2637,33 @@ function klineQuoteUsd(volume, quote, high, low, close) {
   return volume * typical;
 }
 
+/**
+ * Kline backfill for OHLC shell + optional aggressor split.
+ * Uses Binance taker-buy base when present (PARTIAL).
+ * Never invents buy/sell from candle color — that is not true CVD.
+ */
 function fillKlineProxyLevels(bar, volume, quote, takerBuy) {
   const usd = klineQuoteUsd(volume, quote, bar.high, bar.low, bar.close);
-  if (usd <= 0) return bar;
-  const range = Math.max(bar.high - bar.low, tickSize((bar.high + bar.low) / 2));
-  const body = range > 0 ? Math.abs(bar.close - bar.open) / range : 0;
-  let buyFrac = 0.5;
-  if (Number.isFinite(takerBuy) && takerBuy >= 0 && volume > 0) {
-    buyFrac = Math.min(0.9, Math.max(0.1, takerBuy / volume));
-  } else if (bar.close > bar.open) {
-    buyFrac = 0.52 + 0.28 * Math.min(1, body);
-  } else if (bar.close < bar.open) {
-    buyFrac = 0.48 - 0.28 * Math.min(1, body);
+  bar.levels = new Map();
+  bar.totalBuy = 0;
+  bar.totalSell = 0;
+  bar.hasFootprint = false;
+  bar.flowSource = 'KLINE';
+
+  if (usd <= 0) {
+    bar.flowQuality = 'UNAVAILABLE';
+    return bar;
   }
+
+  const hasTaker =
+    Number.isFinite(takerBuy) && takerBuy >= 0 && Number.isFinite(volume) && volume > 0;
+  if (!hasTaker) {
+    bar.flowQuality = 'UNAVAILABLE';
+    return bar;
+  }
+
+  const buyFrac = Math.min(0.95, Math.max(0.05, takerBuy / volume));
+  // Split quote notional by taker-buy base fraction (same units on both sides).
   const buyUsd = usd * buyFrac;
   const sellUsd = usd - buyUsd;
   const tick = tickSize((bar.high + bar.low) / 2);
@@ -2665,9 +2685,10 @@ function fillKlineProxyLevels(bar, volume, quote, takerBuy) {
   const span = Math.max(hi - lo, step);
   const weights = prices.map((p) => Math.max(0.12, 1 - Math.abs(p - peak) / span));
   const wsum = weights.reduce((a, b) => a + b, 0) || 1;
-  bar.levels = new Map();
   bar.totalBuy = buyUsd;
   bar.totalSell = sellUsd;
+  bar.flowQuality = 'PARTIAL';
+  bar.flowSource = 'KLINE_TAKER_BUY';
   prices.forEach((p, i) => {
     const w = weights[i] / wsum;
     bar.levels.set(p.toFixed(6), { price: p, buy: buyUsd * w, sell: sellUsd * w });
@@ -2781,13 +2802,23 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     // Open candle footprint comes from live 1m — do not inject kline proxy into it.
     if (k.time === liveOpenT) continue;
     // Closed candles: keep / restore backfill levels when coverage is thin.
-    if ((k.totalBuy + k.totalSell) > 0 && levelCoverage(existing) < 0.5) {
+    // Never inject UNAVAILABLE / fabricated kline sides into CVD.
+    if (
+      (k.totalBuy + k.totalSell) > 0 &&
+      k.flowQuality !== 'UNAVAILABLE' &&
+      levelCoverage(existing) < 0.5
+    ) {
       for (const [key, lv] of k.levels) {
         if (!existing.levels.has(key)) {
           existing.levels.set(key, { price: lv.price, buy: lv.buy, sell: lv.sell });
           existing.totalBuy += lv.buy;
           existing.totalSell += lv.sell;
         }
+      }
+      if (!existing.flowQuality || existing.flowQuality === 'UNAVAILABLE') {
+        existing.flowQuality = k.flowQuality ?? 'PARTIAL';
+        existing.hasFootprint = false;
+        existing.flowSource = k.flowSource ?? 'KLINE_TAKER_BUY';
       }
     }
   }
@@ -2898,10 +2929,149 @@ function percentsSum100(weights) {
 }
 
 /**
+ * Signed body displacement + range + body efficiency.
+ * Displacement = close − open (never high − low).
+ */
+function computeBarDisplacement(bar, atr = null, neutralBps = 1) {
+  const open = Number(bar?.open);
+  const high = Number(bar?.high);
+  const low = Number(bar?.low);
+  const close = Number(bar?.close);
+  if (![open, high, low, close].every(Number.isFinite) || open <= 0) {
+    return {
+      displacementRaw: 0,
+      displacementPct: 0,
+      displacementBps: 0,
+      rangeRaw: 0,
+      rangeBps: 0,
+      bodyEfficiency: 0,
+      displacementATR: null,
+      direction: 'NEUTRAL',
+    };
+  }
+  const displacementRaw = close - open;
+  const displacementBps = (displacementRaw / open) * 10_000;
+  const rangeRaw = Math.max(0, high - low);
+  const rangeBps = (rangeRaw / open) * 10_000;
+  const bodyEfficiency = Math.abs(displacementRaw) / Math.max(rangeRaw, 1e-12);
+  let direction = 'NEUTRAL';
+  if (displacementBps > neutralBps) direction = 'BULLISH';
+  else if (displacementBps < -neutralBps) direction = 'BEARISH';
+  return {
+    displacementRaw,
+    displacementPct: (displacementRaw / open) * 100,
+    displacementBps,
+    rangeRaw,
+    rangeBps,
+    bodyEfficiency: Math.min(1, Math.max(0, bodyEfficiency)),
+    displacementATR: atr != null && atr > 0 ? displacementRaw / atr : null,
+    direction,
+  };
+}
+
+function barFlowQuality(bar) {
+  if (bar?.flowQuality) return bar.flowQuality;
+  const buy = bar?.totalBuy ?? 0;
+  const sell = bar?.totalSell ?? 0;
+  if (buy + sell <= 0) return 'UNAVAILABLE';
+  if (bar?.hasFootprint === false) return 'PARTIAL';
+  return 'GOOD';
+}
+
+function utcDayStartSec(barTimeSec) {
+  const d = new Date(barTimeSec * 1000);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+}
+
+/** Default chart CVD reset: UTC day (= SESSION for 24/7 crypto). */
+const CVD_RESET_MODE = 'UTC_DAY';
+
+/**
+ * Annotate bars with displacement + CVD. Oldest → newest. No lookahead.
+ * UNAVAILABLE flow contributes 0 delta (does not fabricate sides).
+ */
+function annotateBarsDisplacementCvd(bars, { lastIsLive = false, resetMode = CVD_RESET_MODE } = {}) {
+  let cvd = 0;
+  let cvdStart = bars[0]?.time ?? null;
+  let prevTime = null;
+  const out = [];
+  for (let i = 0; i < bars.length; i++) {
+    const bar = bars[i];
+    const quality = barFlowQuality(bar);
+    if (
+      (resetMode === 'UTC_DAY' || resetMode === 'SESSION') &&
+      (prevTime == null || utcDayStartSec(bar.time) !== utcDayStartSec(prevTime))
+    ) {
+      cvd = 0;
+      cvdStart = bar.time;
+    } else if (resetMode === 'FROM_LOADED_HISTORY' && i === 0) {
+      cvd = 0;
+      cvdStart = bar.time;
+    }
+    const buy = bar.totalBuy ?? 0;
+    const sell = bar.totalSell ?? 0;
+    const delta = quality === 'UNAVAILABLE' ? 0 : buy - sell;
+    cvd += delta;
+    const disp = computeBarDisplacement(bar);
+    out.push({
+      ...disp,
+      aggressiveBuy: buy,
+      aggressiveSell: sell,
+      delta,
+      cvd,
+      cvdChange: delta,
+      dataQuality: quality,
+      cvdResetMode: resetMode,
+      cvdStartTimestamp: cvdStart,
+      incomplete: lastIsLive && i === bars.length - 1,
+      time: bar.time,
+    });
+    prevTime = bar.time;
+  }
+  return out;
+}
+
+function formatDispBp(bps) {
+  if (!Number.isFinite(bps)) return '0 bp';
+  const sign = bps > 0 ? '+' : bps < 0 ? '−' : '';
+  const abs = Math.abs(bps);
+  return `${sign}${abs >= 10 ? abs.toFixed(0) : abs.toFixed(1)} bp`;
+}
+
+function formatCvdLabel(cvd) {
+  if (!Number.isFinite(cvd)) return 'CVD —';
+  const sign = cvd > 0 ? '+' : cvd < 0 ? '−' : '';
+  return `CVD ${sign}${fmtVolShort(Math.abs(cvd))}`;
+}
+
+function flowMetricsTooltip(m) {
+  if (!m) return '';
+  const lines = [
+    'PRICE RESULT',
+    `Displacement: ${formatDispBp(m.displacementBps)}`,
+    `Displacement: ${m.displacementPct >= 0 ? '+' : ''}${m.displacementPct.toFixed(2)}%`,
+    m.displacementATR != null ? `ATR Normalized: ${m.displacementATR >= 0 ? '+' : ''}${m.displacementATR.toFixed(2)} ATR` : null,
+    `Range: ${Math.abs(m.rangeBps) >= 10 ? m.rangeBps.toFixed(0) : m.rangeBps.toFixed(1)} bps`,
+    `Body Efficiency: ${Math.round(m.bodyEfficiency * 100)}%`,
+    '',
+    'ORDER FLOW',
+    `Aggressive Buy: $${fmtVolShort(m.aggressiveBuy)}`,
+    `Aggressive Sell: $${fmtVolShort(m.aggressiveSell)}`,
+    `Delta: ${m.delta >= 0 ? '+' : '−'}${fmtVolShort(Math.abs(m.delta))}`,
+    m.dataQuality === 'UNAVAILABLE' ? 'CVD: UNAVAILABLE' : `CVD: ${m.cvd >= 0 ? '+' : '−'}${fmtVolShort(Math.abs(m.cvd))}`,
+    `Quality: ${m.dataQuality}${m.incomplete ? ' · LIVE' : ''}`,
+    `CVD reset: ${m.cvdResetMode}`,
+  ];
+  return lines.filter((x) => x != null).join('\n');
+}
+
+/**
  * Four readings per candle, summing to 100%.
- * Buy volume that lifted the close is asks consumed; buy volume that did not is buyers absorbed.
- * Sell volume that pushed the close down is bids consumed; sell volume that did not is sellers absorbed.
- * The largest share is marked strong.
+ * Footprint buy/sell here is aggressive flow (market orders), not resting book.
+ * Resting ask/bid is passive liquidity — separate from this split.
+ * Aggressive buy that lifted the close = successful buy aggression (consumed ask).
+ * Aggressive sell that pushed the close down = successful sell aggression (consumed bid).
+ * Buy/sell that failed to move price = absorbed by the opposite passive side.
  */
 function barBattlePercents(bar) {
   const buy = bar.totalBuy ?? 0;
@@ -2913,8 +3083,8 @@ function barBattlePercents(bar) {
   const buyShare = buy / vol;
   const sellShare = sell / vol;
   const rows = [
-    { text: 'Asks', color: '#22c55e', weight: buyShare * closePos },
-    { text: 'Bids', color: '#ef4444', weight: sellShare * (1 - closePos) },
+    { text: 'Agg buy', color: '#22c55e', weight: buyShare * closePos },
+    { text: 'Agg sell', color: '#ef4444', weight: sellShare * (1 - closePos) },
     { text: 'Sell abs', color: '#60a5fa', weight: sellShare * closePos },
     { text: 'Buy abs', color: '#fbbf24', weight: buyShare * (1 - closePos) },
   ];
@@ -3059,29 +3229,80 @@ function stopHuntKind(bar, prior) {
   const atr = recentBarAtr(prior, bar);
   const range = bar.high - bar.low;
   if (range <= 0) return null;
-  if (range < atr * 0.55) return null;
+  if (range < atr * 0.45) return null;
   const closePos = (bar.close - bar.low) / range;
-  const band = Math.max((resistance - support) * 0.08, atr * 0.35);
+  const band = Math.max((resistance - support) * 0.06, atr * 0.28);
   const upperWick = bar.high - Math.max(bar.open, bar.close);
   const lowerWick = Math.min(bar.open, bar.close) - bar.low;
   const bodyFrac = Math.abs(bar.close - bar.open) / range;
 
-  const highPierce = bar.high >= resistance + band * 0.2;
-  const lowPierce = bar.low <= support - band * 0.2;
-  const highReject = bar.close < resistance && closePos <= 0.42 && upperWick / range >= 0.32;
-  const lowReject = bar.close > support && closePos >= 0.58 && lowerWick / range >= 0.32;
+  const highPierce = bar.high >= resistance + band * 0.15;
+  const lowPierce = bar.low <= support - band * 0.15;
+  const highReject = bar.close < resistance && closePos <= 0.48 && upperWick / range >= 0.28;
+  const lowReject = bar.close > support && closePos >= 0.52 && lowerWick / range >= 0.28;
 
-  if (highPierce && closePos >= 0.7 && bodyFrac >= 0.45) return null;
-  if (lowPierce && closePos <= 0.3 && bodyFrac >= 0.45) return null;
+  if (highPierce && closePos >= 0.72 && bodyFrac >= 0.5) return null;
+  if (lowPierce && closePos <= 0.28 && bodyFrac >= 0.5) return null;
 
   if (highPierce && highReject && huntFlowConfirms(bar, 'HIGH', prior)) {
-    if (levels.resistanceTouches < 2 && closePos > 0.35) return null;
     return 'HIGH';
   }
   if (lowPierce && lowReject && huntFlowConfirms(bar, 'LOW', prior)) {
-    if (levels.supportTouches < 2 && closePos < 0.65) return null;
     return 'LOW';
   }
+  return null;
+}
+
+/**
+ * Liquidity sweep = pierce a recent swing / P15 extreme then reclaim back inside.
+ * Lighter than full stop-hunt (no multi-touch gate) so candle tops still show sweeps.
+ */
+function liquiditySweepKind(bar, prior) {
+  if (!prior?.length) return null;
+  const levels = priorSwingLevels(prior);
+  let support = levels.support;
+  let resistance = levels.resistance;
+  // Fallback: recent swing extremes from last ~12 bars
+  if (support == null || resistance == null) {
+    const win = prior.slice(-12);
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (const b of win) {
+      if (b.high > hi) hi = b.high;
+      if (b.low < lo) lo = b.low;
+    }
+    if (Number.isFinite(hi) && Number.isFinite(lo) && hi > lo) {
+      resistance = resistance ?? hi;
+      support = support ?? lo;
+    }
+  }
+  if (support == null || resistance == null || resistance <= support) return null;
+
+  const atr = recentBarAtr(prior, bar);
+  const range = bar.high - bar.low;
+  if (range <= 0 || range < atr * 0.35) return null;
+  const closePos = (bar.close - bar.low) / range;
+  const pierce = Math.max(atr * 0.12, (resistance - support) * 0.04);
+  const upperWick = bar.high - Math.max(bar.open, bar.close);
+  const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+
+  const sweptHigh =
+    bar.high > resistance + pierce * 0.5 &&
+    bar.close < resistance &&
+    closePos <= 0.55 &&
+    upperWick / range >= 0.22;
+  const sweptLow =
+    bar.low < support - pierce * 0.5 &&
+    bar.close > support &&
+    closePos >= 0.45 &&
+    lowerWick / range >= 0.22;
+
+  // Accepted breakouts are not sweeps
+  if (bar.close > resistance + pierce && closePos >= 0.7) return null;
+  if (bar.close < support - pierce && closePos <= 0.3) return null;
+
+  if (sweptHigh) return 'HIGH';
+  if (sweptLow) return 'LOW';
   return null;
 }
 
@@ -3395,11 +3616,14 @@ function strategyStoryForBar(allBars, idx) {
   else if (win.id === 'AGGRESSIVE_SELLERS') control = 'SELLER_IN_CONTROL';
   else if (win.id === 'PASSIVE_BUYERS' || win.id === 'PASSIVE_SELLERS' || win.id === 'BALANCED') control = 'BALANCED';
 
-  // SPECIAL EVENT
+  // SPECIAL EVENT — liquidity sweep / stop hunt first (candle-top labels traders expect)
   let special = null;
   const hunt = stopHuntKind(bar, prior);
+  const sweep = !hunt ? liquiditySweepKind(bar, prior) : null;
   if (hunt === 'HIGH') special = 'STOP_HUNT_HIGH';
   else if (hunt === 'LOW') special = 'STOP_HUNT_LOW';
+  else if (sweep === 'HIGH') special = 'LIQUIDITY_SWEEP_HIGH';
+  else if (sweep === 'LOW') special = 'LIQUIDITY_SWEEP_LOW';
   else if (location === 'AT_SUPPORT' && (absorbed === 'SELLERS' || win.id === 'PASSIVE_BUYERS' || win.id === 'AGGRESSIVE_BUYERS')) {
     special = 'HELD_SUPPORT';
   } else if (location === 'AT_RESISTANCE' && (absorbed === 'BUYERS' || win.id === 'PASSIVE_SELLERS' || win.id === 'AGGRESSIVE_SELLERS')) {
@@ -3437,9 +3661,9 @@ function strategyStoryForBar(allBars, idx) {
   // OUTCOME (same candle only)
   let outcome = 'NEUTRAL';
   let outcomeDir = move > 0 ? 'UP' : move < 0 ? 'DOWN' : 'NONE';
-  if (special === 'STOP_HUNT_LOW' || special === 'STOP_HUNT_HIGH') {
+  if (special === 'STOP_HUNT_LOW' || special === 'STOP_HUNT_HIGH' || special === 'LIQUIDITY_SWEEP_LOW' || special === 'LIQUIDITY_SWEEP_HIGH') {
     outcome = 'REVERSAL';
-    outcomeDir = special === 'STOP_HUNT_LOW' ? 'UP' : 'DOWN';
+    outcomeDir = (special === 'STOP_HUNT_LOW' || special === 'LIQUIDITY_SWEEP_LOW') ? 'UP' : 'DOWN';
   } else if (special === 'BUYER_ABSORBED' || special === 'SELLER_ABSORBED') {
     outcome = bodyFrac < 0.3 ? 'NO_FOLLOW_THROUGH' : 'PRICE_FAILED';
   } else if (
@@ -3473,18 +3697,31 @@ function strategyStoryForBar(allBars, idx) {
     er.interpretation === 'UPSIDE_VACUUM' ||
     er.interpretation === 'DOWNSIDE_VACUUM'
   )) {
-    // Keep stop-hunt / structure specials first — they are location events.
-    if (special !== 'STOP_HUNT_HIGH' && special !== 'STOP_HUNT_LOW' && special !== 'HELD_SUPPORT' && special !== 'REJECTED_RESISTANCE') {
+    // Keep sweep / stop-hunt / structure specials first — they are location events.
+    if (
+      special !== 'STOP_HUNT_HIGH' &&
+      special !== 'STOP_HUNT_LOW' &&
+      special !== 'LIQUIDITY_SWEEP_HIGH' &&
+      special !== 'LIQUIDITY_SWEEP_LOW' &&
+      special !== 'HELD_SUPPORT' &&
+      special !== 'REJECTED_RESISTANCE'
+    ) {
       return withLocationSubtitle({ ...erStory, detail }, locLabel);
     }
   }
 
-  // Headline priority: special → control → extreme liquidity
+  // Headline priority: sweep / stop-hunt → structure → control → extreme liquidity
   if (special === 'STOP_HUNT_HIGH') {
     return withLocationSubtitle({ badge: 'SHORT', line1: 'Stop hunt high', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail }, locLabel || 'AT RESISTANCE');
   }
   if (special === 'STOP_HUNT_LOW') {
     return withLocationSubtitle({ badge: 'LONG', line1: 'Stop hunt low', line2: outcomeLine(outcome, outcomeDir), color: '#e879f9', detail }, locLabel || 'AT SUPPORT');
+  }
+  if (special === 'LIQUIDITY_SWEEP_HIGH') {
+    return withLocationSubtitle({ badge: 'SHORT', line1: 'Liquidity sweep high', line2: locLabel || outcomeLine(outcome, outcomeDir), color: '#e879f9', detail }, locLabel || 'AT RESISTANCE');
+  }
+  if (special === 'LIQUIDITY_SWEEP_LOW') {
+    return withLocationSubtitle({ badge: 'LONG', line1: 'Liquidity sweep low', line2: locLabel || outcomeLine(outcome, outcomeDir), color: '#e879f9', detail }, locLabel || 'AT SUPPORT');
   }
   if (special === 'HELD_SUPPORT') {
     return { badge: 'LONG', line1: 'Held support', line2: locLabel || 'AT SUPPORT', color: '#22c55e', detail };
@@ -3808,6 +4045,8 @@ const PATTERN_LABEL_NAMES = {
   SELLER_IN_CONTROL: 'Seller In Control',
   STOP_HUNT_LOW: 'Stop Hunt Low',
   STOP_HUNT_HIGH: 'Stop Hunt High',
+  LIQUIDITY_SWEEP_LOW: 'Liquidity Sweep Low',
+  LIQUIDITY_SWEEP_HIGH: 'Liquidity Sweep High',
   BUYER_ABSORBED: 'Buyer Absorbed',
   SELLER_ABSORBED: 'Seller Absorbed',
   ASKS_PULLED: 'Asks Pulled',
@@ -3933,6 +4172,20 @@ function showPatternTip(symbol, event) {
     tip.innerHTML = escapeHtml(hsrHit.tip)
       .split('\n')
       .map((line, i) => (i === 0 ? `<strong>${line}</strong>` : `<span>${line}</span>`))
+      .join('');
+    const host = view.card?.querySelector('.fp-card-canvas');
+    const maxX = (host?.clientWidth ?? 200) - 220;
+    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+    tip.style.top = `${Math.max(8, y + 14)}px`;
+    return;
+  }
+
+  const flowHit = (view.flowHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (flowHit?.tip) {
+    tip.classList.remove('hidden');
+    tip.innerHTML = escapeHtml(flowHit.tip)
+      .split('\n')
+      .map((line) => (line ? `<span>${line}</span>` : '<br/>'))
       .join('');
     const host = view.card?.querySelector('.fp-card-canvas');
     const maxX = (host?.clientWidth ?? 200) - 220;
@@ -4146,7 +4399,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 72;
-  const bottomPad = 100;
+  const bottomPad = 108;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -4236,10 +4489,17 @@ function drawFootprint(symbol = selectedSymbol) {
   const labelName = PATTERN_LABEL_NAMES[patternState.currentLabel] || patternState.currentLabel || '';
 
   view.patternHits = [];
+  view.flowHits = [];
   const patternByTime = new Map();
   for (const marker of patternMarkersFor(symbol)) {
     if (marker?.t != null) patternByTime.set(marker.t, marker);
   }
+
+  const flowMetrics = annotateBarsDisplacementCvd(bars, {
+    lastIsLive: lastIsLive && endIdx === bars.length,
+    resetMode: CVD_RESET_MODE,
+  });
+  const flowByTime = new Map(flowMetrics.map((m) => [m.time, m]));
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -4387,18 +4647,56 @@ function drawFootprint(symbol = selectedSymbol) {
     }
     ctx.fillText(timeLabel, cx, topPad + chartH + 14);
 
-    const delta = bar.totalBuy - bar.totalSell;
-    const barUsd = bar.totalBuy + bar.totalSell;
-    if (barUsd > 0) {
-      ctx.font = 'bold 11px JetBrains Mono, monospace';
-      ctx.fillStyle = delta >= 0 ? '#4ade80' : '#f87171';
-      ctx.fillText(`${delta >= 0 ? '+' : '-'}${fmtVolShort(Math.abs(delta))}`, x + barWidth / 2, topPad + chartH + 28);
+    const footY = topPad + chartH;
+    const metrics = flowByTime.get(bar.time);
+    if (metrics) {
+      // Compact under each candle: Displacement · Delta · CVD
+      ctx.font = '600 10px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = metrics.incomplete ? 0.65 : 0.92;
+
+      const dispColor =
+        metrics.displacementBps > 0 ? '#86efac'
+          : metrics.displacementBps < 0 ? '#fca5a5'
+            : '#94a3b8';
+      ctx.fillStyle = dispColor;
+      const dispLabel = metrics.incomplete
+        ? `${formatDispBp(metrics.displacementBps)} · LIVE`
+        : formatDispBp(metrics.displacementBps);
+      ctx.fillText(dispLabel, cx, footY + 28, barWidth - 2);
+
+      const hasFlow = metrics.dataQuality !== 'UNAVAILABLE';
+      if (hasFlow) {
+        ctx.fillStyle = metrics.delta >= 0 ? '#86efac' : '#fca5a5';
+        const dSign = metrics.delta >= 0 ? '+' : '−';
+        ctx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 40, barWidth - 2);
+        ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
+        ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 52, barWidth - 2);
+      } else {
+        // No aggressor data this bar — still show carried CVD when series has flow.
+        const seriesHasFlow = flowMetrics.some((m) => m.dataQuality !== 'UNAVAILABLE');
+        ctx.fillStyle = '#64748b';
+        ctx.fillText('Δ —', cx, footY + 40, barWidth - 2);
+        if (seriesHasFlow) {
+          ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
+          ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 52, barWidth - 2);
+        } else {
+          ctx.fillText('CVD —', cx, footY + 52, barWidth - 2);
+        }
+      }
+      ctx.globalAlpha = 1;
+
+      view.flowHits.push({
+        x0: cx - barWidth / 2,
+        x1: cx + barWidth / 2,
+        y0: footY + 18,
+        y1: footY + 58,
+        tip: flowMetricsTooltip(metrics),
+      });
     }
-    // Battle % under every candle; forced-flow breakdown only on the live bar.
-    const battle = barBattlePercents(bar);
-    drawBarBattlePercents(ctx, battle, cx, topPad + chartH + 40, barWidth - 2);
+
     if (isLiveBar) {
-      drawForcedFlowUnderBar(ctx, symbol, cx, topPad + chartH + 64, barWidth - 2);
+      drawForcedFlowUnderBar(ctx, symbol, cx, footY + 68, barWidth - 2);
     }
   }
 
@@ -4419,40 +4717,11 @@ function drawFootprint(symbol = selectedSymbol) {
     drawChartPriceLine(ctx, yForPrice(livePx), '#60a5fa', `LIVE ${fmtPriceAxis(livePx)}`, leftPad, plotRight + railW);
   }
 
-  drawHistoricalSROverlay(ctx, bars, visible, startIdx, {
-    leftPad,
-    plotRight: plotRight + railW,
-    yForPrice,
-    topPad,
-    chartH,
-    stride,
-    barWidth,
-    livePx,
-  });
-  view.hsrHits = drawHistoricalSROverlay._hits ?? [];
-
-  const p15Snap = drawPrevious15mOverlay(ctx, symbol, visible, {
-    leftPad,
-    plotRight: plotRight + railW,
-    yForPrice,
-    topPad,
-    chartH,
-    stride,
-    livePx,
-  });
-  view.p15Context = p15Snap;
-
-  const swingSnap = drawSwingStructureOverlay(ctx, symbol, visible, {
-    leftPad,
-    plotRight: plotRight + railW,
-    yForPrice,
-    topPad,
-    chartH,
-    stride,
-    livePx,
-  });
+  view.hsrHits = [];
+  view.p15Context = null;
+  view.swingHits = [];
+  const swingSnap = resolveSwingStructure(symbol);
   view.swingContext = swingSnap;
-  view.swingHits = drawSwingStructureOverlay._hits ?? [];
 
   const lzSnap = drawLiquidityZoneOverlay(ctx, symbol, visible, {
     leftPad,
@@ -4506,14 +4775,6 @@ function drawFootprint(symbol = selectedSymbol) {
     const fuelBit = fuel?.upsideFuel == null
       ? ''
       : ` · fuel ${Math.round(fuel.upsideFuel)}/${Math.round(fuel.downsideFuel ?? 0)} ${String(fuel.state || '').replace(/_/g, ' ').toLowerCase()}`;
-    const p15Bit = (() => {
-      const badge = p15BadgeText(view.p15Context);
-      return badge ? ` · ${badge}` : '';
-    })();
-    const swingBit = (() => {
-      const badge = swingBadgeText(view.swingContext);
-      return badge ? ` · ${badge}` : '';
-    })();
     const lzBit = (() => {
       const badge = lzBadgeText(view.lzContext);
       return badge ? ` · ${badge}` : '';
@@ -4527,8 +4788,8 @@ function drawFootprint(symbol = selectedSymbol) {
       return badge ? ` · ${badge}` : '';
     })();
     meta.textContent = story?.line1
-      ? `${fmtPriceAxis(px)} · ${story.line1}${story.line2 ? ` · ${story.line2}` : ''} · ${pat}${nextBit}${fuelBit}${p15Bit}${swingBit}${lzBit}${liqBit}${frBit}`
-      : `${fmtPriceAxis(px)} · ${pat}${nextBit}${fuelBit}${p15Bit}${swingBit}${lzBit}${liqBit}${frBit}`;
+      ? `${fmtPriceAxis(px)} · ${story.line1}${story.line2 ? ` · ${story.line2}` : ''} · ${pat}${nextBit}${fuelBit}${lzBit}${liqBit}${frBit}`
+      : `${fmtPriceAxis(px)} · ${pat}${nextBit}${fuelBit}${lzBit}${liqBit}${frBit}`;
     const frTip = failureReclaimTooltip(symbol);
     meta.title = [strategyStoryTooltip(story), frTip].filter(Boolean).join('\n\n') || '';
   }
@@ -6646,14 +6907,14 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
           : story.line1 === 'Sellers absorbed' || story.line1 === 'SELLERS ABSORBED' ? { key: 'absorb-sell', side: 'buy' }
             : story.line1 === 'BUYERS EFFECTIVE' || story.line1 === 'UPSIDE VACUUM' ? { key: 'buyers-effective', side: 'buy' }
               : story.line1 === 'SELLERS EFFECTIVE' || story.line1 === 'DOWNSIDE VACUUM' ? { key: 'sellers-effective', side: 'sell' }
-            : story.line1 === 'Stop hunt low' || (story.line1 === 'Stop hunt' && story.line2?.includes('low'))
+            : story.line1 === 'Stop hunt low' || story.line1 === 'Liquidity sweep low' || (story.line1 === 'Stop hunt' && story.line2?.includes('low'))
               ? { key: 'hunt-low', side: 'buy' }
-              : story.line1 === 'Stop hunt high' || (story.line1 === 'Stop hunt' && story.line2?.includes('high'))
+              : story.line1 === 'Stop hunt high' || story.line1 === 'Liquidity sweep high' || (story.line1 === 'Stop hunt' && story.line2?.includes('high'))
                 ? { key: 'hunt-high', side: 'sell' }
                 : story.line1 === 'Held support' ? { key: 'held-support', side: 'buy' }
                   : story.line1 === 'Rejected resist' ? { key: 'reject-resist', side: 'sell' }
-                    : story.detail?.special === 'STOP_HUNT_LOW' ? { key: 'hunt-low', side: 'buy' }
-                      : story.detail?.special === 'STOP_HUNT_HIGH' ? { key: 'hunt-high', side: 'sell' }
+                    : story.detail?.special === 'STOP_HUNT_LOW' || story.detail?.special === 'LIQUIDITY_SWEEP_LOW' ? { key: 'hunt-low', side: 'buy' }
+                      : story.detail?.special === 'STOP_HUNT_HIGH' || story.detail?.special === 'LIQUIDITY_SWEEP_HIGH' ? { key: 'hunt-high', side: 'sell' }
                         : null;
   if (!kind) return;
 

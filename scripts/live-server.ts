@@ -866,7 +866,7 @@ async function fetchKlinesRange(
   endMs: number,
 ) {
   const pageSize = 1500;
-  const merged = new Map<number, [number, string, string, string, string, string]>();
+  const merged = new Map<number, Array<number | string>>();
   let cursor = startMs;
   for (let i = 0; i < 40; i++) {
     const rows = await fetchVenueKlines(exchange, symbol, interval, market, pageSize, undefined, cursor);
@@ -894,7 +894,7 @@ async function fetchKlinesPaged(
   if (limit <= pageSize) {
     return fetchVenueKlines(exchange, symbol, interval, market, limit);
   }
-  const chunks: Array<Array<[number, string, string, string, string, string]>> = [];
+  const chunks: Array<ReturnType<typeof fetchVenueKlines> extends Promise<infer R> ? R : never> = [];
   let endTime: number | undefined;
   let remaining = limit;
   for (let i = 0; i < 6 && remaining > 0; i++) {
@@ -907,7 +907,7 @@ async function fetchKlinesPaged(
     endTime = first[0] - 1;
     if (rows.length < n) break;
   }
-  const merged = new Map<number, [number, string, string, string, string, string]>();
+  const merged = new Map<number, (typeof chunks)[number][number]>();
   for (const row of chunks.flat()) merged.set(row[0], row);
   return [...merged.values()].sort((a, b) => a[0] - b[0]).slice(-limit);
 }
