@@ -133,6 +133,10 @@ body {
   grid-template-columns: 15.5rem minmax(0, 1fr);
 }
 
+.app-shell-grid.app-shell-chart-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .layout.layout-chart-grid {
   display: flex;
   flex-direction: column;

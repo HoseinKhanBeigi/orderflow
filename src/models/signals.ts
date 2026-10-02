@@ -12,6 +12,8 @@ import type { TradeDecisionSnapshot } from './trade-decision.js';
 import type { LocationContextSnapshot } from './location-context.js';
 import type { LiveDefenseSnapshot } from '../live-defense/types.js';
 import type { PathContextSnapshot } from '../path-context/index.js';
+import type { LiquidationFlowSnapshot } from '../liquidation-flow/index.js';
+import type { FailureReclaimSnapshot } from '../failure-reclaim/index.js';
 
 export interface AbsorptionResult {
   detected: boolean;
@@ -103,11 +105,14 @@ export interface WindowSnapshot {
   locationContext: LocationContextSnapshot;
   /** Live ask/bid defense (order book) — separate from historical S/R. */
   liveDefense: LiveDefenseSnapshot;
-  /**
-   * Upside/downside path — historical structure vs live liquidity obstacles.
+  /** Upside/downside path — historical structure vs live liquidity obstacles.
    * Never interpret NONE_DETECTED historical as "no resistance".
    */
   pathContext: PathContextSnapshot;
+  /** Organic vs forced (liquidation) source of aggressive flow. */
+  liquidationFlow: LiquidationFlowSnapshot;
+  /** Failure → reclaim → control shift setup (not an auto entry). */
+  failureReclaim: FailureReclaimSnapshot;
   /** Simple LONG / SHORT / WAIT decision from attack + defense + price confirm. */
   tradeDecision: TradeDecisionSnapshot;
 }

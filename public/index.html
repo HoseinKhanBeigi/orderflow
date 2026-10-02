@@ -57,10 +57,7 @@
   </div>
   <div class="alert-toasts" id="alert-toasts" aria-live="assertive"></div>
 
-  <div class="app-shell app-shell-grid">
-    <aside class="decision-panel" id="decision-panel" aria-label="Structure and live defense">
-      <p class="decision-empty">Waiting for market read</p>
-    </aside>
+  <div class="app-shell app-shell-grid app-shell-chart-only">
     <main class="layout layout-chart-grid">
       <section class="panel chart-panel chart-panel-grid">
         <div class="panel-head">
@@ -108,6 +105,22 @@
               <input id="hsr-minor" type="checkbox" />
               Minor S/R
             </label>
+            <label class="imb-cfg" title="Previous completed 15m high/low reference lines">
+              <input id="p15-lines" type="checkbox" checked />
+              P15 H/L
+            </label>
+            <label class="imb-cfg" title="Also show previous 15m open/close (body)">
+              <input id="p15-body" type="checkbox" />
+              P15 Body
+            </label>
+            <label class="imb-cfg" title="Recent confirmed swing high/low structure references">
+              <input id="swing-lines" type="checkbox" checked />
+              SH/SL
+            </label>
+            <label class="imb-cfg" title="Potential liquidity interest zones at confirmed swings (attention mode near zone)">
+              <input id="lz-zones" type="checkbox" checked />
+              LZ
+            </label>
           </div>
         </div>
         <div id="fp-grid" class="fp-grid" aria-label="Footprint charts"></div>
@@ -125,7 +138,7 @@
     </div>
     <div>
       <h2 id="chart-title">Order flow footprint</h2>
-      <p class="hint" id="chart-hint">Cells = aggressive fills. Ladder: 500-level order book · solid = consumed (filled) · hatched pink = pulled (not filled). Absorption = consumed but price stalled.</p>
+      <p class="hint" id="chart-hint">Cells = aggressive fills. Absorption = aggressive flow soaked by resting liquidity with stalled price.</p>
     </div>
     <div class="chart-legend">
       <span id="fp-lev-now" class="fp-lev-now">—</span>

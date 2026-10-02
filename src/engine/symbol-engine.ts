@@ -41,6 +41,16 @@ import {
   emptyPathContext,
   type PathZoneRef,
 } from '../path-context/index.js';
+import {
+  evaluateLiquidationFlow,
+  LiquidationFlowHistory,
+} from '../liquidation-flow/index.js';
+import {
+  evaluateFailureReclaim,
+  emptyFailureReclaim,
+  type ReferenceLevel,
+  type FailureReclaimSnapshot,
+} from '../failure-reclaim/index.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
 import { PassiveLiquidityEngine } from '../passive-liquidity/engine.js';
@@ -109,6 +119,8 @@ export class SymbolEngine {
   readonly marketFuel: MarketFuelEngine;
   readonly aggressiveFlow: AggressiveFlowEngine;
   readonly locationContext = new LocationContextEngine();
+  private readonly liquidationFlowHistory = new Map<WindowId, LiquidationFlowHistory>();
+  private failureReclaimPrior: FailureReclaimSnapshot | null = null;
 
   private readonly listeners = new Set<EngineListener>();
   /**
@@ -576,6 +588,30 @@ export class SymbolEngine {
       sampleConfidence: conf,
     });
 
+    let liqHist = this.liquidationFlowHistory.get(window);
+    if (!liqHist) {
+      liqHist = new LiquidationFlowHistory();
+      this.liquidationFlowHistory.set(window, liqHist);
+    }
+    liqHist.pushSample(agg.forcedBuyVolume, agg.forcedSellVolume);
+    const liquidationFlow = evaluateLiquidationFlow({
+      timestamp: now,
+      symbol: this.symbol,
+      totalAggressiveBuy: agg.buyVolume,
+      totalAggressiveSell: agg.sellVolume,
+      shortLiquidationBuy: agg.forcedBuyVolume,
+      longLiquidationSell: agg.forcedSellVolume,
+      feed: this.marketType === 'perp' ? 'live' : 'not_expected',
+      buyEffort: marketBattle.upside.aggressive.power ?? marketBattle.upside.aggressive.score,
+      sellEffort: marketBattle.downside.aggressive.power ?? marketBattle.downside.aggressive.score,
+      askDefense: marketBattle.upside.passive.defensePower ?? marketBattle.upside.passive.strength,
+      bidDefense: marketBattle.downside.passive.defensePower ?? marketBattle.downside.passive.strength,
+      upResult: marketBattle.upside.price.efficiencyScore,
+      downResult: marketBattle.downside.price.efficiencyScore,
+      forcedBuyHistory: liqHist.buyHistory(),
+      forcedSellHistory: liqHist.sellHistory(),
+    });
+
     const snap: WindowSnapshot = {
       symbol: this.symbol,
       marketType: this.marketType,
@@ -632,6 +668,8 @@ export class SymbolEngine {
       locationContext: emptyLocationContext(this.symbol, now),
       liveDefense: emptyLiveDefense(now, priceEnd || priceStart),
       pathContext: emptyPathContext(now, priceEnd || priceStart),
+      liquidationFlow,
+      failureReclaim: emptyFailureReclaim(now),
       tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
@@ -721,6 +759,78 @@ export class SymbolEngine {
       sellersAbsorbed: liquidityResponse.absorption?.kind === 'SELL_ABSORPTION',
       buyersAbsorbed: liquidityResponse.absorption?.kind === 'BUY_ABSORPTION',
     });
+
+    // Failure/reclaim uses structural levels only — not live book walls.
+    const frLevels: ReferenceLevel[] = [];
+    if (structure?.swingLow != null) {
+      frLevels.push({
+        id: `SWING_LOW:${structure.swingLow}`,
+        type: 'SWING_LOW',
+        price: structure.swingLow,
+        significance: 75,
+      });
+    }
+    if (structure?.swingHigh != null) {
+      frLevels.push({
+        id: `SWING_HIGH:${structure.swingHigh}`,
+        type: 'SWING_HIGH',
+        price: structure.swingHigh,
+        significance: 75,
+      });
+    }
+    if (loc.nearestSupport?.price) {
+      frLevels.push({
+        id: `HSR_SUP:${loc.nearestSupport.price}`,
+        type: 'HISTORICAL_SUPPORT',
+        price: loc.nearestSupport.price,
+        significance: loc.nearestSupport.strength ?? 60,
+      });
+    }
+    if (loc.nearestResistance?.price) {
+      frLevels.push({
+        id: `HSR_RES:${loc.nearestResistance.price}`,
+        type: 'HISTORICAL_RESISTANCE',
+        price: loc.nearestResistance.price,
+        significance: loc.nearestResistance.strength ?? 60,
+      });
+    }
+    const buyerControl =
+      marketBattle.summary.state === 'BUYERS_IN_CONTROL' ||
+      marketBattle.summary.state === 'PASSIVE_BUYERS_DEFENDING'
+        ? Math.max(marketBattle.upside.battleScore, marketBattle.downside.passive.defensePower)
+        : marketBattle.upside.aggressive.power;
+    const sellerControl =
+      marketBattle.summary.state === 'SELLERS_IN_CONTROL' ||
+      marketBattle.summary.state === 'PASSIVE_SELLERS_DEFENDING'
+        ? Math.max(marketBattle.downside.battleScore, marketBattle.upside.passive.defensePower)
+        : marketBattle.downside.aggressive.power;
+    snap.failureReclaim =
+      frLevels.length > 0
+        ? evaluateFailureReclaim({
+            timestamp: now,
+            bar: locBar,
+            atr: Math.abs((agg.priceHigh || priceEnd) - (agg.priceLow || priceEnd)) || null,
+            levels: frLevels,
+            flow: {
+              buyEffort: marketBattle.upside.aggressive.power,
+              sellEffort: marketBattle.downside.aggressive.power,
+              askDefense: marketBattle.upside.passive.defensePower,
+              bidDefense: marketBattle.downside.passive.defensePower,
+              upResult: marketBattle.upside.price.efficiencyScore,
+              downResult: marketBattle.downside.price.efficiencyScore,
+              buyerControl,
+              sellerControl,
+              buyerAbsorbed: absorption.type === 'BUYER_ABSORPTION',
+              sellerAbsorbed: absorption.type === 'SELLER_ABSORPTION',
+              forcedBuyAbsorbed: liquidationFlow.alert === 'SHORT_LIQUIDATION_BUY_FLOW_ABSORBED',
+              forcedSellAbsorbed: liquidationFlow.alert === 'LONG_LIQUIDATION_SELL_FLOW_ABSORBED',
+            },
+            prior: this.failureReclaimPrior,
+          })
+        : emptyFailureReclaim(now);
+    if (snap.failureReclaim.machineState !== 'NO_SETUP') {
+      this.failureReclaimPrior = snap.failureReclaim;
+    }
 
     const px = priceEnd || priceStart;
     const toZone = (

@@ -1725,6 +1725,10 @@ function setupDataMode() {
   $('hsr-minor')?.addEventListener('change', () => {
     scheduleDraw();
   });
+  $('p15-lines')?.addEventListener('change', () => scheduleDraw());
+  $('p15-body')?.addEventListener('change', () => scheduleDraw());
+  $('swing-lines')?.addEventListener('change', () => scheduleDraw());
+  $('lz-zones')?.addEventListener('change', () => scheduleDraw());
 }
 
 function applyDataMode(mode) {
@@ -1736,7 +1740,7 @@ function applyDataMode(mode) {
   const spot = isSpotView();
   $('chart-title').textContent = mode === 'perp' ? 'Order flow footprint' : 'Spot order flow footprint';
   $('chart-hint').textContent =
-    'Cells = aggressive fills. Ladder: resting book · solid = consumed (filled) · hatched pink = pulled. Absorption = consumed but price stalled.';
+    'Cells = aggressive fills. Absorption = aggressive flow soaked by resting liquidity with stalled price.';
   $('imb-cfg').classList.toggle('hidden', !spot);
   refreshStatus();
   const coins = visibleCoins();
@@ -2178,11 +2182,10 @@ function fpLayout(cssWidth) {
   const leftPad = 8;
   const priceAxisWidth = 70;
   const candleW = 6;
-  const cellW = 88;
-  const gap = 6;
-  // Resting book ladder sits between the newest bar and the price axis. It is
-  // dropped on narrow charts so the footprint itself always keeps its columns.
-  const railW = cssWidth >= 360 ? (cssWidth >= 720 ? PASSIVE_RAIL_W : 148) : 0;
+  const cellW = 108;
+  const gap = 8;
+  // Order-book / resting ladder removed from the footprint chart for readability.
+  const railW = 0;
   const barWidth = candleW + cellW;
   const stride = barWidth + gap;
   const availW = Math.max(1, cssWidth - priceAxisWidth - railW - leftPad);
@@ -3647,6 +3650,134 @@ function drawBarBattlePercents(ctx, rows, cx, y0, maxW) {
   ctx.restore();
 }
 
+/** Compact BUY/SELL forced % from liquidation-flow snapshot (confirmed feed only). */
+function liquidationFlowFromSummary(symbol) {
+  const summary = symbol === selectedSymbol ? lastSummary : (summaries?.[symbol] ?? null);
+  const w =
+    summary?.windows?.['1m'] ??
+    summary?.windows?.['10s'] ??
+    summary?.windows?.[selectedTf] ??
+    summary?.windows?.[String(chartTfMinutes)] ??
+    null;
+  return w?.liquidationFlow ?? null;
+}
+
+function fmtFlowNotional(n) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return `${Math.round(n)}`;
+}
+
+function liquidationFlowBadge(symbol) {
+  const lf = liquidationFlowFromSummary(symbol);
+  if (!lf || lf.dataQuality === 'UNAVAILABLE' || lf.dataQuality === 'NOT_EXPECTED' || lf.dataQuality === 'STALE') {
+    return null;
+  }
+  if (lf.alert && lf.alert !== 'NONE') {
+    return String(lf.alert).replace(/_/g, ' ');
+  }
+  const buyF = lf.buy?.forcedRatio;
+  const sellF = lf.sell?.forcedRatio;
+  if (buyF == null && sellF == null) return null;
+  const buyPct = buyF != null ? Math.round(buyF * 100) : null;
+  const sellPct = sellF != null ? Math.round(sellF * 100) : null;
+  if ((buyPct ?? 0) < 25 && (sellPct ?? 0) < 25) return null;
+  const parts = [];
+  if (buyPct != null && buyPct >= 25) parts.push(`Buy ${buyPct}% forced`);
+  if (sellPct != null && sellPct >= 25) parts.push(`Sell ${sellPct}% forced`);
+  return parts.join(' · ') || null;
+}
+
+function failureReclaimFromSummary(symbol) {
+  const summary = symbol === selectedSymbol ? lastSummary : (summaries?.[symbol] ?? null);
+  const w =
+    summary?.windows?.['1m'] ??
+    summary?.windows?.['10s'] ??
+    summary?.windows?.[selectedTf] ??
+    summary?.windows?.[String(chartTfMinutes)] ??
+    null;
+  return w?.failureReclaim ?? null;
+}
+
+function failureReclaimBadgeText(symbol) {
+  const fr = failureReclaimFromSummary(symbol);
+  if (!fr || fr.machineState === 'NO_SETUP') return null;
+  if (fr.setup === 'LONG_SETUP') return 'LONG FR';
+  if (fr.setup === 'SHORT_SETUP') return 'SHORT FR';
+  if (fr.setup === 'LONG_FORMING') return 'LONG FR…';
+  if (fr.setup === 'SHORT_FORMING') return 'SHORT FR…';
+  if (fr.machineState === 'RECLAIM_FORMING' || fr.machineState === 'RECLAIM_CONFIRMED' || fr.machineState === 'CONTROL_SHIFT_PENDING') {
+    return 'RECLAIM';
+  }
+  if (fr.machineState === 'FAILURE_DETECTED') return 'FAILURE';
+  if (fr.machineState === 'INVALIDATED') return 'FR INVALID';
+  return null;
+}
+
+function failureReclaimTooltip(symbol) {
+  const fr = failureReclaimFromSummary(symbol);
+  if (!fr || fr.machineState === 'NO_SETUP') return '';
+  const lvl = fr.referenceLevel;
+  return [
+    'FAILURE + RECLAIM',
+    lvl ? `Level ${String(lvl.type).replace(/_/g, ' ')} ${fmtPriceAxis(lvl.price)}` : '',
+    `1 Break ${fr.progress?.breakAttempt ? '✓' : '…'}`,
+    `2 Failure ${fr.progress?.failure ? '✓' : '…'} ${fr.failure?.label ? String(fr.failure.label).replace(/_/g, ' ') : ''}`,
+    `3 Reclaim ${fr.progress?.reclaim ? '✓' : '…'} ${fr.reclaim?.state ? String(fr.reclaim.state).replace(/_/g, ' ') : ''}`,
+    `4 Control ${fr.progress?.controlShift ? '✓' : '…'} ${fr.controlShift?.state || ''}`,
+    `5 Setup ${fr.setup ? String(fr.setup).replace(/_/g, ' ') : 'WAIT'}${fr.confidence ? ` · ${Math.round(fr.confidence)}%` : ''}`,
+    fr.missingConfirmation && fr.missingConfirmation !== 'NONE'
+      ? `Need ${String(fr.missingConfirmation).replace(/_/g, ' ')}`
+      : '',
+    fr.interpretation || '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function drawForcedFlowUnderBar(ctx, symbol, cx, y0, maxW) {
+  const lf = liquidationFlowFromSummary(symbol);
+  if (!lf) return;
+  if (lf.dataQuality !== 'CONFIRMED' && lf.dataQuality !== 'ESTIMATED' && lf.dataQuality !== 'PARTIAL') {
+    return;
+  }
+  const buy = lf.buy;
+  const sell = lf.sell;
+  const buyLine =
+    buy?.forcedRatio != null
+      ? `Buy ${fmtFlowNotional(buy.totalAggressive)} · ${Math.round(buy.forcedRatio * 100)}% Forced`
+      : `Buy ${fmtFlowNotional(buy?.totalAggressive)} · Forced ?`;
+  const sellLine =
+    sell?.forcedRatio != null
+      ? `Sell ${fmtFlowNotional(sell.totalAggressive)} · ${Math.round(sell.forcedRatio * 100)}% Forced`
+      : `Sell ${fmtFlowNotional(sell?.totalAggressive)} · Forced ?`;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 9px Inter, system-ui, sans-serif';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+  ctx.lineJoin = 'round';
+  const colorBuy = (buy?.forcedRatio ?? 0) >= 0.5 ? '#fbbf24' : '#94a3b8';
+  const colorSell = (sell?.forcedRatio ?? 0) >= 0.5 ? '#fbbf24' : '#94a3b8';
+  ctx.strokeText(buyLine, cx, y0, maxW);
+  ctx.fillStyle = colorBuy;
+  ctx.fillText(buyLine, cx, y0, maxW);
+  ctx.strokeText(sellLine, cx, y0 + 11, maxW);
+  ctx.fillStyle = colorSell;
+  ctx.fillText(sellLine, cx, y0 + 11, maxW);
+  if (lf.alert && lf.alert !== 'NONE') {
+    const alert = String(lf.alert).replace(/_/g, ' ');
+    ctx.font = '700 8px Inter, system-ui, sans-serif';
+    ctx.strokeText(alert, cx, y0 + 22, maxW);
+    ctx.fillStyle = '#fde68a';
+    ctx.fillText(alert, cx, y0 + 22, maxW);
+  }
+  ctx.restore();
+}
+
 function drawBarStrategyTitle(ctx, story, cx, maxW) {
   if (!story) return;
   const title = story.line1 || '';
@@ -3800,6 +3931,34 @@ function showPatternTip(symbol, event) {
   if (hsrHit?.tip) {
     tip.classList.remove('hidden');
     tip.innerHTML = escapeHtml(hsrHit.tip)
+      .split('\n')
+      .map((line, i) => (i === 0 ? `<strong>${line}</strong>` : `<span>${line}</span>`))
+      .join('');
+    const host = view.card?.querySelector('.fp-card-canvas');
+    const maxX = (host?.clientWidth ?? 200) - 220;
+    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+    tip.style.top = `${Math.max(8, y + 14)}px`;
+    return;
+  }
+
+  const swingHit = (view.swingHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (swingHit?.tip) {
+    tip.classList.remove('hidden');
+    tip.innerHTML = escapeHtml(swingHit.tip)
+      .split('\n')
+      .map((line, i) => (i === 0 ? `<strong>${line}</strong>` : `<span>${line}</span>`))
+      .join('');
+    const host = view.card?.querySelector('.fp-card-canvas');
+    const maxX = (host?.clientWidth ?? 200) - 220;
+    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+    tip.style.top = `${Math.max(8, y + 14)}px`;
+    return;
+  }
+
+  const lzHit = (view.lzHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (lzHit?.tip) {
+    tip.classList.remove('hidden');
+    tip.innerHTML = escapeHtml(lzHit.tip)
       .split('\n')
       .map((line, i) => (i === 0 ? `<strong>${line}</strong>` : `<span>${line}</span>`))
       .join('');
@@ -4029,20 +4188,8 @@ function drawFootprint(symbol = selectedSymbol) {
     globalHigh = Math.max(globalHigh, livePx);
     globalLow = Math.min(globalLow, livePx);
   }
-  const book = orderBookFor(symbol);
-  if (book && pan < 0.15 && Number.isFinite(globalHigh) && Number.isFinite(globalLow)) {
-    const midPx = livePx || (globalHigh + globalLow) / 2;
-    const capLo = midPx * 0.7;
-    const capHi = midPx * 1.3;
-    for (const lvl of book.bids) {
-      const p = Number(lvl.price);
-      if (p >= capLo && p < globalLow) globalLow = p;
-    }
-    for (const lvl of book.asks) {
-      const p = Number(lvl.price);
-      if (p <= capHi && p > globalHigh) globalHigh = p;
-    }
-  }
+  // Do not expand the Y-axis to far order-book levels — that crushes footprint rows
+  // and makes volume numbers unreadable.
   globalHigh = priceToTick(globalHigh, bucket) + bucket * 2;
   globalLow = priceToTick(globalLow, bucket) - bucket * 2;
   const priceRange = globalHigh - globalLow || bucket;
@@ -4204,11 +4351,22 @@ function drawFootprint(symbol = selectedSymbol) {
         ctx.lineWidth = 1;
         ctx.strokeRect(cellX + 1, y - rh / 2 + 0.5, cellW - 2, rh - 1);
       }
-      if (lv.sell > 0) {
-        drawFpCellText(ctx, fmtVolShort(lv.sell), cellX + 1, y, sellBox, rh, 'right', '#fff1f2');
-      }
-      if (lv.buy > 0) {
-        drawFpCellText(ctx, fmtVolShort(lv.buy), cellX + half + 1, y, buyBox, rh, 'left', '#ecfdf5');
+      // Only print volume when the row is tall enough and the level is meaningful.
+      const showNums =
+        rh >= 11 &&
+        (lv.price === poc.price ||
+          imbBuy ||
+          imbSell ||
+          pasSell ||
+          pasBuy ||
+          total >= maxSide * 0.12);
+      if (showNums) {
+        if (lv.sell > 0) {
+          drawFpCellText(ctx, fmtVolShort(lv.sell), cellX + 1, y, sellBox, rh, 'right', '#fff1f2');
+        }
+        if (lv.buy > 0) {
+          drawFpCellText(ctx, fmtVolShort(lv.buy), cellX + half + 1, y, buyBox, rh, 'left', '#ecfdf5');
+        }
       }
     }
 
@@ -4236,8 +4394,12 @@ function drawFootprint(symbol = selectedSymbol) {
       ctx.fillStyle = delta >= 0 ? '#4ade80' : '#f87171';
       ctx.fillText(`${delta >= 0 ? '+' : '-'}${fmtVolShort(Math.abs(delta))}`, x + barWidth / 2, topPad + chartH + 28);
     }
+    // Battle % under every candle; forced-flow breakdown only on the live bar.
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, topPad + chartH + 40, barWidth - 2);
+    if (isLiveBar) {
+      drawForcedFlowUnderBar(ctx, symbol, cx, topPad + chartH + 64, barWidth - 2);
+    }
   }
 
   if (railW > 0) {
@@ -4265,8 +4427,45 @@ function drawFootprint(symbol = selectedSymbol) {
     chartH,
     stride,
     barWidth,
+    livePx,
   });
   view.hsrHits = drawHistoricalSROverlay._hits ?? [];
+
+  const p15Snap = drawPrevious15mOverlay(ctx, symbol, visible, {
+    leftPad,
+    plotRight: plotRight + railW,
+    yForPrice,
+    topPad,
+    chartH,
+    stride,
+    livePx,
+  });
+  view.p15Context = p15Snap;
+
+  const swingSnap = drawSwingStructureOverlay(ctx, symbol, visible, {
+    leftPad,
+    plotRight: plotRight + railW,
+    yForPrice,
+    topPad,
+    chartH,
+    stride,
+    livePx,
+  });
+  view.swingContext = swingSnap;
+  view.swingHits = drawSwingStructureOverlay._hits ?? [];
+
+  const lzSnap = drawLiquidityZoneOverlay(ctx, symbol, visible, {
+    leftPad,
+    plotRight: plotRight + railW,
+    yForPrice,
+    topPad,
+    chartH,
+    stride,
+    livePx,
+    swingSnap,
+  });
+  view.lzContext = lzSnap;
+  view.lzHits = drawLiquidityZoneOverlay._hits ?? [];
 
   drawLiveDefenseMarkers(ctx, symbol, {
     leftPad,
@@ -4307,10 +4506,31 @@ function drawFootprint(symbol = selectedSymbol) {
     const fuelBit = fuel?.upsideFuel == null
       ? ''
       : ` · fuel ${Math.round(fuel.upsideFuel)}/${Math.round(fuel.downsideFuel ?? 0)} ${String(fuel.state || '').replace(/_/g, ' ').toLowerCase()}`;
+    const p15Bit = (() => {
+      const badge = p15BadgeText(view.p15Context);
+      return badge ? ` · ${badge}` : '';
+    })();
+    const swingBit = (() => {
+      const badge = swingBadgeText(view.swingContext);
+      return badge ? ` · ${badge}` : '';
+    })();
+    const lzBit = (() => {
+      const badge = lzBadgeText(view.lzContext);
+      return badge ? ` · ${badge}` : '';
+    })();
+    const liqBit = (() => {
+      const badge = liquidationFlowBadge(symbol);
+      return badge ? ` · ${badge}` : '';
+    })();
+    const frBit = (() => {
+      const badge = failureReclaimBadgeText(symbol);
+      return badge ? ` · ${badge}` : '';
+    })();
     meta.textContent = story?.line1
-      ? `${fmtPriceAxis(px)} · ${story.line1}${story.line2 ? ` · ${story.line2}` : ''} · ${pat}${nextBit}${fuelBit}`
-      : `${fmtPriceAxis(px)} · ${pat}${nextBit}${fuelBit}`;
-    meta.title = strategyStoryTooltip(story) || '';
+      ? `${fmtPriceAxis(px)} · ${story.line1}${story.line2 ? ` · ${story.line2}` : ''} · ${pat}${nextBit}${fuelBit}${p15Bit}${swingBit}${lzBit}${liqBit}${frBit}`
+      : `${fmtPriceAxis(px)} · ${pat}${nextBit}${fuelBit}${p15Bit}${swingBit}${lzBit}${liqBit}${frBit}`;
+    const frTip = failureReclaimTooltip(symbol);
+    meta.title = [strategyStoryTooltip(story), frTip].filter(Boolean).join('\n\n') || '';
   }
   ctx.lineWidth = 1;
 }
@@ -4769,8 +4989,769 @@ function hsrTooltipText(seg) {
   ].filter(Boolean).join('\n') + weakenNote;
 }
 
+function p15LinesEnabled() {
+  return document.getElementById('p15-lines')?.checked !== false;
+}
+
+function p15BodyEnabled() {
+  return !!document.getElementById('p15-body')?.checked;
+}
+
+/**
+ * Previous completed 15m H/L reference — separate from historical S/R.
+ * Fixed until current 15m bucket closes.
+ */
+function resolvePrevious15mReference(symbol, asOfMs = Date.now()) {
+  const asOf = Math.floor(asOfMs / 1000);
+  const liveOpen = fpCandleTime(asOfMs, 15);
+  let bars15 = [];
+  try {
+    bars15 = footprintBars(symbol, 15) || [];
+  } catch (_) {
+    bars15 = [];
+  }
+  if (!bars15.length && typeof alertBarsForSymbol === 'function') {
+    try {
+      bars15 = alertBarsForSymbol(symbol, 15) || [];
+    } catch (_) {
+      bars15 = [];
+    }
+  }
+  const completed = (bars15 || []).filter((b) => b.time < liveOpen).sort((a, b) => a.time - b.time);
+  const prev = completed.length ? completed[completed.length - 1] : null;
+  if (!prev) return { status: 'P15_DATA_UNAVAILABLE', previous15m: null, currentContext: null, current15mOpen: liveOpen };
+
+  const mid = (prev.high + prev.low) / 2;
+  const range = Math.max(0, prev.high - prev.low);
+  const ref = {
+    timeframe: '15m',
+    sourceCandleOpenTime: prev.time,
+    sourceCandleCloseTime: prev.time + 15 * 60,
+    high: prev.high,
+    low: prev.low,
+    open: prev.open,
+    close: prev.close,
+    mid,
+    range,
+    rangeBps: prev.low > 0 ? (range / prev.low) * 10000 : 0,
+  };
+
+  const price =
+    (typeof lastSummary !== 'undefined' && lastSummary?.price) ||
+    (fpViews.get(symbol)?.livePrice) ||
+    prev.close;
+  const nearBps = 10;
+  const atBps = 3;
+  const dH = Math.abs(price - ref.high) / ref.high * 10000;
+  const dL = Math.abs(price - ref.low) / ref.low * 10000;
+  let location = 'INSIDE_P15_RANGE';
+  if (dH <= atBps) location = 'AT_P15_HIGH';
+  else if (dL <= atBps) location = 'AT_P15_LOW';
+  else if (price > ref.high) location = 'ABOVE_P15_HIGH';
+  else if (price < ref.low) location = 'BELOW_P15_LOW';
+  else if (dH <= nearBps) location = 'NEAR_P15_HIGH';
+  else if (dL <= nearBps) location = 'NEAR_P15_LOW';
+
+  return {
+    status: 'OK',
+    previous15m: ref,
+    current15mOpen: liveOpen,
+    currentContext: {
+      location,
+      distanceToHighBps: Math.round(dH * 10) / 10,
+      distanceToLowBps: Math.round(dL * 10) / 10,
+    },
+  };
+}
+
+function p15BadgeText(snap) {
+  if (!snap || snap.status !== 'OK' || !snap.currentContext) return null;
+  const loc = snap.currentContext.location.replace(/_/g, ' ');
+  const ctx = snap.currentContext;
+  if (loc.includes('HIGH')) return `${loc} · ${ctx.distanceToHighBps} bps`;
+  if (loc.includes('LOW')) return `${loc} · ${ctx.distanceToLowBps} bps`;
+  return loc;
+}
+
+function swingLinesEnabled() {
+  return document.getElementById('swing-lines')?.checked !== false;
+}
+
+/**
+ * Confirmed 15m swing H/L — short-term structure refs, separate from historical S/R & P15.
+ * No lookahead: only swings with confirmedAt <= now.
+ */
+function resolveSwingStructure(symbol, asOfMs = Date.now()) {
+  const asOf = Math.floor(asOfMs / 1000);
+  const BAR = 15 * 60;
+  const LEFT = 3;
+  const RIGHT = 3;
+  const NEAR_BPS = 10;
+  const AT_BPS = 3;
+  const MIN_SIG = 42;
+  const MAX_H = 3;
+  const MAX_L = 3;
+
+  let bars15 = [];
+  try {
+    bars15 = footprintBars(symbol, 15) || [];
+  } catch (_) {
+    bars15 = [];
+  }
+  if (!bars15.length && typeof alertBarsForSymbol === 'function') {
+    try {
+      bars15 = alertBarsForSymbol(symbol, 15) || [];
+    } catch (_) {
+      bars15 = [];
+    }
+  }
+  const completed = (bars15 || [])
+    .filter((b) => Number.isFinite(b.time) && b.time + BAR <= asOf)
+    .sort((a, b) => a.time - b.time);
+  if (completed.length < LEFT + RIGHT + 1) {
+    return { status: 'UNAVAILABLE', swings: [], recentSwingHigh: null, recentSwingLow: null, currentContext: null };
+  }
+
+  const atr = (() => {
+    const n = Math.min(14, completed.length - 1);
+    if (n < 1) return completed[completed.length - 1].close * 0.002;
+    let sum = 0;
+    for (let i = completed.length - n; i < completed.length; i++) {
+      const cur = completed[i];
+      const prev = completed[i - 1] || cur;
+      sum += Math.max(cur.high - cur.low, Math.abs(cur.high - prev.close), Math.abs(cur.low - prev.close));
+    }
+    return Math.max(sum / n, completed[completed.length - 1].close * 0.0005);
+  })();
+
+  const swings = [];
+  for (let i = LEFT; i < completed.length - RIGHT; i++) {
+    const p = completed[i];
+    const left = completed.slice(i - LEFT, i);
+    const right = completed.slice(i + 1, i + 1 + RIGHT);
+    const confirmedAt = right[right.length - 1].time + BAR;
+    if (confirmedAt > asOf) continue;
+
+    const isHigh = left.every((b) => p.high > b.high) && right.every((b) => p.high >= b.high);
+    const isLow = left.every((b) => p.low < b.low) && right.every((b) => p.low <= b.low);
+    if (!isHigh && !isLow) continue;
+
+    const maxLeftH = Math.max(...left.map((b) => b.high));
+    const minLeftL = Math.min(...left.map((b) => b.low));
+    const minRightL = Math.min(...right.map((b) => b.low));
+    const maxRightH = Math.max(...right.map((b) => b.high));
+
+    const pushSwing = (type, price) => {
+      const prominence =
+        type === 'SWING_HIGH'
+          ? Math.max(0, Math.min(100, ((price - maxLeftH) / atr) * 35 + 45))
+          : Math.max(0, Math.min(100, ((minLeftL - price) / atr) * 35 + 45));
+      const reaction =
+        type === 'SWING_HIGH'
+          ? Math.max(0, Math.min(100, ((price - minRightL) / atr) * 30 + 35))
+          : Math.max(0, Math.min(100, ((maxRightH - price) / atr) * 30 + 35));
+      const significance = Math.round(prominence * 0.4 + reaction * 0.35 + 70 * 0.25);
+      if (significance < MIN_SIG) return;
+
+      // State from post-confirmation bars
+      const post = completed.filter((b) => b.time + BAR > confirmedAt);
+      let state = 'ACTIVE';
+      let testCount = 0;
+      let closedBeyond = 0;
+      for (const b of post) {
+        if (type === 'SWING_HIGH') {
+          if (b.high >= price) testCount += 1;
+          if (b.high > price && b.close < price && closedBeyond === 0) state = 'REJECTED';
+          if (b.close > price) {
+            closedBeyond += 1;
+            state = closedBeyond >= 1 && ((b.close - price) / price) * 10000 >= 5 ? 'BROKEN' : 'BREAKING';
+          }
+        } else {
+          if (b.low <= price) testCount += 1;
+          if (b.low < price && b.close > price && closedBeyond === 0) state = 'REJECTED';
+          if (b.close < price) {
+            closedBeyond += 1;
+            state = closedBeyond >= 1 && ((price - b.close) / price) * 10000 >= 5 ? 'BROKEN' : 'BREAKING';
+          }
+        }
+      }
+
+      swings.push({
+        id: `${type}:${p.time}:${confirmedAt}:${price}`,
+        type,
+        price,
+        pivotTime: p.time,
+        confirmedAt,
+        significance,
+        class: significance >= 68 ? 'MAJOR' : 'MINOR',
+        state,
+        testCount,
+      });
+    };
+
+    if (isHigh) pushSwing('SWING_HIGH', p.high);
+    if (isLow) pushSwing('SWING_LOW', p.low);
+  }
+
+  const highs = swings.filter((s) => s.type === 'SWING_HIGH').sort((a, b) => b.confirmedAt - a.confirmedAt);
+  const lows = swings.filter((s) => s.type === 'SWING_LOW').sort((a, b) => b.confirmedAt - a.confirmedAt);
+  const pick = (list) => list.find((s) => s.state === 'ACTIVE' || s.state === 'TESTING' || s.state === 'REJECTED') || list[0] || null;
+  const recentSwingHigh = pick(highs);
+  const recentSwingLow = pick(lows);
+  const visible = [...highs.slice(0, MAX_H), ...lows.slice(0, MAX_L)];
+
+  const price = (() => {
+    try {
+      const chartBars = footprintBars(symbol) || [];
+      return chartBars[chartBars.length - 1]?.close ?? completed[completed.length - 1]?.close ?? null;
+    } catch (_) {
+      return completed[completed.length - 1]?.close ?? null;
+    }
+  })();
+
+  let currentContext = null;
+  if (price != null && Number.isFinite(price)) {
+    const sh = recentSwingHigh?.price ?? null;
+    const sl = recentSwingLow?.price ?? null;
+    const dH = sh != null ? (Math.abs(price - sh) / sh) * 10000 : null;
+    const dL = sl != null ? (Math.abs(price - sl) / sl) * 10000 : null;
+    let location = 'BETWEEN_SWINGS';
+    if (sh != null && dH <= AT_BPS) location = 'AT_SWING_HIGH';
+    else if (sl != null && dL <= AT_BPS) location = 'AT_SWING_LOW';
+    else if (sh != null && price > sh) location = 'ABOVE_SWING_HIGH';
+    else if (sl != null && price < sl) location = 'BELOW_SWING_LOW';
+    else if (sh != null && dH <= NEAR_BPS) location = 'NEAR_SWING_HIGH';
+    else if (sl != null && dL <= NEAR_BPS) location = 'NEAR_SWING_LOW';
+    else if (sh == null && sl == null) location = 'UNKNOWN';
+    currentContext = {
+      location,
+      distanceToSwingHighBps: dH != null ? Math.round(dH * 10) / 10 : null,
+      distanceToSwingLowBps: dL != null ? Math.round(dL * 10) / 10 : null,
+    };
+  }
+
+  return {
+    status: 'OK',
+    swings: visible,
+    recentSwingHigh,
+    recentSwingLow,
+    currentContext,
+  };
+}
+
+function swingBadgeText(snap) {
+  if (!snap || snap.status !== 'OK' || !snap.currentContext) return null;
+  const loc = snap.currentContext.location.replace(/_/g, ' ');
+  const ctx = snap.currentContext;
+  if (loc.includes('HIGH') && ctx.distanceToSwingHighBps != null) {
+    return `${loc} · ${ctx.distanceToSwingHighBps} bps`;
+  }
+  if (loc.includes('LOW') && ctx.distanceToSwingLowBps != null) {
+    return `${loc} · ${ctx.distanceToSwingLowBps} bps`;
+  }
+  if (loc === 'BETWEEN SWINGS') return null;
+  return loc;
+}
+
+function swingTooltip(s) {
+  if (!s) return '';
+  const t = (sec) => {
+    try {
+      return new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (_) {
+      return String(sec);
+    }
+  };
+  return [
+    s.type.replace(/_/g, ' '),
+    `Price: ${fmtPriceAxis(s.price)}`,
+    `Type: ${s.class}`,
+    `Significance: ${s.significance}`,
+    `Pivot: ${t(s.pivotTime)}`,
+    `Confirmed: ${t(s.confirmedAt)}`,
+    `State: ${s.state}`,
+    `Tests: ${s.testCount ?? 0}`,
+  ].join('\n');
+}
+
+function drawSwingStructureOverlay(ctx, symbol, visible, layout) {
+  if (!swingLinesEnabled()) return null;
+  const { leftPad, plotRight, yForPrice, topPad, chartH } = layout;
+  const snap = resolveSwingStructure(symbol);
+  if (!snap || snap.status !== 'OK' || !snap.swings?.length) return snap;
+
+  const stride = layout.stride || 8;
+  const timeToX = (t) => {
+    const idx = visible.findIndex((b) => b.time >= t);
+    if (idx < 0) {
+      if (visible[0] && t < visible[0].time) return leftPad;
+      return null;
+    }
+    return plotRight - (visible.length - idx) * stride;
+  };
+
+  const hitTargets = [];
+  for (const s of snap.swings) {
+    const y = yForPrice(s.price);
+    if (y < topPad - 4 || y > topPad + chartH + 4) continue;
+    let x0 = timeToX(s.pivotTime);
+    if (x0 == null) x0 = leftPad;
+    x0 = Math.max(leftPad, x0);
+    const x1 = plotRight - 4;
+    const broken = s.state === 'BROKEN' || s.state === 'INVALIDATED';
+    const isHigh = s.type === 'SWING_HIGH';
+    const label = `${isHigh ? 'SH' : 'SL'} ${fmtPriceAxis(s.price)}`;
+
+    ctx.save();
+    ctx.globalAlpha = broken ? 0.28 : s.class === 'MAJOR' ? 0.5 : 0.38;
+    ctx.strokeStyle = isHigh ? '#a8b4c4' : '#9aa8b8';
+    ctx.lineWidth = s.class === 'MAJOR' ? 1.1 : 0.9;
+    ctx.setLineDash(broken ? [2, 4] : [4, 5]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Small pivot tick
+    ctx.globalAlpha = broken ? 0.35 : 0.65;
+    ctx.beginPath();
+    ctx.moveTo(x0, y - 3);
+    ctx.lineTo(x0, y + 3);
+    ctx.stroke();
+
+    ctx.font = '600 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(8, 11, 16, 0.65)';
+    ctx.fillRect(x1 - tw - 6, y - 7, tw + 6, 14);
+    ctx.fillStyle = '#b8c0cc';
+    ctx.globalAlpha = broken ? 0.5 : 0.8;
+    ctx.fillText(label, x1 - 3, y);
+    ctx.restore();
+
+    hitTargets.push({
+      x0,
+      x1,
+      y0: y - 6,
+      y1: y + 6,
+      tip: swingTooltip(s),
+    });
+  }
+  drawSwingStructureOverlay._hits = hitTargets;
+  return snap;
+}
+
+function lzZonesEnabled() {
+  return document.getElementById('lz-zones')?.checked !== false;
+}
+
+/**
+ * Potential liquidity interest at confirmed swings — attention mode near zone.
+ * Reuses swing snap + MarketBattle scores; does not fabricate liquidation clusters.
+ */
+function resolveLiquidityZoneAttention(symbol, swingSnap, asOfMs = Date.now()) {
+  const asOf = Math.floor(asOfMs / 1000);
+  const swings = (swingSnap?.swings || []).filter((s) => s && s.confirmedAt <= asOf);
+  if (!swings.length && swingSnap?.recentSwingHigh) {
+    if (swingSnap.recentSwingHigh) swings.push(swingSnap.recentSwingHigh);
+    if (swingSnap.recentSwingLow) swings.push(swingSnap.recentSwingLow);
+  }
+  // Dedup by id
+  const byId = new Map();
+  for (const s of swings) byId.set(s.id, s);
+  const list = [...byId.values()];
+  if (!list.length) {
+    return { status: 'UNAVAILABLE', zones: [], attention: { attentionMode: false, primaryZone: null } };
+  }
+
+  const HALF_BPS = 8;
+  const APPROACH = 25;
+  const NEAR = 10;
+  const ACCEPT = 5;
+  const EFFORT_H = 65;
+  const DEF_H = 65;
+  const DEF_W = 40;
+  const RES_H = 65;
+  const RES_L = 35;
+
+  const price = (() => {
+    try {
+      const bars = footprintBars(symbol) || [];
+      return bars[bars.length - 1]?.close ?? null;
+    } catch (_) {
+      return null;
+    }
+  })();
+  if (price == null || !Number.isFinite(price)) {
+    return { status: 'UNAVAILABLE', zones: [], attention: { attentionMode: false, primaryZone: null } };
+  }
+
+  const bar = (() => {
+    try {
+      const bars = footprintBars(symbol) || [];
+      return bars[bars.length - 1] || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  // Flow from market battle if available
+  const summary = symbol === selectedSymbol ? lastSummary : (summaries?.[symbol] ?? null);
+  const w =
+    summary?.windows?.['1m'] ??
+    summary?.windows?.['10s'] ??
+    summary?.windows?.[String(chartTfMinutes)] ??
+    null;
+  const battle = w?.marketBattle;
+  const liveDefense = w?.liveDefense;
+  const up = battle?.upside;
+  const down = battle?.downside;
+  const flow = {
+    buyEffort: up?.aggressive?.power ?? up?.aggressive?.score ?? null,
+    sellEffort: down?.aggressive?.power ?? down?.aggressive?.score ?? null,
+    askDefense: up?.passive?.defensePower ?? up?.passive?.strength ?? up?.passive?.score ?? null,
+    bidDefense: down?.passive?.defensePower ?? down?.passive?.strength ?? down?.passive?.score ?? null,
+    upResult: up?.priceResponse?.score ?? null,
+    downResult: down?.priceResponse?.score ?? null,
+  };
+  const liveAsk = liveDefense?.relevantAsk
+    ? { price: liveDefense.relevantAsk.price, strength: liveDefense.relevantAsk.strength }
+    : null;
+  const liveBid = liveDefense?.relevantBid
+    ? { price: liveDefense.relevantBid.price, strength: liveDefense.relevantBid.strength }
+    : null;
+
+  const zones = [];
+  for (const s of list) {
+    const half = (s.price * HALF_BPS) / 10000;
+    const zoneLow = s.price - half;
+    const zoneHigh = s.price + half;
+    const mid = s.price;
+    const dBps = (Math.abs(price - mid) / mid) * 10000;
+    const high = bar?.high ?? price;
+    const low = bar?.low ?? price;
+    const close = bar?.close ?? price;
+
+    let proximity = 'FAR';
+    if (s.type === 'SWING_HIGH') {
+      if (high > zoneHigh && close < zoneLow) proximity = 'RECLAIMED';
+      else if (high > zoneHigh && close <= zoneHigh) proximity = 'SWEPT';
+      else if (close > zoneHigh && ((close - zoneHigh) / zoneHigh) * 10000 >= ACCEPT) proximity = 'BROKEN';
+      else if (price >= zoneLow && price <= zoneHigh) proximity = 'INSIDE';
+      else if (dBps <= NEAR) proximity = 'NEAR';
+      else if (dBps <= APPROACH) proximity = 'APPROACHING';
+    } else {
+      if (low < zoneLow && close > zoneHigh) proximity = 'RECLAIMED';
+      else if (low < zoneLow && close >= zoneLow) proximity = 'SWEPT';
+      else if (close < zoneLow && ((zoneLow - close) / zoneLow) * 10000 >= ACCEPT) proximity = 'BROKEN';
+      else if (price >= zoneLow && price <= zoneHigh) proximity = 'INSIDE';
+      else if (dBps <= NEAR) proximity = 'NEAR';
+      else if (dBps <= APPROACH) proximity = 'APPROACHING';
+    }
+
+    let liveWall = 'NONE';
+    if (s.type === 'SWING_HIGH' && liveAsk) {
+      if (liveAsk.price >= zoneLow && liveAsk.price <= zoneHigh) liveWall = 'LIVE_ASK_AT_SWING_HIGH';
+      else if ((Math.abs(liveAsk.price - mid) / mid) * 10000 <= 12) liveWall = 'LIVE_ASK_AT_SWING_HIGH';
+    }
+    if (s.type === 'SWING_LOW' && liveBid) {
+      if (liveBid.price >= zoneLow && liveBid.price <= zoneHigh) liveWall = 'LIVE_BID_AT_SWING_LOW';
+      else if ((Math.abs(liveBid.price - mid) / mid) * 10000 <= 12) liveWall = 'LIVE_BID_AT_SWING_LOW';
+    }
+
+    let outcome = 'NONE';
+    let state = proximity === 'FAR' ? 'ACTIVE' : proximity === 'APPROACHING' ? 'APPROACHING' : 'TESTING';
+    let interpretation = '';
+    let formingBias = 'NONE';
+    const isHigh = s.type === 'SWING_HIGH';
+    const effort = isHigh ? flow.buyEffort : flow.sellEffort;
+    const defense = isHigh ? flow.askDefense : flow.bidDefense;
+    const result = isHigh ? flow.upResult : flow.downResult;
+
+    if (proximity === 'SWEPT' || proximity === 'RECLAIMED') {
+      const absorbed =
+        effort != null &&
+        defense != null &&
+        result != null &&
+        effort >= EFFORT_H &&
+        defense >= DEF_H &&
+        result <= RES_L;
+      if (absorbed) {
+        outcome = isHigh ? 'SWING_HIGH_SWEEP_RECLAIMED' : 'SWING_LOW_SWEEP_RECLAIMED';
+        state = 'RECLAIMED';
+        formingBias = isHigh ? 'SHORT_FORMING' : 'LONG_FORMING';
+        interpretation = isHigh ? 'SWING HIGH SWEEP + ABSORPTION' : 'SWING LOW SWEEP + SELLER ABSORPTION';
+      } else if (proximity === 'SWEPT') {
+        outcome = isHigh ? 'SWING_HIGH_SWEEP' : 'SWING_LOW_SWEEP';
+        state = 'SWEPT';
+        interpretation = 'Sweep — await reclaim / defense';
+      }
+    } else if (proximity === 'BROKEN') {
+      const broke =
+        effort != null &&
+        defense != null &&
+        result != null &&
+        effort >= EFFORT_H &&
+        defense <= DEF_W &&
+        result >= RES_H;
+      outcome = isHigh ? 'SWING_HIGH_BREAK' : 'SWING_LOW_BREAK';
+      state = broke ? 'BROKEN' : 'BREAKING';
+      formingBias = broke
+        ? isHigh
+          ? 'LONG_CONTINUATION_FORMING'
+          : 'SHORT_CONTINUATION_FORMING'
+        : 'NONE';
+      interpretation = broke ? (isHigh ? 'SWING HIGH BROKEN' : 'SWING LOW BROKEN') : 'Beyond zone — confirm flow';
+    } else if (proximity === 'INSIDE' || proximity === 'NEAR' || proximity === 'APPROACHING') {
+      if (
+        effort != null &&
+        defense != null &&
+        result != null &&
+        effort >= EFFORT_H &&
+        defense >= DEF_H &&
+        result <= RES_L
+      ) {
+        outcome = isHigh ? 'BUYERS_ABSORBED_AT_SWING_HIGH' : 'SELLERS_ABSORBED_AT_SWING_LOW';
+        state = 'ABSORBING';
+        formingBias = isHigh ? 'SHORT_FORMING' : 'LONG_FORMING';
+        interpretation = isHigh ? 'BUYERS ABSORBED AT SWING HIGH' : 'SELLERS ABSORBED AT SWING LOW';
+      }
+    }
+
+    zones.push({
+      id: `LZ:${s.id}`,
+      sourceType: s.type,
+      price: s.price,
+      zoneLow,
+      zoneHigh,
+      classification: 'POTENTIAL_LIQUIDITY_ZONE',
+      swingSignificance: s.significance,
+      proximity,
+      distanceBps: Math.round(dBps * 10) / 10,
+      state,
+      outcome,
+      formingBias,
+      interpretation,
+      liveWallAlignment: liveWall,
+      pivotTime: s.pivotTime,
+      confirmedAt: s.confirmedAt,
+      class: s.class,
+      flow,
+    });
+  }
+
+  zones.sort((a, b) => a.distanceBps - b.distanceBps || b.swingSignificance - a.swingSignificance);
+  const primary = zones[0] || null;
+  const attentionMode =
+    !!primary && ['APPROACHING', 'NEAR', 'INSIDE', 'SWEPT', 'RECLAIMED', 'BROKEN'].includes(primary.proximity);
+
+  return {
+    status: 'OK',
+    zones: zones.slice(0, 4),
+    attention: {
+      attentionMode,
+      primaryZone: primary,
+      outcome: primary?.outcome || 'NONE',
+      formingBias: primary?.formingBias || 'NONE',
+      interpretation: primary?.interpretation || '',
+      attack: primary
+        ? primary.sourceType === 'SWING_HIGH'
+          ? flow.buyEffort
+          : flow.sellEffort
+        : null,
+      defense: primary
+        ? primary.sourceType === 'SWING_HIGH'
+          ? flow.askDefense
+          : flow.bidDefense
+        : null,
+      result: primary
+        ? primary.sourceType === 'SWING_HIGH'
+          ? flow.upResult
+          : flow.downResult
+        : null,
+    },
+  };
+}
+
+function lzBadgeText(snap) {
+  if (!snap || snap.status !== 'OK' || !snap.attention?.attentionMode || !snap.attention.primaryZone) return null;
+  const z = snap.attention.primaryZone;
+  const side = z.sourceType === 'SWING_HIGH' ? 'SWING HIGH' : 'SWING LOW';
+  const prox = String(z.proximity).replace(/_/g, ' ');
+  if (z.state === 'ABSORBING') return `${prox} ${side} · ABSORPTION`;
+  if (String(z.outcome).includes('SWEEP')) return `${prox} ${side} · SWEEP`;
+  if (String(z.outcome).includes('BREAK')) return `${prox} ${side} · BREAK`;
+  return `${prox} ${side}`;
+}
+
+function lzTooltip(z, attention) {
+  if (!z) return '';
+  const f = z.flow || {};
+  const isHigh = z.sourceType === 'SWING_HIGH';
+  return [
+    isHigh ? 'SWING HIGH LIQUIDITY ZONE' : 'SWING LOW LIQUIDITY ZONE',
+    `Price: ${fmtPriceAxis(z.price)}`,
+    `Zone: ${fmtPriceAxis(z.zoneLow)}–${fmtPriceAxis(z.zoneHigh)}`,
+    `Class: POTENTIAL LIQUIDITY ZONE`,
+    `Swing Significance: ${Math.round(z.swingSignificance)}`,
+    z.distanceBps != null ? `Distance: ${z.distanceBps} bps` : '',
+    isHigh && f.buyEffort != null ? `Buy Effort: ${Math.round(f.buyEffort)}` : '',
+    !isHigh && f.sellEffort != null ? `Sell Effort: ${Math.round(f.sellEffort)}` : '',
+    isHigh && f.askDefense != null ? `Ask Defense: ${Math.round(f.askDefense)}` : '',
+    !isHigh && f.bidDefense != null ? `Bid Defense: ${Math.round(f.bidDefense)}` : '',
+    isHigh && f.upResult != null ? `Up Result: ${Math.round(f.upResult)}` : '',
+    !isHigh && f.downResult != null ? `Down Result: ${Math.round(f.downResult)}` : '',
+    `State: ${z.state}`,
+    z.interpretation ? `Read: ${z.interpretation}` : '',
+    attention?.formingBias && attention.formingBias !== 'NONE'
+      ? `Bias hint: ${String(attention.formingBias).replace(/_/g, ' ')}`
+      : '',
+    `Liquidation Confluence: NONE`,
+    z.liveWallAlignment !== 'NONE' ? `Live wall: ${z.liveWallAlignment.replace(/_/g, ' ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function drawLiquidityZoneOverlay(ctx, symbol, visible, layout) {
+  if (!lzZonesEnabled()) return null;
+  const { leftPad, plotRight, yForPrice, topPad, chartH } = layout;
+  const swingSnap = layout.swingSnap || resolveSwingStructure(symbol);
+  const snap = resolveLiquidityZoneAttention(symbol, swingSnap);
+  if (!snap || snap.status !== 'OK' || !snap.zones?.length) return snap;
+
+  const stride = layout.stride || 8;
+  const timeToX = (t) => {
+    const idx = visible.findIndex((b) => b.time >= t);
+    if (idx < 0) {
+      if (visible[0] && t < visible[0].time) return leftPad;
+      return null;
+    }
+    return plotRight - (visible.length - idx) * stride;
+  };
+
+  const hitTargets = [];
+  const primaryId = snap.attention?.primaryZone?.id;
+  // Only draw primary zone (+ recent swing pair at most) to avoid label pile-up with SH/SL.
+  const drawZones = snap.attention?.primaryZone
+    ? [snap.attention.primaryZone]
+    : snap.zones.slice(0, 2);
+
+  for (const z of drawZones) {
+    const y = yForPrice(z.price);
+    const yLo = yForPrice(z.zoneHigh);
+    const yHi = yForPrice(z.zoneLow);
+    if (y < topPad - 8 || y > topPad + chartH + 8) continue;
+    let x0 = timeToX(z.pivotTime);
+    if (x0 == null) x0 = leftPad;
+    x0 = Math.max(leftPad, x0);
+    const x1 = plotRight - 4;
+    const attentive = snap.attention?.attentionMode && z.id === primaryId;
+    const isHigh = z.sourceType === 'SWING_HIGH';
+    const label = `${isHigh ? 'SH LIQ' : 'SL LIQ'} ${fmtPriceAxis(z.price)}`;
+
+    ctx.save();
+    // Subtle band — do not cover footprint numbers (low alpha)
+    if (attentive) {
+      const top = Math.min(yLo, yHi);
+      const bot = Math.max(yLo, yHi);
+      ctx.globalAlpha = 0.08;
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillRect(x0, top, Math.max(0, x1 - x0), Math.max(1, bot - top));
+    }
+
+    ctx.globalAlpha = attentive ? 0.55 : 0.32;
+    ctx.strokeStyle = '#7dd3c0';
+    ctx.lineWidth = attentive ? 1.15 : 0.85;
+    ctx.setLineDash(attentive ? [6, 3] : [3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.font = '600 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(8, 11, 16, 0.7)';
+    ctx.fillRect(x1 - tw - 6, y - 7, tw + 6, 14);
+    ctx.fillStyle = attentive ? '#99f6e4' : '#a7f3d0';
+    ctx.globalAlpha = attentive ? 0.9 : 0.7;
+    ctx.fillText(label, x1 - 3, y);
+    ctx.restore();
+
+    hitTargets.push({
+      x0,
+      x1,
+      y0: Math.min(yLo, yHi) - 2,
+      y1: Math.max(yLo, yHi) + 2,
+      tip: lzTooltip(z, snap.attention),
+    });
+  }
+  drawLiquidityZoneOverlay._hits = hitTargets;
+  return snap;
+}
+
+function drawPrevious15mOverlay(ctx, symbol, visible, layout) {
+  if (!p15LinesEnabled()) return null;
+  const { leftPad, plotRight, yForPrice, topPad, chartH } = layout;
+  const snap = resolvePrevious15mReference(symbol);
+  if (!snap || snap.status !== 'OK' || !snap.previous15m) return snap;
+
+  const ref = snap.previous15m;
+  const currentOpen = snap.current15mOpen;
+  // Line spans current 15m period only (from current bucket start → chart edge).
+  const timeToX = (t) => {
+    const idx = visible.findIndex((b) => b.time >= t);
+    if (idx < 0) {
+      if (visible[0] && t < visible[0].time) return leftPad;
+      return null;
+    }
+    return plotRight - (visible.length - idx) * (layout.stride || 8);
+  };
+  let x0 = timeToX(currentOpen);
+  if (x0 == null) x0 = Math.max(leftPad, plotRight - (layout.stride || 8) * 8);
+  const x1 = plotRight - 4;
+
+  const paint = (price, label, emphasis) => {
+    const y = yForPrice(price);
+    if (y < topPad - 4 || y > topPad + chartH + 4) return;
+    ctx.save();
+    ctx.globalAlpha = emphasis ? 0.55 : 0.35;
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = emphasis ? 1.15 : 0.9;
+    ctx.setLineDash(emphasis ? [5, 4] : [3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(Math.max(leftPad, x0), y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '600 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(8, 11, 16, 0.7)';
+    ctx.fillRect(x1 - tw - 6, y - 7, tw + 6, 14);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.globalAlpha = 0.85;
+    ctx.fillText(label, x1 - 3, y);
+    ctx.restore();
+  };
+
+  paint(ref.high, `P15 H ${fmtPriceAxis(ref.high)}`, true);
+  paint(ref.low, `P15 L ${fmtPriceAxis(ref.low)}`, true);
+  if (p15BodyEnabled()) {
+    paint(ref.open, `P15 O ${fmtPriceAxis(ref.open)}`, false);
+    paint(ref.close, `P15 C ${fmtPriceAxis(ref.close)}`, false);
+  }
+  return snap;
+}
+
 function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
-  const { leftPad, plotRight, yForPrice, topPad, chartH, stride } = layout;
+  const { leftPad, plotRight, yForPrice, topPad, chartH, stride, livePx } = layout;
   const { segments } = buildHistoricalSRSegments(allBars);
   if (!segments.length) return;
 
@@ -4787,6 +5768,26 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
   const viewEnd = visible[visible.length - 1]?.time ?? Infinity;
   const viewStart = visible[0]?.time ?? 0;
   const hitTargets = [];
+  const px = livePx || visible[visible.length - 1]?.close || 0;
+
+  // Draw all major (optional minor) lines, but only label the nearest few to price.
+  const labelCandidates = [];
+  for (const seg of segments) {
+    if (!showMinor && !seg.major) continue;
+    if (seg.fromTime > viewEnd) continue;
+    if (seg.toTime != null && seg.toTime < viewStart) continue;
+    if (seg.broken) continue;
+    labelCandidates.push(seg);
+  }
+  const nearestSup = labelCandidates
+    .filter((s) => s.type === 'SUPPORT' && s.price <= px)
+    .sort((a, b) => b.price - a.price)
+    .slice(0, 2);
+  const nearestRes = labelCandidates
+    .filter((s) => s.type === 'RESISTANCE' && s.price >= px)
+    .sort((a, b) => a.price - b.price)
+    .slice(0, 2);
+  const labeled = new Set([...nearestSup, ...nearestRes].map((s) => s.id || `${s.type}:${s.price}`));
 
   ctx.save();
   for (const seg of segments) {
@@ -4811,7 +5812,7 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
     const broken = seg.broken;
     const state = seg.strengthState || 'MODERATE';
 
-    ctx.globalAlpha = broken ? 0.06 : state === 'WEAK' ? 0.06 : 0.1;
+    ctx.globalAlpha = broken ? 0.05 : state === 'WEAK' ? 0.05 : 0.08;
     ctx.fillStyle = color;
     const bandTop = Math.min(yTop, yBot);
     const bandH = Math.max(2, Math.abs(yBot - yTop));
@@ -4819,7 +5820,7 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
       ctx.fillRect(Math.max(leftPad, x0), bandTop, Math.min(plotRight, x1) - Math.max(leftPad, x0), bandH);
     }
 
-    ctx.globalAlpha = hsrAlpha(state, broken);
+    ctx.globalAlpha = hsrAlpha(state, broken) * (broken ? 0.7 : 1);
     ctx.strokeStyle = color;
     ctx.lineWidth = hsrLineWidth(state, broken);
     ctx.setLineDash(broken ? [3, 4] : []);
@@ -4829,34 +5830,31 @@ function drawHistoricalSROverlay(ctx, allBars, visible, startIdx, layout) {
     ctx.stroke();
     ctx.setLineDash([]);
 
+    const segKey = seg.id || `${seg.type}:${seg.price}`;
+    if (!labeled.has(segKey) || broken) continue;
+
     const scoreBit =
       state === 'STRONG_BUT_WEAKENING'
         ? `${Math.round(seg.strength)} ↓`
         : `${Math.round(seg.strength)}`;
     const label = `${isSup ? 'SUP' : 'RES'} ${fmtPriceAxis(seg.price)} · ${scoreBit}`;
-    const stateLabel = hsrStateLabel(state);
-    ctx.globalAlpha = broken ? 0.45 : 0.9;
-    ctx.font = '700 9px JetBrains Mono, monospace';
+    ctx.globalAlpha = 0.92;
+    ctx.font = '700 10px JetBrains Mono, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const tw = Math.max(ctx.measureText(label).width, ctx.measureText(stateLabel).width);
+    const tw = ctx.measureText(label).width;
     const lx = Math.min(plotRight, x1) - tw - 6;
-    const ly = yMid - (isSup ? -10 : 10);
+    const ly = yMid;
     if (ly > topPad && ly < topPad + chartH && lx > leftPad) {
-      ctx.fillStyle = 'rgba(8, 11, 16, 0.75)';
-      ctx.fillRect(lx - 3, ly - 12, tw + 6, stateLabel ? 22 : 14);
+      ctx.fillStyle = 'rgba(8, 11, 16, 0.82)';
+      ctx.fillRect(lx - 3, ly - 8, tw + 6, 16);
       ctx.fillStyle = color;
-      ctx.fillText(label, lx, ly - 4);
-      if (stateLabel) {
-        ctx.font = '600 8px JetBrains Mono, monospace';
-        ctx.globalAlpha = broken ? 0.4 : 0.75;
-        ctx.fillText(stateLabel, lx, ly + 7);
-      }
+      ctx.fillText(label, lx, ly);
       hitTargets.push({
         x0: lx - 3,
         x1: lx + tw + 3,
-        y0: ly - 12,
-        y1: ly + 10,
+        y0: ly - 8,
+        y1: ly + 8,
         tip: hsrTooltipText(seg),
         seg,
       });
@@ -4938,6 +5936,11 @@ function drawLocationLevelBoxes(ctx, symbol, bars, layout) {
 
   ctx.save();
   const state = levels.state || 'UNKNOWN';
+  // Skip vague UNKNOWN badge — already covered by the meta line.
+  if (state === 'UNKNOWN' || state === 'BETWEEN_LEVELS' || state === 'BETWEEN LEVELS') {
+    ctx.restore();
+    return;
+  }
   const color = locationStateColor(state);
   let detail = locationStateLabel(state);
   if (state.includes('SUPPORT') && levels.supportBps != null) {
@@ -5352,12 +6355,12 @@ function fmtVolShort(v) {
 }
 
 function drawFpCellText(ctx, text, x, y, w, h, align, fill = '#ffffff') {
-  if (!text || h < 8 || w < 12) return;
+  if (!text || h < 10 || w < 16) return;
   ctx.save();
   ctx.beginPath();
   ctx.rect(x + 1, y - h / 2 + 0.5, Math.max(1, w - 2), Math.max(1, h - 1));
   ctx.clip();
-  const fs = Math.min(12, Math.max(9, Math.floor(h * 0.72)));
+  const fs = Math.min(13, Math.max(10, Math.floor(h * 0.78)));
   ctx.font = `700 ${fs}px JetBrains Mono, monospace`;
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
