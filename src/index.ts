@@ -108,6 +108,52 @@ export type {
   SpecialEventType,
 } from './pattern-recognition/index.js';
 
+export {
+  MARKET_SEQUENCE_VERSION,
+  annotateSequenceReplay,
+  processSequenceCandle,
+  buildStageInput,
+  selectPrimaryLabel,
+  PRIMARY_LABEL_SHORT,
+  createSequenceStore,
+  sequenceAnnotationTooltip,
+  labelBiasColor,
+} from './market-sequence/index.js';
+export type {
+  PrimaryLabel,
+  CandleSequenceAnnotation,
+  SequenceStageInput,
+} from './market-sequence/index.js';
+
+export {
+  MICRO_STATE_VERSION,
+  annotateBarsMicroState,
+  annotateBarMicroState,
+  MICRO_LABEL_SHORT,
+  selectSecondaryLabels,
+  microLabelsDisplayLine,
+} from './micro-state/index.js';
+export type {
+  MicroStateLabel,
+  CandleMicroStateAnnotation,
+  MicroBarInput,
+} from './micro-state/index.js';
+
+export {
+  LOCATION_LABEL_VERSION,
+  annotateBarLocation,
+  annotateBarsLocation,
+  LOCATION_LABEL_SHORT,
+  pickPrimaryLocation,
+  collectLocationCandidates,
+} from './location-label/index.js';
+export type {
+  LocationLabel,
+  LocationAnnotation,
+  LocationBarInput,
+  PriceZone,
+} from './location-label/index.js';
+
 export * from './models/index.js';
 export * as simulation from './simulation/index.js';
 export * as backtest from './backtest/index.js';

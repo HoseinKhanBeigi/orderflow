@@ -1576,6 +1576,7 @@ function buildFpGrid() {
       dragX: 0,
       card,
       patternHits: [],
+      microHits: [],
     });
     bindFpCanvas(coin.symbol, canvas);
     card.addEventListener('pointerdown', () => focusFootprintSymbol(coin.symbol));
@@ -2351,6 +2352,7 @@ function strategyStoryForBar(allBars, idx) {
     special,
     outcome,
     outcomeDir,
+    location,
     askPull,
     bidPull,
     askConsume,
@@ -2451,6 +2453,622 @@ function strategyStoryTooltip(story) {
 
 function fmtToken(v) {
   return String(v || 'NONE').replace(/_/g, ' ').toLowerCase();
+}
+
+/* ── Primary sequence short + secondary micro-state (client) ─────────────── */
+
+const PRIMARY_LABEL_SHORT_MAP = {
+  STOP_HUNT_HIGH: 'SWEEP H',
+  STOP_HUNT_LOW: 'SWEEP L',
+  BUYER_ABSORBED: 'BUY ABS',
+  SELLER_ABSORBED: 'SELL ABS',
+  REJECTED_RESISTANCE: 'BUY FAIL',
+  HELD_SUPPORT: 'SELL FAIL',
+  BUYER_IN_CONTROL: 'BUY CTRL',
+  SELLER_IN_CONTROL: 'SELL CTRL',
+  BREAKOUT_ACCEPTANCE: 'BREAKOUT',
+  BREAKDOWN_ACCEPTANCE: 'BREAKDOWN',
+};
+
+const MICRO_LABEL_SHORT = {
+  MOVE_UP: 'MOVE ↑',
+  MOVE_DOWN: 'MOVE ↓',
+  CONT_UP: 'CONT ↑',
+  CONT_DOWN: 'CONT ↓',
+  BUYER_NO_PROGRESS: 'BUYER NP',
+  SELLER_NO_PROGRESS: 'SELLER NP',
+  REJECT_UP: 'REJECT ↑',
+  REJECT_DOWN: 'REJECT ↓',
+  ACCEPT_UP: 'ACCEPT ↑',
+  ACCEPT_DOWN: 'ACCEPT ↓',
+};
+
+const MICRO_LABEL_PRIORITY = {
+  ACCEPT_UP: 100,
+  ACCEPT_DOWN: 100,
+  REJECT_UP: 90,
+  REJECT_DOWN: 90,
+  BUYER_NO_PROGRESS: 80,
+  SELLER_NO_PROGRESS: 80,
+  CONT_UP: 70,
+  CONT_DOWN: 70,
+  MOVE_UP: 60,
+  MOVE_DOWN: 60,
+};
+
+const MICRO_CFG = {
+  moveMinBps: 15,
+  moveMinBodyEfficiency: 0.28,
+  npEffortHigh: 62,
+  npMaxDispBps: 8,
+  npResultWeak: 28,
+  rejectMinExcursionBps: 8,
+  rejectCloseBeyondFrac: 0.35,
+  acceptMinBeyondBps: 6,
+  maxSecondaryLabels: 2,
+  contMinBps: 12,
+};
+
+function primaryShortFromStory(story) {
+  const d = story?.detail;
+  if (!d) return '';
+  if (d.special && PRIMARY_LABEL_SHORT_MAP[d.special]) return PRIMARY_LABEL_SHORT_MAP[d.special];
+  if (d.control && PRIMARY_LABEL_SHORT_MAP[d.control]) return PRIMARY_LABEL_SHORT_MAP[d.control];
+  if (d.liquidity === 'ASKS_CONSUMED' && d.outcome === 'PRICE_FOLLOWED') return 'BUY EFF';
+  if (d.liquidity === 'BIDS_CONSUMED' && d.outcome === 'PRICE_FOLLOWED') return 'SELL EFF';
+  return '';
+}
+
+function primaryBiasFromStory(story) {
+  const d = story?.detail;
+  if (!d) return 'NEUTRAL';
+  if (d.special === 'STOP_HUNT_LOW' || d.control === 'BUYER_IN_CONTROL' || d.special === 'HELD_SUPPORT') return 'BULLISH';
+  if (d.special === 'STOP_HUNT_HIGH' || d.control === 'SELLER_IN_CONTROL' || d.special === 'REJECTED_RESISTANCE') return 'BEARISH';
+  if (d.outcomeDir === 'UP') return 'BULLISH';
+  if (d.outcomeDir === 'DOWN') return 'BEARISH';
+  return 'NEUTRAL';
+}
+
+function microEffortScores(buy, sell, delta) {
+  const vol = buy + sell;
+  if (vol <= 0) return { buyEffort: 0, sellEffort: 0 };
+  const dAmp = Math.min(1, Math.abs(delta) / vol) * 40;
+  return {
+    buyEffort: Math.round(Math.min(100, (buy / vol) * 70 + (delta > 0 ? dAmp : 0))),
+    sellEffort: Math.round(Math.min(100, (sell / vol) * 70 + (delta < 0 ? dAmp : 0))),
+  };
+}
+
+function microResultScore(dispBps, dir) {
+  const raw = dir === 'UP' ? dispBps : -dispBps;
+  if (raw <= 0) return Math.max(0, 20 + raw);
+  return Math.min(100, Math.round((raw / 16) * 100));
+}
+
+function microRefsForBar(bar, prior) {
+  const { support, resistance } = priorSwingLevels(prior);
+  const refs = [];
+  if (resistance != null && Number.isFinite(resistance)) {
+    refs.push({ kind: 'SWING_HIGH', price: resistance });
+    refs.push({ kind: 'RESISTANCE', price: resistance, zoneLow: resistance * 0.999, zoneHigh: resistance * 1.001 });
+  }
+  if (support != null && Number.isFinite(support)) {
+    refs.push({ kind: 'SWING_LOW', price: support });
+    refs.push({ kind: 'SUPPORT', price: support, zoneLow: support * 0.999, zoneHigh: support * 1.001 });
+  }
+  return refs;
+}
+
+function collectMicroCandidates(bar, metrics, priorDir, story) {
+  const cfg = MICRO_CFG;
+  const disp = metrics?.displacementBps ?? 0;
+  const body = metrics?.bodyEfficiency ?? 0;
+  const buy = bar.totalBuy ?? 0;
+  const sell = bar.totalSell ?? 0;
+  const delta = metrics?.delta ?? buy - sell;
+  const efforts = microEffortScores(buy, sell, delta);
+  const upResult = microResultScore(disp, 'UP');
+  const downResult = microResultScore(disp, 'DOWN');
+  const references = bar._microRefs ?? [];
+  const open = bar.open;
+  const cands = [];
+
+  for (const ref of references) {
+    const hi = ref.zoneHigh ?? ref.price;
+    const lo = ref.zoneLow ?? ref.price;
+    if ((ref.kind === 'SWING_HIGH' || ref.kind === 'RESISTANCE') && bar.close > hi) {
+      const beyond = open > 0 ? ((bar.close - hi) / open) * 10000 : 0;
+      const bodyAbove = Math.min(bar.open, bar.close) > hi;
+      if (beyond >= cfg.acceptMinBeyondBps && (bodyAbove || disp >= cfg.moveMinBps * 0.6)) {
+        cands.push({
+          label: 'ACCEPT_UP',
+          score: Math.min(100, beyond + 25),
+          tip: `ACCEPT ↑\nReference: ${ref.kind} ${hi}\nClose: above zone\nFollow-through: ${disp > 0 ? 'yes' : 'no'}`,
+        });
+      }
+    }
+    if ((ref.kind === 'SWING_LOW' || ref.kind === 'SUPPORT') && bar.close < lo) {
+      const beyond = open > 0 ? ((lo - bar.close) / open) * 10000 : 0;
+      const bodyBelow = Math.max(bar.open, bar.close) < lo;
+      if (beyond >= cfg.acceptMinBeyondBps && (bodyBelow || disp <= -cfg.moveMinBps * 0.6)) {
+        cands.push({
+          label: 'ACCEPT_DOWN',
+          score: Math.min(100, beyond + 25),
+          tip: `ACCEPT ↓\nReference: ${ref.kind} ${lo}\nClose: below zone\nFollow-through: ${disp < 0 ? 'yes' : 'no'}`,
+        });
+      }
+    }
+  }
+
+  for (const ref of references) {
+    const hi = ref.zoneHigh ?? ref.price;
+    const lo = ref.zoneLow ?? ref.price;
+    const range = Math.max(bar.high - bar.low, 1e-12);
+    if (ref.kind === 'SWING_HIGH' || ref.kind === 'RESISTANCE') {
+      const excursion = open > 0 ? ((bar.high - hi) / open) * 10000 : 0;
+      const upperWickFrac = (bar.high - Math.max(bar.open, bar.close)) / range;
+      if (excursion >= cfg.rejectMinExcursionBps && bar.close <= hi && upperWickFrac >= cfg.rejectCloseBeyondFrac) {
+        cands.push({
+          label: 'REJECT_UP',
+          score: Math.min(100, excursion + 20),
+          tip: `REJECT ↑\nReference: ${ref.kind} ${hi}\nExcursion: +${excursion.toFixed(0)}bp\nClose: back below level\nAcceptance: No`,
+        });
+      }
+    }
+    if (ref.kind === 'SWING_LOW' || ref.kind === 'SUPPORT') {
+      const excursion = open > 0 ? ((lo - bar.low) / open) * 10000 : 0;
+      const lowerWickFrac = (Math.min(bar.open, bar.close) - bar.low) / range;
+      if (excursion >= cfg.rejectMinExcursionBps && bar.close >= lo && lowerWickFrac >= cfg.rejectCloseBeyondFrac) {
+        cands.push({
+          label: 'REJECT_DOWN',
+          score: Math.min(100, excursion + 20),
+          tip: `REJECT ↓\nReference: ${ref.kind} ${lo}\nExcursion: +${excursion.toFixed(0)}bp\nClose: back above level\nAcceptance: No`,
+        });
+      }
+    }
+  }
+  if (story?.detail?.special === 'REJECTED_RESISTANCE') {
+    cands.push({ label: 'REJECT_UP', score: 88, tip: 'REJECT ↑\nFrom rejected resistance special' });
+  }
+
+  if (
+    efforts.buyEffort >= cfg.npEffortHigh &&
+    delta > 0 &&
+    upResult <= cfg.npResultWeak &&
+    disp <= cfg.npMaxDispBps
+  ) {
+    cands.push({
+      label: 'BUYER_NO_PROGRESS',
+      score: efforts.buyEffort,
+      tip: `BUYER NP\nBuy Effort: ${efforts.buyEffort}\nDelta: ${delta >= 0 ? '+' : ''}${fmtVolShort(Math.abs(delta))}\nDisplacement: ${disp >= 0 ? '+' : ''}${disp.toFixed(0)}bp\nUp Result: ${upResult}\n\nInterpretation:\nBuyers attacked aggressively but made little upward progress.`,
+    });
+  } else if (
+    efforts.sellEffort >= cfg.npEffortHigh &&
+    delta < 0 &&
+    downResult <= cfg.npResultWeak &&
+    disp >= -cfg.npMaxDispBps
+  ) {
+    cands.push({
+      label: 'SELLER_NO_PROGRESS',
+      score: efforts.sellEffort,
+      tip: `SELLER NP\nSell Effort: ${efforts.sellEffort}\nDelta: ${delta >= 0 ? '+' : ''}${fmtVolShort(Math.abs(delta))}\nDisplacement: ${disp >= 0 ? '+' : ''}${disp.toFixed(0)}bp\nDown Result: ${downResult}\n\nInterpretation:\nSellers attacked aggressively but made little downward progress.`,
+    });
+  }
+
+  if (priorDir === 'UP' && disp >= cfg.contMinBps && bar.close >= bar.open) {
+    cands.push({ label: 'CONT_UP', score: Math.min(100, Math.abs(disp) + 10), tip: 'CONT ↑\nContinues prior bullish context' });
+  } else if (priorDir === 'DOWN' && disp <= -cfg.contMinBps && bar.close <= bar.open) {
+    cands.push({ label: 'CONT_DOWN', score: Math.min(100, Math.abs(disp) + 10), tip: 'CONT ↓\nContinues prior bearish context' });
+  }
+
+  if (Math.abs(disp) >= cfg.moveMinBps && body >= cfg.moveMinBodyEfficiency) {
+    if (disp > 0) cands.push({ label: 'MOVE_UP', score: Math.min(100, Math.abs(disp)), tip: `MOVE ↑\nDisplacement: +${disp.toFixed(1)}bp` });
+    else cands.push({ label: 'MOVE_DOWN', score: Math.min(100, Math.abs(disp)), tip: `MOVE ↓\nDisplacement: ${disp.toFixed(1)}bp` });
+  }
+
+  return cands;
+}
+
+function selectMicroSecondaries(cands) {
+  const cfg = MICRO_CFG;
+  const byLabel = new Map();
+  for (const c of cands) {
+    const prev = byLabel.get(c.label);
+    if (!prev || c.score > prev.score) byLabel.set(c.label, c);
+  }
+  let list = [...byLabel.values()];
+  if (list.some((c) => c.label === 'ACCEPT_UP')) list = list.filter((c) => c.label !== 'REJECT_UP');
+  if (list.some((c) => c.label === 'ACCEPT_DOWN')) list = list.filter((c) => c.label !== 'REJECT_DOWN');
+  if (list.some((c) => c.label === 'CONT_UP')) list = list.filter((c) => c.label !== 'MOVE_UP');
+  if (list.some((c) => c.label === 'CONT_DOWN')) list = list.filter((c) => c.label !== 'MOVE_DOWN');
+  if (list.some((c) => c.label === 'BUYER_NO_PROGRESS')) list = list.filter((c) => c.label !== 'MOVE_UP');
+  if (list.some((c) => c.label === 'SELLER_NO_PROGRESS')) list = list.filter((c) => c.label !== 'MOVE_DOWN');
+
+  const catOf = (l) => {
+    if (l.startsWith('MOVE')) return 'MOVE';
+    if (l.startsWith('CONT')) return 'CONT';
+    if (l.includes('NO_PROGRESS')) return 'NP';
+    if (l.startsWith('REJECT')) return 'REJECT';
+    if (l.startsWith('ACCEPT')) return 'ACCEPT';
+    return l;
+  };
+  const best = new Map();
+  for (const c of list) {
+    const cat = catOf(c.label);
+    const rank = (MICRO_LABEL_PRIORITY[c.label] || 0) * 1000 + c.score;
+    const prev = best.get(cat);
+    const prevRank = prev ? (MICRO_LABEL_PRIORITY[prev.label] || 0) * 1000 + prev.score : -1;
+    if (!prev || rank > prevRank) best.set(cat, c);
+  }
+  return [...best.values()]
+    .sort((a, b) => (MICRO_LABEL_PRIORITY[b.label] - MICRO_LABEL_PRIORITY[a.label]) || (b.score - a.score))
+    .slice(0, cfg.maxSecondaryLabels);
+}
+
+const LOCATION_LABEL_SHORT = {
+  NONE: '',
+  ABOVE_SUPPORT: 'ABOVE SUP',
+  NEAR_SUPPORT: 'NEAR SUP',
+  AT_SUPPORT: 'AT SUP',
+  INSIDE_SUPPORT: 'IN SUP',
+  BELOW_SUPPORT: 'BELOW SUP',
+  BELOW_RESISTANCE: 'BELOW RES',
+  NEAR_RESISTANCE: 'NEAR RES',
+  AT_RESISTANCE: 'AT RES',
+  INSIDE_RESISTANCE: 'IN RES',
+  ABOVE_RESISTANCE: 'ABOVE RES',
+  BETWEEN_LEVELS: 'BETWEEN',
+  AT_SWING_HIGH: 'AT SH',
+  NEAR_SWING_HIGH: 'NEAR SH',
+  ABOVE_SWING_HIGH: 'ABOVE SH',
+  AT_SWING_LOW: 'AT SL',
+  NEAR_SWING_LOW: 'NEAR SL',
+  BELOW_SWING_LOW: 'BELOW SL',
+};
+
+const LOCATION_LABEL_COMPACT = {
+  ABOVE_SUPPORT: 'ABV SUP',
+  NEAR_SUPPORT: 'NR SUP',
+  AT_SUPPORT: 'AT SUP',
+  INSIDE_SUPPORT: 'IN SUP',
+  BELOW_SUPPORT: 'BLW SUP',
+  BELOW_RESISTANCE: 'BLW RES',
+  NEAR_RESISTANCE: 'NR RES',
+  AT_RESISTANCE: 'AT RES',
+  INSIDE_RESISTANCE: 'IN RES',
+  ABOVE_RESISTANCE: 'ABV RES',
+  BETWEEN_LEVELS: 'BETWEEN',
+  AT_SWING_HIGH: 'AT SH',
+  NEAR_SWING_HIGH: 'NR SH',
+  ABOVE_SWING_HIGH: 'ABV SH',
+  AT_SWING_LOW: 'AT SL',
+  NEAR_SWING_LOW: 'NR SL',
+  BELOW_SWING_LOW: 'BLW SL',
+};
+
+const LOCATION_PRIORITY = {
+  INSIDE_SUPPORT: 100,
+  INSIDE_RESISTANCE: 100,
+  AT_SUPPORT: 90,
+  AT_RESISTANCE: 90,
+  NEAR_SUPPORT: 80,
+  NEAR_RESISTANCE: 80,
+  ABOVE_RESISTANCE: 70,
+  BELOW_SUPPORT: 70,
+  ABOVE_SUPPORT: 60,
+  BELOW_RESISTANCE: 60,
+  AT_SWING_HIGH: 50,
+  AT_SWING_LOW: 50,
+  NEAR_SWING_HIGH: 40,
+  NEAR_SWING_LOW: 40,
+  ABOVE_SWING_HIGH: 30,
+  BELOW_SWING_LOW: 30,
+  BETWEEN_LEVELS: 20,
+  NONE: 0,
+};
+
+function locationBps(price, dist) {
+  if (!(price > 0) || !Number.isFinite(dist)) return 0;
+  return (Math.abs(dist) / price) * 10_000;
+}
+
+function classifyChartLocation(bar, prior, secondaryLabels = []) {
+  const { support, resistance } = priorSwingLevels(prior);
+  const atr = recentBarAtr(prior, bar);
+  const proxBps = atr > 0 && bar.close > 0 ? (atr * 0.35) / bar.close * 10_000 : 12;
+  const atBps = 4;
+  const zonePad = Math.max(atr * 0.08, (bar.close || 1) * 0.0004);
+  const supportZ = support != null
+    ? { lo: support - zonePad, hi: support + zonePad }
+    : null;
+  const resistZ = resistance != null
+    ? { lo: resistance - zonePad, hi: resistance + zonePad }
+    : null;
+
+  const acceptedUp = secondaryLabels.includes('ACCEPT_UP');
+  const acceptedDn = secondaryLabels.includes('ACCEPT_DOWN');
+  const rejectedUp = secondaryLabels.includes('REJECT_UP');
+  const rejectedDn = secondaryLabels.includes('REJECT_DOWN');
+  const c = bar.close;
+  const cands = [];
+
+  if (supportZ) {
+    if (rejectedDn) cands.push('AT_SUPPORT');
+    else if (c >= supportZ.lo && c <= supportZ.hi) cands.push('INSIDE_SUPPORT');
+    else if (c < supportZ.lo) {
+      const d = locationBps(c, supportZ.lo - c);
+      if (acceptedDn) cands.push('BELOW_SUPPORT');
+      else if (d <= atBps) cands.push('AT_SUPPORT');
+      else if (d <= proxBps) cands.push('NEAR_SUPPORT');
+      else cands.push('BELOW_SUPPORT');
+    } else {
+      const d = locationBps(c, c - supportZ.hi);
+      if (d <= atBps) cands.push('AT_SUPPORT');
+      else if (d <= proxBps) cands.push('NEAR_SUPPORT');
+      else cands.push('ABOVE_SUPPORT');
+    }
+  }
+
+  if (resistZ) {
+    if (rejectedUp) cands.push('AT_RESISTANCE');
+    else if (c >= resistZ.lo && c <= resistZ.hi) cands.push('INSIDE_RESISTANCE');
+    else if (c > resistZ.hi) {
+      const d = locationBps(c, c - resistZ.hi);
+      if (acceptedUp) cands.push('ABOVE_RESISTANCE');
+      else if (d <= atBps) cands.push('AT_RESISTANCE');
+      else if (d <= proxBps) cands.push('NEAR_RESISTANCE');
+      else cands.push('AT_RESISTANCE');
+    } else {
+      const d = locationBps(c, resistZ.lo - c);
+      if (d <= atBps) cands.push('AT_RESISTANCE');
+      else if (d <= proxBps) cands.push('NEAR_RESISTANCE');
+      else cands.push('BELOW_RESISTANCE');
+    }
+  }
+
+  if (resistance != null) {
+    const d = locationBps(c, c - resistance);
+    if (d <= atBps) cands.push('AT_SWING_HIGH');
+    else if (c > resistance && d <= proxBps) cands.push('NEAR_SWING_HIGH');
+    else if (c > resistance) cands.push('ABOVE_SWING_HIGH');
+    else if (d <= proxBps) cands.push('NEAR_SWING_HIGH');
+  }
+  if (support != null) {
+    const d = locationBps(c, support - c);
+    if (d <= atBps) cands.push('AT_SWING_LOW');
+    else if (c < support && d <= proxBps) cands.push('NEAR_SWING_LOW');
+    else if (c < support) cands.push('BELOW_SWING_LOW');
+    else if (d <= proxBps) cands.push('NEAR_SWING_LOW');
+  }
+
+  if (supportZ && resistZ) {
+    const distSup = locationBps(c, c - supportZ.hi);
+    const distRes = locationBps(c, resistZ.lo - c);
+    if (c > supportZ.hi && c < resistZ.lo && distSup > proxBps && distRes > proxBps) {
+      cands.push('BETWEEN_LEVELS');
+    }
+  }
+
+  const uniq = [...new Set(cands)];
+  const hasBetween = uniq.includes('BETWEEN_LEVELS');
+  const tightSr = uniq.some((x) => /^(INSIDE_|AT_|NEAR_)/.test(x) && (x.includes('SUPPORT') || x.includes('RESISTANCE')));
+  let list = uniq;
+  if (hasBetween && !tightSr) {
+    list = list.filter((x) => x !== 'ABOVE_SUPPORT' && x !== 'BELOW_RESISTANCE');
+  }
+  list.sort((a, b) => (LOCATION_PRIORITY[b] || 0) - (LOCATION_PRIORITY[a] || 0));
+  const primary = list[0] || 'NONE';
+  const confluence = list.slice(1);
+
+  const tip = [
+    `LOCATION  ${LOCATION_LABEL_SHORT[primary] || primary}`,
+    '',
+    resistZ ? `Nearest Resistance: ${resistZ.lo.toFixed(4)}–${resistZ.hi.toFixed(4)}` : null,
+    supportZ ? `Nearest Support: ${supportZ.lo.toFixed(4)}–${supportZ.hi.toFixed(4)}` : null,
+    `Proximity band: ${proxBps.toFixed(1)} bp`,
+    confluence.length ? `Confluence: ${confluence.map((x) => LOCATION_LABEL_SHORT[x] || x).join(', ')}` : null,
+  ].filter(Boolean).join('\n');
+
+  return { label: primary, short: LOCATION_LABEL_SHORT[primary] || '', confluence, tip, supportZ, resistZ };
+}
+
+function annotateBarsPrimaryMicro(bars, flowByTime, { lastIsLive = false } = {}) {
+  const out = new Map();
+  let priorDir = 'NONE';
+  for (let i = 0; i < bars.length; i++) {
+    const bar = bars[i];
+    const prior = bars.slice(Math.max(0, i - 20), i);
+    bar._microRefs = microRefsForBar(bar, prior);
+    const story = strategyStoryForBar(bars, i);
+    const metrics = flowByTime.get(bar.time);
+    const primaryShort = primaryShortFromStory(story);
+    const bias = primaryBiasFromStory(story);
+    const provisional = lastIsLive && i === bars.length - 1;
+    const cands = collectMicroCandidates(bar, metrics, priorDir, story);
+    const secondary = selectMicroSecondaries(cands);
+    const secLabels = secondary.map((s) => s.label);
+    const location = classifyChartLocation(bar, prior, secLabels);
+    const tipParts = [
+      'PRIMARY',
+      primaryShort ? `${primaryShort}${provisional ? ' (live)' : ''}` : '—',
+      '',
+      'SECONDARY',
+      ...(secondary.map((s) => s.short).length ? secondary.map((s) => s.short) : ['—']),
+      '',
+      location.tip,
+      '',
+      strategyStoryTooltip(story),
+      ...secondary.map((s) => s.tip).filter(Boolean),
+    ].filter((x) => x != null);
+    const locShort = provisional && location.short
+      ? `${location.short}?`
+      : location.short;
+    out.set(bar.time, {
+      primaryShort: provisional && primaryShort ? `${primaryShort}?` : primaryShort,
+      primaryColor: bias === 'BULLISH' ? '#22c55e' : bias === 'BEARISH' ? '#ef4444' : '#8b949e',
+      secondary: secondary.map((s) => ({
+        short: provisional
+          ? MICRO_LABEL_SHORT[s.label].replace('↑', '↑?').replace('↓', '↓?').replace(' NP', ' NP?')
+          : MICRO_LABEL_SHORT[s.label],
+        label: s.label,
+        tip: s.tip,
+      })),
+      locationShort: locShort,
+      locationLabel: location.label,
+      tip: tipParts.join('\n'),
+      bias,
+      provisional,
+    });
+    if (secondary.some((s) => s.label === 'CONT_UP' || s.label === 'MOVE_UP' || s.label === 'ACCEPT_UP') || bias === 'BULLISH') {
+      priorDir = 'UP';
+    } else if (secondary.some((s) => s.label === 'CONT_DOWN' || s.label === 'MOVE_DOWN' || s.label === 'ACCEPT_DOWN') || bias === 'BEARISH') {
+      priorDir = 'DOWN';
+    }
+  }
+  return out;
+}
+
+/** Ultra-short secondary codes so they fit a candle column without clipping. */
+function microShortCompact(label, short) {
+  switch (label) {
+    case 'MOVE_UP': return 'M↑';
+    case 'MOVE_DOWN': return 'M↓';
+    case 'CONT_UP': return 'C↑';
+    case 'CONT_DOWN': return 'C↓';
+    case 'BUYER_NO_PROGRESS': return 'B NP';
+    case 'SELLER_NO_PROGRESS': return 'S NP';
+    case 'REJECT_UP': return 'RJ↑';
+    case 'REJECT_DOWN': return 'RJ↓';
+    case 'ACCEPT_UP': return 'AC↑';
+    case 'ACCEPT_DOWN': return 'AC↓';
+    default: return short;
+  }
+}
+
+function microSecColor(label) {
+  if (label.endsWith('_UP') || label === 'BUYER_NO_PROGRESS') return '#86efac';
+  if (label.endsWith('_DOWN') || label === 'SELLER_NO_PROGRESS') return '#fca5a5';
+  return '#cbd5e1';
+}
+
+/**
+ * Clean stacked labels (earlier readable style):
+ *   PRIMARY
+ *   secondary secondary
+ *   LOCATION
+ * No per-candle boxes, no PRIMARY·SECONDARY mash that clips letters.
+ */
+function drawCandleTopLabels(ctx, ann, cx, maxW) {
+  if (!ann) return null;
+  const primary = ann.primaryShort || '';
+  const locationRaw = ann.locationShort || '';
+  if (!primary && !(ann.secondary || []).length && !locationRaw) return null;
+
+  const colW = Math.max(40, maxW);
+  const textW = colW - 2;
+  const veryNarrow = colW < 52;
+  const narrow = colW < 72;
+
+  let secs = (ann.secondary || []).slice(0, veryNarrow ? 0 : narrow ? 1 : 2);
+  const secTexts = secs.map((s) => ({
+    label: s.label,
+    text: narrow ? microShortCompact(s.label, s.short) : s.short,
+    color: microSecColor(s.label),
+  }));
+
+  const location = locationRaw
+    ? (narrow ? (LOCATION_LABEL_COMPACT[ann.locationLabel] || locationRaw) : locationRaw)
+    : '';
+
+  const y1 = 15;
+  const y2 = 30;
+  const y3 = 44;
+  const bottom = location ? (secTexts.length ? y3 + 8 : y2 + 8) : (secTexts.length ? y2 + 8 : y1 + 8);
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+
+  const paint = (text, y, font, color, alpha = 1) => {
+    if (!text) return true;
+    ctx.font = font;
+    if (ctx.measureText(text).width > textW + 4) return false;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
+    ctx.strokeText(text, cx, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, cx, y);
+    ctx.globalAlpha = 1;
+    return true;
+  };
+
+  if (primary) {
+    const ok = paint(
+      primary,
+      y1,
+      '700 14px Inter, system-ui, sans-serif',
+      ann.primaryColor || '#e6edf3',
+      ann.provisional ? 0.7 : 1,
+    );
+    if (ok === false) {
+      paint(
+        primary,
+        y1,
+        '700 12px Inter, system-ui, sans-serif',
+        ann.primaryColor || '#e6edf3',
+        ann.provisional ? 0.7 : 1,
+      );
+    }
+  }
+
+  if (secTexts.length) {
+    ctx.font = '600 12px Inter, system-ui, sans-serif';
+    const gap = 6;
+    const widths = secTexts.map((s) => ctx.measureText(s.text).width);
+    let total = widths.reduce((a, b) => a + b, 0) + gap * (secTexts.length - 1);
+    while (total > textW && secTexts.length > 1) {
+      secTexts.pop();
+      widths.pop();
+      total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, secTexts.length - 1);
+    }
+    if (secTexts.length && total <= textW + 6) {
+      let x = cx - total / 2;
+      secTexts.forEach((s, i) => {
+        const tw = widths[i];
+        const tx = x + tw / 2;
+        ctx.font = '600 12px Inter, system-ui, sans-serif';
+        ctx.globalAlpha = ann.provisional ? 0.62 : 0.92;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
+        ctx.strokeText(s.text, tx, y2);
+        ctx.fillStyle = s.color;
+        ctx.fillText(s.text, tx, y2);
+        ctx.globalAlpha = 1;
+        x += tw + gap;
+      });
+    }
+  }
+
+  if (location) {
+    paint(
+      location,
+      secTexts.length ? y3 : y2,
+      '600 11px Inter, system-ui, sans-serif',
+      '#9aa4b2',
+      ann.provisional ? 0.6 : 0.9,
+    );
+  }
+
+  ctx.restore();
+  return {
+    x0: cx - colW / 2,
+    x1: cx + colW / 2,
+    y0: 4,
+    y1: bottom,
+    tip: ann.tip || '',
+  };
 }
 
 function drawBarBattlePercents(ctx, rows, cx, y0, maxW) {
@@ -2623,6 +3241,18 @@ function showPatternTip(symbol, event) {
   const rect = view.canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+
+  const microHit = (view.microHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (microHit?.tip) {
+    tip.classList.remove('hidden');
+    tip.innerHTML = `<pre style="margin:0;white-space:pre-wrap;font:11px JetBrains Mono,monospace">${escapeHtml(microHit.tip)}</pre>`;
+    const host = view.card?.querySelector('.fp-card-canvas');
+    const maxX = (host?.clientWidth ?? 200) - 240;
+    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+    tip.style.top = `${Math.max(8, y + 14)}px`;
+    return;
+  }
+
   const hit = (view.patternHits ?? []).find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
   if (!hit?.marker) {
     tip.classList.add('hidden');
@@ -2915,7 +3545,7 @@ function drawFootprint(symbol = selectedSymbol) {
   }
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
-  const topPad = 72;
+  const topPad = 100;
   const bottomPad = 140;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
@@ -3018,6 +3648,7 @@ function drawFootprint(symbol = selectedSymbol) {
   const labelName = PATTERN_LABEL_NAMES[patternState.currentLabel] || patternState.currentLabel || '';
 
   view.patternHits = [];
+  view.microHits = [];
   const patternByTime = new Map();
   for (const marker of patternMarkersFor(symbol)) {
     if (marker?.t != null) patternByTime.set(marker.t, marker);
@@ -3028,6 +3659,9 @@ function drawFootprint(symbol = selectedSymbol) {
     resetMode: CVD_RESET_MODE,
   });
   const flowByTime = new Map(flowMetrics.map((m) => [m.time, m]));
+  const microByTime = annotateBarsPrimaryMicro(bars, flowByTime, {
+    lastIsLive: lastIsLive && endIdx === bars.length,
+  });
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -3037,14 +3671,12 @@ function drawFootprint(symbol = selectedSymbol) {
     const half = cellW / 2;
     const cx = x + barWidth / 2;
     const isLiveBar = lastIsLive && i === visible.length - 1;
-    if (!isLiveBar) {
-      drawBarStrategyTitle(ctx, strategyStoryForBar(bars, startIdx + i), cx, barWidth - 4);
-    } else {
-      drawBarStrategyTitle(ctx, { badge: 'NOW', line1: 'This candle', line2: 'still forming', color: '#60a5fa' }, cx, barWidth - 4);
-    }
+    const microAnn = microByTime.get(bar.time);
+    const topHit = drawCandleTopLabels(ctx, microAnn, cx, barWidth - 4);
+    if (topHit?.tip) view.microHits.push(topHit);
     const marker = patternByTime.get(bar.time);
     if (marker) {
-      const hit = drawPatternBadge(ctx, marker, cx, 54);
+      const hit = drawPatternBadge(ctx, marker, cx, 58);
       view.patternHits.push({ ...hit, marker });
     }
     const poc = levels.reduce((best, lv) => (lv.buy + lv.sell > best.vol ? { vol: lv.buy + lv.sell, price: lv.price } : best), { vol: 0, price: 0 });
