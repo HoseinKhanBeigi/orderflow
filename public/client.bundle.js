@@ -13302,6 +13302,17 @@ var process = globalThis.process || { env: {} };
       barsUsed: candidate.barsUsed
     };
   }
+  function replayPatterns(candles, engine2 = new PatternRecognitionEngine()) {
+    const snapshots = [];
+    if (!candles.length) return { snapshots, last: null };
+    const symbol = candles[0].symbol;
+    const timeframe = candles[0].timeframe;
+    engine2.reset(symbol, timeframe);
+    for (const candle of candles) {
+      snapshots.push(engine2.ingest(candle));
+    }
+    return { snapshots, last: snapshots[snapshots.length - 1] ?? null };
+  }
 
   // src/pattern-recognition/candle-classification.ts
   var DEFAULT_CLASSIFICATION_CONFIG = DEFAULT_CONFIG.candleClassification;
@@ -13820,6 +13831,15 @@ var process = globalThis.process || { env: {} };
       ...pickMetrics(metrics),
       sweepQuality: metrics?.sweepQuality ?? sweepQualityOf(bar, prior, classification)
     };
+  }
+  function labelFootprintBars(bars, timeframe, options) {
+    const finalized = [];
+    const end = options?.lastIsLive && bars.length ? bars.length - 1 : bars.length;
+    for (let i = 0; i < end; i++) {
+      finalized.push(labelFootprintBar(bars[i], bars.slice(0, i), timeframe));
+    }
+    const preview = options?.lastIsLive && bars.length ? labelFootprintBar(bars[bars.length - 1], bars.slice(0, bars.length - 1), timeframe) : null;
+    return { finalized, preview };
   }
   function volumeOf2(bar) {
     if (typeof bar.volume === "number" && Number.isFinite(bar.volume)) return bar.volume;
@@ -14571,6 +14591,44 @@ var process = globalThis.process || { env: {} };
 
   // src/pattern-recognition/from-bars.ts
   var PATTERN_TF_MINUTES = [1, 5, 15, 30, 45, 60, 120, 240, 1440];
+  function historyPatternView(bars, timeframeMinutes, options) {
+    const tf = minutesToTimeframe(timeframeMinutes);
+    const { finalized, preview } = labelFootprintBars(bars, tf, { lastIsLive: options?.lastIsLive });
+    const engine2 = new PatternRecognitionEngine();
+    const { snapshots, last } = replayPatterns(finalized, engine2);
+    const byKey = /* @__PURE__ */ new Map();
+    for (const snap of snapshots) {
+      for (const candidate of snap.candidates) {
+        if (candidate.status !== "CONFIRMED" && candidate.status !== "FORMING" && candidate.status !== "PREVIEW") {
+          continue;
+        }
+        const key3 = `${candidate.id}:${candidate.startTimestamp}`;
+        const time = candidate.status === "CONFIRMED" ? candidate.confirmedTimestamp ?? candidate.candleTimestamps[candidate.candleTimestamps.length - 1] ?? 0 : candidate.candleTimestamps[candidate.candleTimestamps.length - 1] ?? candidate.startTimestamp;
+        byKey.set(key3, toPatternMarker(candidate, time));
+      }
+    }
+    const predictor = options?.predictor ?? new NextFootprintStatePredictor();
+    if (!options?.predictor && finalized.length) {
+      const patternAt = snapshots.map((s) => s.primaryPattern?.id ?? null);
+      predictor.trainFromCandles(finalized, patternAt);
+    }
+    const nextState = finalized.length ? predictor.predict({
+      symbol: finalized[0].symbol,
+      timeframe: tf,
+      contextLabels: finalized.map((c) => c.label),
+      patternId: last?.primaryPattern?.id ?? null,
+      remember: false
+    }) : null;
+    let snapshot = last;
+    if (preview) snapshot = engine2.ingest(preview, { preview: true });
+    if (snapshot) snapshot.nextState = nextState;
+    const live = snapshot?.primaryPattern;
+    if (live && (live.status === "FORMING" || live.status === "PREVIEW" || live.status === "CONFIRMED")) {
+      const time = live.candleTimestamps[live.candleTimestamps.length - 1] ?? live.startTimestamp;
+      byKey.set(`${live.id}:${live.startTimestamp}`, toPatternMarker(live, time));
+    }
+    return { snapshot, markers: [...byKey.values()] };
+  }
   function mergeByTime(bars) {
     if (bars.length <= 1) return bars;
     return rollup(bars, 1);
@@ -15733,6 +15791,40 @@ var process = globalThis.process || { env: {} };
       this.restartFeeds("watchlist");
       return { coins: this.coins, restartRequired: false };
     }
+    /** Same payload as Node `/api/patterns` — runs fully in the browser. */
+    recognizePatterns(body) {
+      const symbol = String(body.symbol ?? "BTCUSDT").toUpperCase();
+      const market = String(body.market ?? "").toLowerCase() === "spot" ? "spot" : "perp";
+      const tf = Math.max(1, Math.min(1440, Math.floor(Number(body.tf) || 15)));
+      const bars = (body.bars ?? []).slice(-400).map((w) => ({
+        symbol,
+        exchange: "binance",
+        market,
+        time: w.t,
+        open: w.o,
+        high: w.h,
+        low: w.l,
+        close: w.c,
+        totalBuy: w.tb ?? 0,
+        totalSell: w.ts ?? 0,
+        trades: w.n ?? 0,
+        buyTrades: w.bt,
+        sellTrades: w.st,
+        largestBuy: w.lb,
+        largestSell: w.ls,
+        levels: (w.lv ?? []).map(([price, buy, sell]) => ({ price, buy, sell }))
+      }));
+      const view = historyPatternView(bars, tf, { lastIsLive: Boolean(body.lastIsLive) });
+      return {
+        symbol,
+        tf,
+        currentLabel: view.snapshot?.currentLabel ?? null,
+        primary: view.snapshot?.primaryPattern ? compactCandidate(view.snapshot.primaryPattern) : null,
+        currentPattern: toCurrentPattern(view.snapshot?.primaryPattern ?? null),
+        nextState: compactNextState(view.snapshot?.nextState ?? null),
+        markers: view.markers.map(compactMarker)
+      };
+    }
     restartFeeds(reason) {
       this.restartChain = this.restartChain.catch(() => void 0).then(async () => {
         try {
@@ -15863,6 +15955,7 @@ var process = globalThis.process || { env: {} };
     subscribe: (listener) => hub.subscribe(listener),
     handleMessage: (msg) => hub.handleMessage(msg),
     setWatchlist: (symbols) => hub.setWatchlist(symbols),
+    recognizePatterns: (body) => hub.recognizePatterns(body),
     catalog: FULL_WATCHLIST_CATALOG
   };
 })();

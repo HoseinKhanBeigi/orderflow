@@ -3346,18 +3346,26 @@ async function refreshPatternMarkers(symbol, force = false) {
   const bars = footprintBars(symbol);
   if (bars.length < 3) return;
   const lastIsLive = bars[bars.length - 1]?.time === fpCandleTime(Date.now(), chartTfMinutes);
+  const payload = {
+    symbol,
+    tf: chartTfMinutes,
+    market: footprintMarket(),
+    lastIsLive,
+    bars: bars.slice(-300).map(fpBarToWire),
+  };
   try {
-    const data = await fetch('/api/patterns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        symbol,
-        tf: chartTfMinutes,
-        market: footprintMarket(),
-        lastIsLive,
-        bars: bars.slice(-300).map(fpBarToWire),
-      }),
-    }).then((r) => r.json());
+    let data;
+    if (window.__ORDERFLOW_USE_CLIENT__ && window.OrderFlowClient?.recognizePatterns) {
+      data = window.OrderFlowClient.recognizePatterns(payload);
+    } else {
+      const res = await fetch('/api/patterns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) return;
+      data = await res.json();
+    }
     if (!data || data.error) return;
     fpPatternStore[patternStoreKey(symbol)] = {
       currentLabel: data.currentLabel ?? null,

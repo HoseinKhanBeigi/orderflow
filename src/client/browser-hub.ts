@@ -5,7 +5,7 @@
 import { DEFAULT_CONFIG } from '../config/defaults.js';
 import { EXCHANGE_LABELS, type ExchangeId } from '../exchange/venues.js';
 import { FootprintAggregator } from '../footprint/aggregator.js';
-import { toWire } from '../footprint/types.js';
+import { toWire, type FootprintBar } from '../footprint/types.js';
 import { LiveBinanceFeed } from '../live/live-feed.js';
 import {
   DEFAULT_ACTIVE_SYMBOLS,
@@ -16,6 +16,7 @@ import {
 import type { WindowSnapshot } from '../models/signals.js';
 import {
   PatternLiveHub,
+  historyPatternView,
   toCurrentPattern,
   type NextStatePrediction,
   type PatternCandidate,
@@ -240,6 +241,61 @@ class BrowserOrderFlowHub {
     return { coins: this.coins, restartRequired: false };
   }
 
+  /** Same payload as Node `/api/patterns` — runs fully in the browser. */
+  recognizePatterns(body: {
+    symbol?: string;
+    market?: string;
+    tf?: number;
+    lastIsLive?: boolean;
+    bars?: Array<{
+      t: number;
+      o: number;
+      h: number;
+      l: number;
+      c: number;
+      tb?: number;
+      ts?: number;
+      n?: number;
+      bt?: number;
+      st?: number;
+      lb?: number;
+      ls?: number;
+      lv?: [number, number, number][];
+    }>;
+  }) {
+    const symbol = String(body.symbol ?? 'BTCUSDT').toUpperCase();
+    const market = String(body.market ?? '').toLowerCase() === 'spot' ? 'spot' : 'perp';
+    const tf = Math.max(1, Math.min(1440, Math.floor(Number(body.tf) || 15)));
+    const bars: FootprintBar[] = (body.bars ?? []).slice(-400).map((w) => ({
+      symbol,
+      exchange: 'binance' as const,
+      market,
+      time: w.t,
+      open: w.o,
+      high: w.h,
+      low: w.l,
+      close: w.c,
+      totalBuy: w.tb ?? 0,
+      totalSell: w.ts ?? 0,
+      trades: w.n ?? 0,
+      buyTrades: w.bt,
+      sellTrades: w.st,
+      largestBuy: w.lb,
+      largestSell: w.ls,
+      levels: (w.lv ?? []).map(([price, buy, sell]) => ({ price, buy, sell })),
+    }));
+    const view = historyPatternView(bars, tf, { lastIsLive: Boolean(body.lastIsLive) });
+    return {
+      symbol,
+      tf,
+      currentLabel: view.snapshot?.currentLabel ?? null,
+      primary: view.snapshot?.primaryPattern ? compactCandidate(view.snapshot.primaryPattern) : null,
+      currentPattern: toCurrentPattern(view.snapshot?.primaryPattern ?? null),
+      nextState: compactNextState(view.snapshot?.nextState ?? null),
+      markers: view.markers.map(compactMarker),
+    };
+  }
+
   private restartFeeds(reason: string): void {
     this.restartChain = this.restartChain
       .catch(() => undefined)
@@ -386,6 +442,9 @@ declare global {
       subscribe: (listener: Listener) => () => void;
       handleMessage: (msg: Parameters<BrowserOrderFlowHub['handleMessage']>[0]) => void;
       setWatchlist: (symbols: string[]) => { coins: WatchCoin[]; restartRequired: boolean };
+      recognizePatterns: (body: Parameters<BrowserOrderFlowHub['recognizePatterns']>[0]) => ReturnType<
+        BrowserOrderFlowHub['recognizePatterns']
+      >;
       catalog: typeof FULL_WATCHLIST_CATALOG;
     };
   }
@@ -398,5 +457,6 @@ globalThis.window.OrderFlowClient = {
   subscribe: (listener: Listener) => hub.subscribe(listener),
   handleMessage: (msg: Parameters<BrowserOrderFlowHub['handleMessage']>[0]) => hub.handleMessage(msg),
   setWatchlist: (symbols: string[]) => hub.setWatchlist(symbols),
+  recognizePatterns: (body) => hub.recognizePatterns(body),
   catalog: FULL_WATCHLIST_CATALOG,
 };
