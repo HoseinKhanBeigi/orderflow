@@ -3800,17 +3800,12 @@ function drawFootprint(symbol = selectedSymbol) {
       drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, chartH });
     }
 
-    ctx.font = 'bold 11px JetBrains Mono, monospace';
+    ctx.font = 'bold 10px JetBrains Mono, monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#c6cdd8';
-    const d = new Date(bar.time * 1000);
-    let timeLabel;
-    if (chartTfMinutes >= 1440) {
-      timeLabel = `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
-    } else {
-      timeLabel = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-    }
-    ctx.fillText(timeLabel, cx, topPad + chartH + 14);
+    // Daily: date only. All other TFs: date + time under each candle.
+    const timeLabel = fmtFpCandleLabel(bar.time, chartTfMinutes);
+    ctx.fillText(timeLabel, cx, topPad + chartH + 14, barWidth - 2);
 
     const footY = topPad + chartH;
     const metrics = flowByTime.get(bar.time);
