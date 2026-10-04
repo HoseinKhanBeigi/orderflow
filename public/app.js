@@ -1268,8 +1268,44 @@ const PASSIVE_RAIL_W = 176;
 const PASSIVE_DECAY_HALFLIFE_MS = 45_000;
 /** @type {Map<string, { at: number, levels: Map<string, object> }>} */
 const fpPassiveLedgers = new Map();
+/**
+ * Cancelled (pulled) notional accumulated per footprint candle.
+ * Key: `${market}_${symbol}_${tfMinutes}_${barTimeSec}` → `{ cancelBid, cancelAsk }`.
+ */
+const fpBarCancelAcc = new Map();
 /** Live depth ladders from the `book` stream, keyed by `market_symbol`. */
 const fpBooks = new Map();
+
+function cancelBarKey(symbol, barTime, tf = chartTfMinutes) {
+  return `${footprintMarket()}_${symbol}_${tf}_${barTime}`;
+}
+
+function bumpBarCancel(symbol, cancelBidDelta, cancelAskDelta) {
+  if (!(cancelBidDelta > 0) && !(cancelAskDelta > 0)) return;
+  const barTime = fpCandleTime(Date.now(), chartTfMinutes);
+  const key = cancelBarKey(symbol, barTime);
+  let acc = fpBarCancelAcc.get(key);
+  if (!acc) {
+    acc = { cancelBid: 0, cancelAsk: 0 };
+    fpBarCancelAcc.set(key, acc);
+  }
+  if (cancelBidDelta > 0) acc.cancelBid += cancelBidDelta;
+  if (cancelAskDelta > 0) acc.cancelAsk += cancelAskDelta;
+}
+
+/** Share of cancelled liquidity that was bids vs asks (sums to 100). */
+function barCancelPercents(symbol, barTime) {
+  const acc = fpBarCancelAcc.get(cancelBarKey(symbol, barTime));
+  if (!acc) return null;
+  const bid = Number(acc.cancelBid) || 0;
+  const ask = Number(acc.cancelAsk) || 0;
+  if (bid + ask <= 0) return null;
+  const pcts = percentsSum100([bid, ask]);
+  return [
+    { text: 'Bid ✕', color: '#f472b6', pct: pcts[0], strong: pcts[0] >= pcts[1] && pcts[0] > 0 },
+    { text: 'Ask ✕', color: '#fb923c', pct: pcts[1], strong: pcts[1] > pcts[0] && pcts[1] > 0 },
+  ];
+}
 
 function ingestOrderBook(ev) {
   const market = ev.market === 'spot' ? 'spot' : 'perp';
@@ -1312,6 +1348,8 @@ function updatePassiveLedger(symbol, marks) {
     lv.live = false;
   }
 
+  let cancelBidDelta = 0;
+  let cancelAskDelta = 0;
   for (const mark of marks) {
     const price = Number(mark.price);
     if (!Number.isFinite(price)) continue;
@@ -1336,19 +1374,26 @@ function updatePassiveLedger(symbol, marks) {
     else if (dBid < 0) {
       const drop = -dBid;
       if (event === 'CONSUME_BID') lv.consumeBid += drop;
-      else lv.cancelBid += drop;
+      else {
+        lv.cancelBid += drop;
+        cancelBidDelta += drop;
+      }
     }
     if (dAsk > 0) lv.addAsk += dAsk;
     else if (dAsk < 0) {
       const drop = -dAsk;
       if (event === 'CONSUME_ASK') lv.consumeAsk += drop;
-      else lv.cancelAsk += drop;
+      else {
+        lv.cancelAsk += drop;
+        cancelAskDelta += drop;
+      }
     }
     lv.bid = restingBid;
     lv.ask = restingAsk;
     lv.event = event;
     lv.live = restingBid > 0 || restingAsk > 0;
   }
+  bumpBarCancel(symbol, cancelBidDelta, cancelAskDelta);
 
   for (const [key, lv] of led.levels) {
     const residue = lv.cancelBid + lv.cancelAsk + lv.consumeBid + lv.consumeAsk + lv.addBid + lv.addAsk;
