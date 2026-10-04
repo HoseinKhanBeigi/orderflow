@@ -3618,7 +3618,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
-  const bottomPad = 140;
+  const bottomPad = 168;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -3904,6 +3904,9 @@ function drawFootprint(symbol = selectedSymbol) {
 
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + 66, barWidth - 2);
+    // Cancellation share: how much of pulled liquidity was bids vs asks this candle.
+    const cancels = barCancelPercents(symbol, bar.time);
+    if (cancels) drawBarBattlePercents(ctx, cancels, cx, footY + 66 + 44, barWidth - 2);
   }
 
   if (railW > 0) {
