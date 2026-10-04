@@ -1790,12 +1790,7 @@ async function seedFromKlines() {
   const tf = chartTfMinutes;
   const exchange = klineExchange();
   const market = footprintMarket();
-  // Client/Vercel: no REST proxy — chart fills from live trades/footprint only.
-  if (window.__ORDERFLOW_USE_CLIENT__) {
-    scheduleDraw();
-    return;
-  }
-  // 1m stays live-only (server aggregator). 5m+ backfill from venue klines when DB history is thin.
+  // 1m stays live-only (aggregator). 5m+ backfill from venue klines (Vercel /api/klines proxy).
   if (tf < 5) {
     scheduleDraw();
     return;
