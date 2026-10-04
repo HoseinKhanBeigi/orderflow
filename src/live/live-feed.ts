@@ -398,20 +398,26 @@ export class LiveBinanceFeed {
     const event = data.e as string | undefined;
     const symbol = String(data.s ?? stream.split('@')[0] ?? '').toUpperCase();
 
-    // Partial book stream (`depth20@100ms`) — full top-N snapshot, no REST.
-    if (
-      this.config.depthMode === 'partial-ws' &&
-      stream.includes('depth20') &&
-      Array.isArray(data.bids) &&
-      Array.isArray(data.asks)
-    ) {
-      this.applyPartialBookSnapshot(symbol, data);
-      const nowPartial = Date.now();
-      if (nowPartial - this.lastSummary >= this.config.summaryMs) {
-        this.lastSummary = nowPartial;
-        this.emitAllSummaries(nowPartial);
+    // Partial book (`depth20@100ms`): top-N snapshot each tick — never REST.
+    // Spot payload uses bids/asks; futures uses b/a (+ optional depthUpdate event).
+    if (this.config.depthMode === 'partial-ws') {
+      const bids = (Array.isArray(data.bids) ? data.bids : data.b) as [string, string][] | undefined;
+      const asks = (Array.isArray(data.asks) ? data.asks : data.a) as [string, string][] | undefined;
+      const isPartialStream = stream.includes('depth20') || stream.includes('@depth');
+      if (isPartialStream && Array.isArray(bids) && Array.isArray(asks)) {
+        const sym = symbol || String(data.s ?? '').toUpperCase();
+        this.applyPartialBookSnapshot(sym, {
+          lastUpdateId: data.lastUpdateId ?? data.u,
+          bids,
+          asks,
+        });
+        const nowPartial = Date.now();
+        if (nowPartial - this.lastSummary >= this.config.summaryMs) {
+          this.lastSummary = nowPartial;
+          this.emitAllSummaries(nowPartial);
+        }
+        return;
       }
-      return;
     }
 
     if (event === 'depthUpdate' && Array.isArray(data.b) && Array.isArray(data.a)) {
@@ -514,6 +520,15 @@ export class LiveBinanceFeed {
   private onDepthDiff(msg: BinanceDepthDelta): void {
     const symbol = String(msg.s || '').toUpperCase();
     if (!symbol || !this.coins.some((c) => c.symbol === symbol)) return;
+    // Browser mode: treat every depth event as a top-N snapshot (no REST resync loop).
+    if (this.config.depthMode === 'partial-ws') {
+      this.applyPartialBookSnapshot(symbol, {
+        lastUpdateId: msg.u,
+        bids: msg.b,
+        asks: msg.a,
+      });
+      return;
+    }
     if (!this.depthSynced.has(symbol)) {
       const buf = this.depthBuffers.get(symbol) ?? [];
       buf.push(msg);
@@ -530,6 +545,8 @@ export class LiveBinanceFeed {
    * apply `@depth@100ms` diffs so the ladder stays 500 levels deep.
    */
   private async syncSymbolBook(symbol: string): Promise<void> {
+    // Client/Vercel: never hit Binance REST /depth (CORS + request spam).
+    if (this.config.depthMode === 'partial-ws') return;
     if (this.closed || this.depthSyncing.has(symbol)) return;
     if (!this.coins.some((c) => c.symbol === symbol)) return;
     this.depthSyncing.add(symbol);
