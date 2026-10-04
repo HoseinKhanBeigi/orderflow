@@ -12,6 +12,7 @@ export interface WatchCoin {
  * `data/active-watchlist.json` (or SYMBOLS env) — no more commenting here.
  */
 export const WATCHLIST_CATALOG: WatchCoin[] = [
+  { symbol: 'BTCUSDT', label: 'BTC', minUsd: 10_000, venue: 'crypto' },
   { symbol: 'ETHUSDT', label: 'ETH', minUsd: 5_000, venue: 'crypto' },
   { symbol: 'AVAXUSDT', label: 'AVAX', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'NEARUSDT', label: 'NEAR', minUsd: 1_000, venue: 'crypto' },
@@ -61,7 +62,7 @@ export const EQUITY_PERP_CATALOG: WatchCoin[] = [
 export const FULL_WATCHLIST_CATALOG: WatchCoin[] = [...WATCHLIST_CATALOG, ...EQUITY_PERP_CATALOG];
 
 /** Coins that are on when no active-watchlist file / SYMBOLS env exists yet. */
-export const DEFAULT_ACTIVE_SYMBOLS = ['NEARUSDT'];
+export const DEFAULT_ACTIVE_SYMBOLS = ['BTCUSDT', 'NEARUSDT'];
 
 /**
  * Active coins used by the live feed when no file/env override is present.

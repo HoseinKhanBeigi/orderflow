@@ -11382,6 +11382,7 @@ var process = globalThis.process || { env: {} };
 
   // src/live/watchlist.ts
   var WATCHLIST_CATALOG = [
+    { symbol: "BTCUSDT", label: "BTC", minUsd: 1e4, venue: "crypto" },
     { symbol: "ETHUSDT", label: "ETH", minUsd: 5e3, venue: "crypto" },
     { symbol: "AVAXUSDT", label: "AVAX", minUsd: 1e3, venue: "crypto" },
     { symbol: "NEARUSDT", label: "NEAR", minUsd: 1e3, venue: "crypto" },
@@ -11421,7 +11422,7 @@ var process = globalThis.process || { env: {} };
     { symbol: "XAGUSDT", label: "XAG", minUsd: 500, venue: "equity" }
   ];
   var FULL_WATCHLIST_CATALOG = [...WATCHLIST_CATALOG, ...EQUITY_PERP_CATALOG];
-  var DEFAULT_ACTIVE_SYMBOLS = ["NEARUSDT"];
+  var DEFAULT_ACTIVE_SYMBOLS = ["BTCUSDT", "NEARUSDT"];
   var DEFAULT_WATCHLIST = resolveWatchlist(DEFAULT_ACTIVE_SYMBOLS);
   function resolveWatchlist(symbols, catalog = FULL_WATCHLIST_CATALOG) {
     const wanted = new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean));
@@ -15613,7 +15614,12 @@ var process = globalThis.process || { env: {} };
       if (!raw) return [...DEFAULT_ACTIVE_SYMBOLS];
       const parsed = JSON.parse(raw);
       const symbols = Array.isArray(parsed.symbols) ? parsed.symbols.map((s) => String(s ?? "").toUpperCase()).filter(Boolean) : [];
-      return symbols.length ? symbols : [...DEFAULT_ACTIVE_SYMBOLS];
+      if (!symbols.length) return [...DEFAULT_ACTIVE_SYMBOLS];
+      if (!symbols.includes("BTCUSDT")) {
+        symbols.unshift("BTCUSDT");
+        saveActiveSymbols(symbols);
+      }
+      return symbols;
     } catch {
       return [...DEFAULT_ACTIVE_SYMBOLS];
     }
