@@ -15614,12 +15614,7 @@ var process = globalThis.process || { env: {} };
       if (!raw) return [...DEFAULT_ACTIVE_SYMBOLS];
       const parsed = JSON.parse(raw);
       const symbols = Array.isArray(parsed.symbols) ? parsed.symbols.map((s) => String(s ?? "").toUpperCase()).filter(Boolean) : [];
-      if (!symbols.length) return [...DEFAULT_ACTIVE_SYMBOLS];
-      if (!symbols.includes("BTCUSDT")) {
-        symbols.unshift("BTCUSDT");
-        saveActiveSymbols(symbols);
-      }
-      return symbols;
+      return symbols.length ? symbols : [...DEFAULT_ACTIVE_SYMBOLS];
     } catch {
       return [...DEFAULT_ACTIVE_SYMBOLS];
     }

@@ -4658,14 +4658,19 @@ async function loadWatchlistPanel() {
   const saveBtn = document.getElementById('watchlist-save');
   if (watchlistLocked) {
     if (hint) hint.textContent = 'Locked by SYMBOLS env — unset it to edit from the UI.';
-    if (saveBtn) saveBtn.disabled = true;
-  } else {
-    if (hint) {
-      hint.textContent = client
-        ? 'Toggle coins, then Save. Stored in this browser (localStorage).'
-        : 'Toggle coins, then Save. Live feeds reconnect automatically.';
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.classList.remove('hidden');
     }
-    if (saveBtn) saveBtn.disabled = false;
+  } else if (client) {
+    if (hint) hint.textContent = 'Toggle coins — saved in this browser only (localStorage). No file.';
+    if (saveBtn) saveBtn.classList.add('hidden');
+  } else {
+    if (hint) hint.textContent = 'Toggle coins, then Save. Live feeds reconnect automatically.';
+    if (saveBtn) {
+      saveBtn.classList.remove('hidden');
+      saveBtn.disabled = false;
+    }
   }
   renderWatchlistGrid();
 }
@@ -4689,6 +4694,40 @@ function renderWatchlistGrid() {
   if (status) status.textContent = `${watchlistDraft.size} selected`;
 }
 
+let watchlistSaveTimer = null;
+
+/** Client/Vercel: persist selection to localStorage only (never a JSON file). */
+function persistWatchlistDraft(immediate = false) {
+  const client = window.__ORDERFLOW_USE_CLIENT__ ? window.OrderFlowClient : null;
+  if (!client) return;
+  const status = document.getElementById('watchlist-status');
+  if (watchlistDraft.size < 1) {
+    if (status) status.textContent = 'Pick at least one coin';
+    return;
+  }
+  const run = () => {
+    watchlistSaveTimer = null;
+    try {
+      const data = client.setWatchlist([...watchlistDraft]);
+      config.coins = data.coins ?? [];
+      config.catalog = watchlistCatalog;
+      if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
+        selectedSymbol = config.coins[0]?.symbol ?? selectedSymbol;
+      }
+      initChart();
+      seedFootprintKlines();
+      subscribeFootprint();
+      scheduleDraw();
+      if (status) status.textContent = `${watchlistDraft.size} selected · saved locally`;
+    } catch (err) {
+      if (status) status.textContent = err instanceof Error ? err.message : 'Save failed';
+    }
+  };
+  if (watchlistSaveTimer) clearTimeout(watchlistSaveTimer);
+  if (immediate) run();
+  else watchlistSaveTimer = setTimeout(run, 250);
+}
+
 async function saveWatchlistFromUi() {
   const status = document.getElementById('watchlist-status');
   const saveBtn = document.getElementById('watchlist-save');
@@ -4697,22 +4736,21 @@ async function saveWatchlistFromUi() {
     if (status) status.textContent = 'Pick at least one coin';
     return;
   }
+  // Vercel / browser hub: localStorage only.
+  if (window.__ORDERFLOW_USE_CLIENT__ && window.OrderFlowClient) {
+    persistWatchlistDraft(true);
+    return;
+  }
   if (saveBtn) saveBtn.disabled = true;
   if (status) status.textContent = 'Saving…';
   try {
-    const client = window.__ORDERFLOW_USE_CLIENT__ ? window.OrderFlowClient : null;
-    let data;
-    if (client) {
-      data = client.setWatchlist([...watchlistDraft]);
-    } else {
-      const res = await fetch('/api/watchlist', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols: [...watchlistDraft] }),
-      });
-      data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Save failed');
-    }
+    const res = await fetch('/api/watchlist', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: [...watchlistDraft] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
     config.coins = data.coins ?? [];
     config.catalog = watchlistCatalog;
     if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
@@ -4765,6 +4803,7 @@ function setupWatchlistUi() {
     if (input.checked) watchlistDraft.add(symbol);
     else watchlistDraft.delete(symbol);
     renderWatchlistGrid();
+    if (window.__ORDERFLOW_USE_CLIENT__) persistWatchlistDraft();
   });
   document.getElementById('watchlist-all')?.addEventListener('click', () => {
     if (watchlistLocked) return;
@@ -4774,6 +4813,7 @@ function setupWatchlistUi() {
       }
     }
     renderWatchlistGrid();
+    if (window.__ORDERFLOW_USE_CLIENT__) persistWatchlistDraft();
   });
   document.getElementById('watchlist-none')?.addEventListener('click', () => {
     if (watchlistLocked) return;
@@ -4783,6 +4823,7 @@ function setupWatchlistUi() {
       }
     }
     renderWatchlistGrid();
+    if (window.__ORDERFLOW_USE_CLIENT__) persistWatchlistDraft();
   });
   document.getElementById('watchlist-save')?.addEventListener('click', () => void saveWatchlistFromUi());
   document.addEventListener('click', (e) => {

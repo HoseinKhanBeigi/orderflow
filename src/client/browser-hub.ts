@@ -46,13 +46,7 @@ function loadActiveSymbols(): string[] {
     const symbols = Array.isArray(parsed.symbols)
       ? parsed.symbols.map((s) => String(s ?? '').toUpperCase()).filter(Boolean)
       : [];
-    if (!symbols.length) return [...DEFAULT_ACTIVE_SYMBOLS];
-    // Ensure BTC is available for users who saved an older default watchlist.
-    if (!symbols.includes('BTCUSDT')) {
-      symbols.unshift('BTCUSDT');
-      saveActiveSymbols(symbols);
-    }
-    return symbols;
+    return symbols.length ? symbols : [...DEFAULT_ACTIVE_SYMBOLS];
   } catch {
     return [...DEFAULT_ACTIVE_SYMBOLS];
   }
