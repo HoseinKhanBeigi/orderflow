@@ -547,6 +547,7 @@ export class LiveBinanceFeed {
   private async syncSymbolBook(symbol: string): Promise<void> {
     // Client/Vercel: never hit Binance REST /depth (CORS + request spam).
     if (this.config.depthMode === 'partial-ws') return;
+    if (typeof globalThis.window !== 'undefined') return;
     if (this.closed || this.depthSyncing.has(symbol)) return;
     if (!this.coins.some((c) => c.symbol === symbol)) return;
     this.depthSyncing.add(symbol);

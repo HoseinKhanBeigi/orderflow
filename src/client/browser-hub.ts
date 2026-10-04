@@ -271,6 +271,8 @@ class BrowserOrderFlowHub {
   private createFeeds(): void {
     const cryptoCoins = this.coins.filter((c) => c.venue === 'crypto');
 
+    const noRestDepth = async () => ({ bids: [] as [string, string][], asks: [] as [string, string][] });
+
     this.perpFeed = new LiveBinanceFeed({
       coins: this.coins,
       market: 'perp',
@@ -279,6 +281,7 @@ class BrowserOrderFlowHub {
       engineTradeVenues: ['binance'],
       engineTradeFallbackMs: 0,
       depthMode: 'partial-ws',
+      fetchDepth: noRestDepth,
     });
     this.spotFeed = new LiveBinanceFeed({
       coins: cryptoCoins,
@@ -288,6 +291,7 @@ class BrowserOrderFlowHub {
       engineTradeVenues: ['binance'],
       engineTradeFallbackMs: 0,
       depthMode: 'partial-ws',
+      fetchDepth: noRestDepth,
     });
 
     this.perpFeed.onAnyTrade((trade, exchange) => {

@@ -1809,11 +1809,19 @@ async function seedFromKlines() {
   await mapPool(coins, 3, async (coin) => {
     if (req !== fpKlineReq || tf !== chartTfMinutes || klineExchange() !== exchange) return;
     try {
-      const rows = await fetch(
+      const res = await fetch(
         `/api/klines?symbol=${encodeURIComponent(coin.symbol)}&interval=${fpKlineInterval(tf)}&exchange=${encodeURIComponent(exchange)}&market=${encodeURIComponent(market)}&limit=300`,
-      ).then((r) => r.json());
+      );
+      if (!res.ok) {
+        console.warn('[backfill] /api/klines', res.status, coin.symbol);
+        return;
+      }
+      const rows = await res.json();
       if (req !== fpKlineReq || tf !== chartTfMinutes || klineExchange() !== exchange) return;
-      if (!Array.isArray(rows) || !rows.length) return;
+      if (!Array.isArray(rows) || !rows.length) {
+        console.warn('[backfill] empty klines', coin.symbol);
+        return;
+      }
       // /api/klines (venues.ts): [t,o,h,l,c,vol,quote,takerBuyBase]
       let candles = rows
         .map((k) => ({
@@ -1846,8 +1854,8 @@ async function seedFromKlines() {
       }
       scheduleDraw(coin.symbol);
       void refreshPatternMarkers(coin.symbol, true);
-    } catch {
-      /* live 1m rollup still works */
+    } catch (err) {
+      console.warn('[backfill] failed', coin.symbol, err);
     }
   });
 }
