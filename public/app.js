@@ -101,6 +101,17 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
 }
 
+/** Footprint x-axis label: `M/D HH:mm` (local), date-only on daily. */
+function fmtFpCandleLabel(sec, tfMinutes = chartTfMinutes) {
+  const d = new Date(sec * 1000);
+  const mo = d.getMonth() + 1;
+  const day = d.getDate();
+  if (tfMinutes >= 1440) return `${mo}/${day}`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${mo}/${day} ${hh}:${mm}`;
+}
+
 function fmtPrice(p) {
   return p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
