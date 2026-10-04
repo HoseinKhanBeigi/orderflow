@@ -21,9 +21,11 @@
     "ui": "tsx scripts/live-server.ts",
     "backfill": "tsx scripts/backfill-footprint.ts"
   },
+  "packageManager": "pnpm@10.26.1",
   "engines": {
     "node": ">=20"
   },
+
   "dependencies": {
     "esbuild": "^0.25.9",
     "lightweight-charts": "4.2.3",

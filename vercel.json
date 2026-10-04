@@ -1,8 +1,8 @@
 {
-  "buildCommand": "npm run build:client",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm run build:client",
   "outputDirectory": "public",
   "framework": null,
-  "installCommand": "npm install",
   "rewrites": [
     { "source": "/spot/:path*", "destination": "/index.html" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
