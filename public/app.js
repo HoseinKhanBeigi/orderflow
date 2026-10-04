@@ -4847,7 +4847,8 @@ async function init() {
   setupWatchlistUi();
   setupCoinRouting();
   try {
-    // Prefer the Node live-server when present; otherwise browser hub (Vercel).
+    // Node live-server returns a full config (no clientMode).
+    // Vercel /api/config returns { clientMode: true } or 404 → use browser hub.
     let serverConfig = null;
     try {
       const res = await fetch('/api/config');
@@ -4863,7 +4864,7 @@ async function init() {
       config = window.OrderFlowClient.getConfig();
       window.__ORDERFLOW_USE_CLIENT__ = true;
     } else {
-      throw new Error('No live backend');
+      throw new Error('No live backend — missing client.bundle.js (run npm run build:client)');
     }
     fpHistoryEnabled = Boolean(config.history?.enabled);
     fpRetentionDays = Number(config.history?.retentionDays) || 30;
@@ -4894,7 +4895,12 @@ async function init() {
       }
       syncCoinRoute(true);
     }
-  } catch {
+  } catch (err) {
+    console.error('[init]', err);
+    if (window.OrderFlowClient) {
+      config = window.OrderFlowClient.getConfig();
+      window.__ORDERFLOW_USE_CLIENT__ = true;
+    }
     initChart();
   }
   renderAlertList();
