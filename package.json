@@ -7,8 +7,10 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "start": "tsx scripts/live-server.ts",
-    "build": "tsc -p tsconfig.json && tsx scripts/build-simulator.ts",
+    "build": "tsc -p tsconfig.json && tsx scripts/build-simulator.ts && tsx scripts/build-client.ts",
     "build:sim": "tsx scripts/build-simulator.ts",
+    "build:client": "tsx scripts/build-client.ts",
+
     "typecheck": "tsc -p tsconfig.scripts.json",
     "test": "vitest run",
     "test:watch": "vitest",

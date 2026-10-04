@@ -8,7 +8,13 @@ import {
   streamName,
   unwrapBinancePayload,
 } from '../exchange/types.js';
-import { EXCHANGE_LABELS, fetchVenueDepth, parseExchangesEnv, type ExchangeId } from '../exchange/venues.js';
+import {
+  EXCHANGE_LABELS,
+  fetchVenueDepth,
+  parseExchangesEnv,
+  type ExchangeId,
+  type VenueDepth,
+} from '../exchange/venues.js';
 import type { LiquidationEvent, MarketTrade, MarketType } from '../models/trade.js';
 import type { WindowSnapshot } from '../models/signals.js';
 import { isVolatileWindow } from '../analysis/alerts.js';
@@ -40,6 +46,16 @@ export interface LiveFeedConfig {
    */
   engineTradeFallbackMs?: number;
   engineTradeFallback?: ExchangeId;
+  /**
+   * Override REST depth snapshots (browser builds proxy through `/api/depth`
+   * to avoid exchange CORS). Defaults to direct `fetchVenueDepth`.
+   */
+  fetchDepth?: (
+    exchange: ExchangeId,
+    symbol: string,
+    market: MarketType,
+    limit?: number,
+  ) => Promise<VenueDepth>;
 }
 
 export interface TapeItem {
@@ -477,7 +493,8 @@ export class LiveBinanceFeed {
     this.depthSynced.delete(symbol);
     const market = this.config.market === 'spot' ? 'spot' : 'perp';
     try {
-      const raw = await fetchVenueDepth('binance', symbol, market, BOOK_DEPTH);
+      const fetchDepth = this.config.fetchDepth ?? fetchVenueDepth;
+      const raw = await fetchDepth('binance', symbol, market, BOOK_DEPTH);
       if (this.closed) return;
       if (!raw.bids.length && !raw.asks.length) throw new Error('empty depth');
       const adapter = market === 'spot' ? this.spot : this.futures;

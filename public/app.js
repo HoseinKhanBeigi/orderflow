@@ -4626,17 +4626,29 @@ let watchlistTab = 'crypto';
 let watchlistLocked = false;
 
 async function loadWatchlistPanel() {
-  const data = await fetch('/api/watchlist').then((r) => r.json());
-  watchlistCatalog = data.catalog ?? [];
-  watchlistDraft = new Set(data.active ?? []);
-  watchlistLocked = Boolean(data.lockedByEnv);
+  const client = window.__ORDERFLOW_USE_CLIENT__ ? window.OrderFlowClient : null;
+  if (client) {
+    const cfg = client.getConfig();
+    watchlistCatalog = cfg.catalog ?? client.catalog ?? [];
+    watchlistDraft = new Set((cfg.coins ?? []).map((c) => c.symbol));
+    watchlistLocked = false;
+  } else {
+    const data = await fetch('/api/watchlist').then((r) => r.json());
+    watchlistCatalog = data.catalog ?? [];
+    watchlistDraft = new Set(data.active ?? []);
+    watchlistLocked = Boolean(data.lockedByEnv);
+  }
   const hint = document.getElementById('watchlist-hint');
   const saveBtn = document.getElementById('watchlist-save');
   if (watchlistLocked) {
     if (hint) hint.textContent = 'Locked by SYMBOLS env — unset it to edit from the UI.';
     if (saveBtn) saveBtn.disabled = true;
   } else {
-    if (hint) hint.textContent = 'Toggle coins, then Save. Live feeds reconnect automatically.';
+    if (hint) {
+      hint.textContent = client
+        ? 'Toggle coins, then Save. Stored in this browser (localStorage).'
+        : 'Toggle coins, then Save. Live feeds reconnect automatically.';
+    }
     if (saveBtn) saveBtn.disabled = false;
   }
   renderWatchlistGrid();
@@ -4672,13 +4684,19 @@ async function saveWatchlistFromUi() {
   if (saveBtn) saveBtn.disabled = true;
   if (status) status.textContent = 'Saving…';
   try {
-    const res = await fetch('/api/watchlist', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbols: [...watchlistDraft] }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Save failed');
+    const client = window.__ORDERFLOW_USE_CLIENT__ ? window.OrderFlowClient : null;
+    let data;
+    if (client) {
+      data = client.setWatchlist([...watchlistDraft]);
+    } else {
+      const res = await fetch('/api/watchlist', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: [...watchlistDraft] }),
+      });
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Save failed');
+    }
     config.coins = data.coins ?? [];
     config.catalog = watchlistCatalog;
     if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
@@ -4829,7 +4847,24 @@ async function init() {
   setupWatchlistUi();
   setupCoinRouting();
   try {
-    config = await fetch('/api/config').then((r) => r.json());
+    // Prefer the Node live-server when present; otherwise browser hub (Vercel).
+    let serverConfig = null;
+    try {
+      const res = await fetch('/api/config');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) serverConfig = await res.json();
+    } catch {
+      /* static host — no API */
+    }
+    if (serverConfig && !serverConfig.clientMode) {
+      config = serverConfig;
+      window.__ORDERFLOW_USE_CLIENT__ = false;
+    } else if (window.OrderFlowClient) {
+      config = window.OrderFlowClient.getConfig();
+      window.__ORDERFLOW_USE_CLIENT__ = true;
+    } else {
+      throw new Error('No live backend');
+    }
     fpHistoryEnabled = Boolean(config.history?.enabled);
     fpRetentionDays = Number(config.history?.retentionDays) || 30;
     imbalanceRatio = Number(config.imbalanceRatio) || 3;
@@ -4871,7 +4906,96 @@ const WS_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 let wsRetryAttempt = 0;
 let wsRetryTimer = null;
 
+function handleLiveEvent(ev) {
+  switch (ev.type) {
+    case 'status': {
+      const m = ev.market === 'spot' ? 'spot' : 'perp';
+      feedStatus[m] = { connected: Boolean(ev.connected), message: ev.message ?? '' };
+      refreshStatus();
+      break;
+    }
+    case 'trade':
+      if (ev.trade && ev.market) ev.trade.market = ev.market;
+      if (ev.trade) noteLivePrice(ev.trade.symbol, ev.trade.price);
+      ingestTradeToChart(ev.trade);
+      if (ev.trade?.symbol) scheduleDraw(ev.trade.symbol);
+      break;
+    case 'footprint_live':
+      applyLiveFootprint(ev);
+      break;
+    case 'footprint_tick':
+      applyFootprintTick(ev);
+      break;
+    case 'pattern_snapshot':
+      applyPatternSnapshot(ev);
+      break;
+    case 'pattern_alert':
+      ingestPatternAlert(ev.alert);
+      break;
+    case 'spot_flow':
+      ingestSpotFlow(ev.snapshot);
+      break;
+    case 'book':
+      ingestOrderBook(ev);
+      break;
+    case 'summary':
+      if (ev.summary && ev.market) ev.summary.market = ev.market;
+      updateSummary(ev.summary);
+      if (ev.summary?.symbol) scheduleDraw(ev.summary.symbol);
+      break;
+    case 'overview':
+      updateOverview(ev.coins, ev.market === 'spot' ? 'spot' : 'perp');
+      break;
+    case 'watchlist': {
+      if (Array.isArray(ev.coins)) {
+        config.coins = ev.coins;
+        if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
+          selectedSymbol = config.coins[0]?.symbol ?? selectedSymbol;
+        }
+        initChart();
+        seedFootprintKlines();
+        subscribeFootprint();
+        scheduleDraw();
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Client-mode hub (Vercel/static): engines run in the browser. */
+function connectClientHub() {
+  const client = window.OrderFlowClient;
+  if (!client) {
+    setStatus(false, 'Client bundle missing — run npm run build:client');
+    return;
+  }
+  client.subscribe(handleLiveEvent);
+  client.start();
+  fpLiveSocket = {
+    readyState: WebSocket.OPEN,
+    send(raw) {
+      try {
+        client.handleMessage(JSON.parse(raw));
+      } catch {
+        /* ignore */
+      }
+    },
+    close() {
+      client.stop();
+    },
+  };
+  setStatus(true, 'Live');
+  subscribeFootprint();
+}
+
 function connectLiveSocket() {
+  if (window.__ORDERFLOW_USE_CLIENT__ && window.OrderFlowClient) {
+    connectClientHub();
+    return;
+  }
+
   if (wsRetryTimer) {
     clearTimeout(wsRetryTimer);
     wsRetryTimer = null;
@@ -4904,62 +5028,7 @@ function connectLiveSocket() {
     } catch {
       return;
     }
-
-    switch (ev.type) {
-      case 'status': {
-        const m = ev.market === 'spot' ? 'spot' : 'perp';
-        feedStatus[m] = { connected: Boolean(ev.connected), message: ev.message ?? '' };
-        refreshStatus();
-        break;
-      }
-      case 'trade':
-        if (ev.trade && ev.market) ev.trade.market = ev.market;
-        if (ev.trade) noteLivePrice(ev.trade.symbol, ev.trade.price);
-        ingestTradeToChart(ev.trade);
-        if (ev.trade?.symbol) scheduleDraw(ev.trade.symbol);
-        break;
-      case 'footprint_live':
-        applyLiveFootprint(ev);
-        break;
-      case 'footprint_tick':
-        applyFootprintTick(ev);
-        break;
-      case 'pattern_snapshot':
-        applyPatternSnapshot(ev);
-        break;
-      case 'pattern_alert':
-        ingestPatternAlert(ev.alert);
-        break;
-      case 'spot_flow':
-        ingestSpotFlow(ev.snapshot);
-        break;
-      case 'book':
-        ingestOrderBook(ev);
-        break;
-      case 'summary':
-        if (ev.summary && ev.market) ev.summary.market = ev.market;
-        updateSummary(ev.summary);
-        if (ev.summary?.symbol) scheduleDraw(ev.summary.symbol);
-        break;
-      case 'overview':
-        updateOverview(ev.coins, ev.market === 'spot' ? 'spot' : 'perp');
-        break;
-      case 'watchlist': {
-        if (Array.isArray(ev.coins)) {
-          config.coins = ev.coins;
-          if (!config.coins.some((c) => c.symbol === selectedSymbol)) {
-            selectedSymbol = config.coins[0]?.symbol ?? selectedSymbol;
-          }
-          initChart();
-          seedFootprintKlines();
-          subscribeFootprint();
-          scheduleDraw();
-        }
-        break;
-      }
-      default:
-        break;
-    }
+    handleLiveEvent(ev);
   };
 }
 
