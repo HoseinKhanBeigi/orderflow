@@ -1790,6 +1790,11 @@ async function seedFromKlines() {
   const tf = chartTfMinutes;
   const exchange = klineExchange();
   const market = footprintMarket();
+  // Client/Vercel: no REST proxy — chart fills from live trades/footprint only.
+  if (window.__ORDERFLOW_USE_CLIENT__) {
+    scheduleDraw();
+    return;
+  }
   // 1m stays live-only (server aggregator). 5m+ backfill from venue klines when DB history is thin.
   if (tf < 5) {
     scheduleDraw();
@@ -4847,24 +4852,19 @@ async function init() {
   setupWatchlistUi();
   setupCoinRouting();
   try {
-    // Node live-server returns a full config (no clientMode).
-    // Vercel /api/config returns { clientMode: true } or 404 → use browser hub.
-    let serverConfig = null;
-    try {
-      const res = await fetch('/api/config');
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) serverConfig = await res.json();
-    } catch {
-      /* static host — no API */
-    }
-    if (serverConfig && !serverConfig.clientMode) {
-      config = serverConfig;
-      window.__ORDERFLOW_USE_CLIENT__ = false;
-    } else if (window.OrderFlowClient) {
+    // Vercel / static: browser hub talks to Binance WebSockets directly — no /api/config.
+    // Local Node live-server: only used when the client bundle is not loaded.
+    if (window.OrderFlowClient) {
       config = window.OrderFlowClient.getConfig();
       window.__ORDERFLOW_USE_CLIENT__ = true;
     } else {
-      throw new Error('No live backend — missing client.bundle.js (run npm run build:client)');
+      const res = await fetch('/api/config');
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) throw new Error('No live backend');
+      const serverConfig = await res.json();
+      if (serverConfig.clientMode) throw new Error('No live backend');
+      config = serverConfig;
+      window.__ORDERFLOW_USE_CLIENT__ = false;
     }
     fpHistoryEnabled = Boolean(config.history?.enabled);
     fpRetentionDays = Number(config.history?.retentionDays) || 30;

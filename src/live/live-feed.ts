@@ -56,6 +56,11 @@ export interface LiveFeedConfig {
     market: MarketType,
     limit?: number,
   ) => Promise<VenueDepth>;
+  /**
+   * `partial-ws` = Binance `@depth20@100ms` snapshots (no REST, browser-safe).
+   * Default `rest-diff` = REST snapshot + `@depth@100ms` diffs (Node server).
+   */
+  depthMode?: 'rest-diff' | 'partial-ws';
 }
 
 export interface TapeItem {
@@ -314,11 +319,13 @@ export class LiveBinanceFeed {
       }
     }
 
-    this.coins.forEach((coin, i) => {
-      setTimeout(() => {
-        if (!this.closed) void this.syncSymbolBook(coin.symbol);
-      }, i * 200);
-    });
+    if (this.config.depthMode !== 'partial-ws') {
+      this.coins.forEach((coin, i) => {
+        setTimeout(() => {
+          if (!this.closed) void this.syncSymbolBook(coin.symbol);
+        }, i * 200);
+      });
+    }
   }
 
   private resetDepthSync(): void {
@@ -336,7 +343,8 @@ export class LiveBinanceFeed {
   }
 
   private depthList(coins: WatchCoin[]): string {
-    return coins.map((c) => streamName(c.symbol, 'depth@100ms')).join('/');
+    const channel = this.config.depthMode === 'partial-ws' ? 'depth20@100ms' : 'depth@100ms';
+    return coins.map((c) => streamName(c.symbol, channel)).join('/');
   }
 
   private openCombined(base: string, coins: WatchCoin[], tradeChannel: string, label: string): void {
@@ -389,6 +397,22 @@ export class LiveBinanceFeed {
     if (!data) return;
     const event = data.e as string | undefined;
     const symbol = String(data.s ?? stream.split('@')[0] ?? '').toUpperCase();
+
+    // Partial book stream (`depth20@100ms`) — full top-N snapshot, no REST.
+    if (
+      this.config.depthMode === 'partial-ws' &&
+      stream.includes('depth20') &&
+      Array.isArray(data.bids) &&
+      Array.isArray(data.asks)
+    ) {
+      this.applyPartialBookSnapshot(symbol, data);
+      const nowPartial = Date.now();
+      if (nowPartial - this.lastSummary >= this.config.summaryMs) {
+        this.lastSummary = nowPartial;
+        this.emitAllSummaries(nowPartial);
+      }
+      return;
+    }
 
     if (event === 'depthUpdate' && Array.isArray(data.b) && Array.isArray(data.a)) {
       this.onDepthDiff(data as unknown as BinanceDepthDelta);
@@ -466,6 +490,25 @@ export class LiveBinanceFeed {
       );
     }
     return true;
+  }
+
+  private applyPartialBookSnapshot(symbol: string, data: Record<string, unknown>): void {
+    if (!symbol || !this.coins.some((c) => c.symbol === symbol)) return;
+    const market = this.config.market === 'spot' ? 'spot' : 'perp';
+    const adapter = market === 'spot' ? this.spot : this.futures;
+    const snapshot = adapter.normalizeDepthSnapshot(
+      symbol,
+      {
+        lastUpdateId: Number(data.lastUpdateId ?? 0),
+        bids: data.bids as [string, string][],
+        asks: data.asks as [string, string][],
+      },
+      Date.now(),
+    );
+    this.engine.ingestBookSnapshot(snapshot);
+    this.engine.getSymbol(symbol, market).book.retainNearest(20);
+    this.depthSynced.add(symbol);
+    this.emitLocalBook(symbol, true);
   }
 
   private onDepthDiff(msg: BinanceDepthDelta): void {

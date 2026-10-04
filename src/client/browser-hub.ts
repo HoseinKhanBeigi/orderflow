@@ -3,7 +3,7 @@
  * Same event shapes as the Node `/ws` server so `public/app.js` can reuse them.
  */
 import { DEFAULT_CONFIG } from '../config/defaults.js';
-import { EXCHANGE_LABELS, type ExchangeId, type VenueDepth } from '../exchange/venues.js';
+import { EXCHANGE_LABELS, type ExchangeId } from '../exchange/venues.js';
 import { FootprintAggregator } from '../footprint/aggregator.js';
 import { toWire } from '../footprint/types.js';
 import { LiveBinanceFeed } from '../live/live-feed.js';
@@ -14,7 +14,6 @@ import {
   type WatchCoin,
 } from '../live/watchlist.js';
 import type { WindowSnapshot } from '../models/signals.js';
-import type { MarketType } from '../models/trade.js';
 import {
   PatternLiveHub,
   toCurrentPattern,
@@ -57,23 +56,6 @@ function saveActiveSymbols(symbols: string[]): void {
     WATCHLIST_KEY,
     JSON.stringify({ symbols, updatedAt: new Date().toISOString() }),
   );
-}
-
-async function proxyDepth(
-  exchange: ExchangeId,
-  symbol: string,
-  market: MarketType,
-  limit = 500,
-): Promise<VenueDepth> {
-  const view = market === 'spot' ? 'spot' : 'perp';
-  const u = new URL('/api/depth', globalThis.location.origin);
-  u.searchParams.set('exchange', exchange);
-  u.searchParams.set('symbol', symbol);
-  u.searchParams.set('market', view);
-  u.searchParams.set('limit', String(limit));
-  const r = await fetch(u);
-  if (!r.ok) throw new Error(`depth proxy ${r.status}`);
-  return (await r.json()) as VenueDepth;
 }
 
 function compactCandidate(p: PatternCandidate) {
@@ -288,7 +270,6 @@ class BrowserOrderFlowHub {
 
   private createFeeds(): void {
     const cryptoCoins = this.coins.filter((c) => c.venue === 'crypto');
-    const fetchDepth = proxyDepth;
 
     this.perpFeed = new LiveBinanceFeed({
       coins: this.coins,
@@ -297,7 +278,7 @@ class BrowserOrderFlowHub {
       exchanges: ['binance'],
       engineTradeVenues: ['binance'],
       engineTradeFallbackMs: 0,
-      fetchDepth,
+      depthMode: 'partial-ws',
     });
     this.spotFeed = new LiveBinanceFeed({
       coins: cryptoCoins,
@@ -306,7 +287,7 @@ class BrowserOrderFlowHub {
       exchanges: ['binance'],
       engineTradeVenues: ['binance'],
       engineTradeFallbackMs: 0,
-      fetchDepth,
+      depthMode: 'partial-ws',
     });
 
     this.perpFeed.onAnyTrade((trade, exchange) => {
