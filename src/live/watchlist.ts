@@ -37,6 +37,7 @@ export const WATCHLIST_CATALOG: WatchCoin[] = [
   { symbol: 'JUPUSDT', label: 'JUP', minUsd: 500, venue: 'crypto' },
   { symbol: 'ZAMAUSDT', label: 'ZAMA', minUsd: 500, venue: 'crypto' },
   { symbol: 'WLDUSDT', label: 'WLD', minUsd: 500, venue: 'crypto' },
+  { symbol: 'FARTCOINUSDT', label: 'FARTCOIN', minUsd: 500, venue: 'crypto' },
 ];
 
 /**
