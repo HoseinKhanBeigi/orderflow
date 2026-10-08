@@ -242,6 +242,36 @@ body {
   text-overflow: ellipsis;
 }
 
+.fp-card-flow8 {
+  flex-shrink: 0;
+  padding: 0.12rem 0.45rem 0.18rem;
+  border-bottom: 1px solid #1a2030;
+  background: #0f131a;
+  font-size: 0.58rem;
+  font-family: var(--mono);
+  color: #9aa4b2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+.fp-card-flow8.abs-sell {
+  color: #7dd3fc;
+}
+
+.fp-card-flow8.abs-buy {
+  color: #fbbf24;
+}
+
+.fp-card-flow8.cons-bid:not(.abs-sell):not(.abs-buy) {
+  color: #fca5a5;
+}
+
+.fp-card-flow8.cons-ask:not(.abs-sell):not(.abs-buy) {
+  color: #86efac;
+}
+
 .fp-card-canvas {
   position: relative;
   width: 100%;
