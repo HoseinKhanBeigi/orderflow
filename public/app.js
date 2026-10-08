@@ -1570,7 +1570,7 @@ function buildFpGrid() {
         <span class="fp-card-title">${coin.label}</span>
         <span class="fp-card-meta" data-fp-meta>—</span>
       </header>
-      <div class="fp-card-flow8" data-fp-flow8 title="">Last 8 · —</div>
+      <div class="fp-card-flow8" data-fp-flow8 title="">Last 16 · —</div>
       <div class="fp-card-canvas"></div>
       <div class="fp-pattern-tip hidden" data-fp-pattern-tip></div>
     `;
@@ -2214,13 +2214,18 @@ function barFlowSplitNotional(bar) {
   };
 }
 
-const FLOW8_LOOKBACK = 8;
+const FLOW16_LOOKBACK = 16;
+
+function pctOf(part, total) {
+  if (!(total > 0) || !Number.isFinite(part)) return 0;
+  return Math.round((part / total) * 100);
+}
 
 /**
- * Last N candles: which absorption side and which consumption side is larger, and by how much.
+ * Last N candles: which absorption side and which consumption side is larger, and by how much (%).
  * Uses completed + live bars already on the chart (no lookahead beyond visible history).
  */
-function rollingAbsConsSummary(bars, lookback = FLOW8_LOOKBACK) {
+function rollingAbsConsSummary(bars, lookback = FLOW16_LOOKBACK) {
   const slice = (bars ?? []).slice(-lookback);
   let askConsumed = 0;
   let bidConsumed = 0;
@@ -2234,10 +2239,17 @@ function rollingAbsConsSummary(bars, lookback = FLOW8_LOOKBACK) {
     sellAbsorbed += s.sellAbsorbed;
   }
 
-  const absLead = Math.abs(sellAbsorbed - buyAbsorbed);
-  const consLead = Math.abs(bidConsumed - askConsumed);
-  const absTie = absLead < Math.max(1, (sellAbsorbed + buyAbsorbed) * 0.02);
-  const consTie = consLead < Math.max(1, (bidConsumed + askConsumed) * 0.02);
+  const absTotal = sellAbsorbed + buyAbsorbed;
+  const consTotal = bidConsumed + askConsumed;
+  const sellAbsPct = pctOf(sellAbsorbed, absTotal);
+  const buyAbsPct = absTotal > 0 ? 100 - sellAbsPct : 0;
+  const bidConsPct = pctOf(bidConsumed, consTotal);
+  const askConsPct = consTotal > 0 ? 100 - bidConsPct : 0;
+
+  const absLeadPct = Math.abs(sellAbsPct - buyAbsPct);
+  const consLeadPct = Math.abs(bidConsPct - askConsPct);
+  const absTie = absTotal <= 0 || absLeadPct < 4;
+  const consTie = consTotal <= 0 || consLeadPct < 4;
 
   return {
     candles: slice.length,
@@ -2245,42 +2257,40 @@ function rollingAbsConsSummary(bars, lookback = FLOW8_LOOKBACK) {
     bidConsumed,
     buyAbsorbed,
     sellAbsorbed,
+    sellAbsPct,
+    buyAbsPct,
+    bidConsPct,
+    askConsPct,
     biggerAbsorption: absTie ? 'TIE' : (sellAbsorbed > buyAbsorbed ? 'SELL' : 'BUY'),
-    absorptionLead: absTie ? 0 : absLead,
+    absorptionLeadPct: absTie ? 0 : absLeadPct,
     biggerConsumption: consTie ? 'TIE' : (bidConsumed > askConsumed ? 'BID' : 'ASK'),
-    consumptionLead: consTie ? 0 : consLead,
+    consumptionLeadPct: consTie ? 0 : consLeadPct,
   };
 }
 
-function formatFlow8Line(sum) {
-  if (!sum || sum.candles <= 0) return { text: 'Last 8 · no flow', tip: '' };
-  const absSide = sum.biggerAbsorption === 'SELL'
-    ? 'SELL abs'
-    : sum.biggerAbsorption === 'BUY'
-      ? 'BUY abs'
-      : 'Abs even';
-  const consSide = sum.biggerConsumption === 'BID'
-    ? 'BID cons'
-    : sum.biggerConsumption === 'ASK'
-      ? 'ASK cons'
-      : 'Cons even';
-  const absAmt = sum.biggerAbsorption === 'TIE'
-    ? `${fmtVolShort(sum.sellAbsorbed)} / ${fmtVolShort(sum.buyAbsorbed)}`
-    : `${fmtVolShort(sum.biggerAbsorption === 'SELL' ? sum.sellAbsorbed : sum.buyAbsorbed)} (+${fmtVolShort(sum.absorptionLead)})`;
-  const consAmt = sum.biggerConsumption === 'TIE'
-    ? `${fmtVolShort(sum.bidConsumed)} / ${fmtVolShort(sum.askConsumed)}`
-    : `${fmtVolShort(sum.biggerConsumption === 'BID' ? sum.bidConsumed : sum.askConsumed)} (+${fmtVolShort(sum.consumptionLead)})`;
-  const text = `${sum.candles}c · ${absSide} ${absAmt} · ${consSide} ${consAmt}`;
+function formatFlow16Line(sum) {
+  if (!sum || sum.candles <= 0) return { text: 'Last 16 · no flow', tip: '' };
+  const absText = sum.biggerAbsorption === 'TIE'
+    ? `Abs even ${sum.sellAbsPct}%/${sum.buyAbsPct}%`
+    : sum.biggerAbsorption === 'SELL'
+      ? `SELL abs ${sum.sellAbsPct}% (+${sum.absorptionLeadPct}%)`
+      : `BUY abs ${sum.buyAbsPct}% (+${sum.absorptionLeadPct}%)`;
+  const consText = sum.biggerConsumption === 'TIE'
+    ? `Cons even ${sum.bidConsPct}%/${sum.askConsPct}%`
+    : sum.biggerConsumption === 'BID'
+      ? `BID cons ${sum.bidConsPct}% (+${sum.consumptionLeadPct}%)`
+      : `ASK cons ${sum.askConsPct}% (+${sum.consumptionLeadPct}%)`;
+  const text = `${sum.candles}c · ${absText} · ${consText}`;
   const tip = [
     `Last ${sum.candles} candles (same split as Asks / Bids / Sell abs / Buy abs)`,
     '',
-    `Sell absorbed: ${fmtVolShort(sum.sellAbsorbed)}`,
-    `Buy absorbed:  ${fmtVolShort(sum.buyAbsorbed)}`,
-    `Bigger absorption: ${sum.biggerAbsorption}${sum.biggerAbsorption === 'TIE' ? '' : ` by ${fmtVolShort(sum.absorptionLead)}`}`,
+    `Sell absorbed: ${sum.sellAbsPct}% (${fmtVolShort(sum.sellAbsorbed)})`,
+    `Buy absorbed:  ${sum.buyAbsPct}% (${fmtVolShort(sum.buyAbsorbed)})`,
+    `Bigger absorption: ${sum.biggerAbsorption}${sum.biggerAbsorption === 'TIE' ? '' : ` by ${sum.absorptionLeadPct}%`}`,
     '',
-    `Bids consumed: ${fmtVolShort(sum.bidConsumed)}`,
-    `Asks consumed: ${fmtVolShort(sum.askConsumed)}`,
-    `Bigger consumption: ${sum.biggerConsumption}${sum.biggerConsumption === 'TIE' ? '' : ` by ${fmtVolShort(sum.consumptionLead)}`}`,
+    `Bids consumed: ${sum.bidConsPct}% (${fmtVolShort(sum.bidConsumed)})`,
+    `Asks consumed: ${sum.askConsPct}% (${fmtVolShort(sum.askConsumed)})`,
+    `Bigger consumption: ${sum.biggerConsumption}${sum.biggerConsumption === 'TIE' ? '' : ` by ${sum.consumptionLeadPct}%`}`,
   ].join('\n');
   return { text, tip };
 }
@@ -3997,15 +4007,15 @@ function drawFootprint(symbol = selectedSymbol) {
       : `${fmtPriceAxis(px)} · ${pat}${nextBit}${fuelBit}`;
     meta.title = strategyStoryTooltip(story) || '';
   }
-  const flow8El = view.card?.querySelector('[data-fp-flow8]');
-  if (flow8El) {
-    const flow8 = formatFlow8Line(rollingAbsConsSummary(bars, FLOW8_LOOKBACK));
-    flow8El.textContent = flow8.text;
-    flow8El.title = flow8.tip;
-    flow8El.classList.toggle('abs-sell', flow8.text.includes('SELL abs'));
-    flow8El.classList.toggle('abs-buy', flow8.text.includes('BUY abs'));
-    flow8El.classList.toggle('cons-bid', flow8.text.includes('BID cons'));
-    flow8El.classList.toggle('cons-ask', flow8.text.includes('ASK cons'));
+  const flow16El = view.card?.querySelector('[data-fp-flow8]');
+  if (flow16El) {
+    const flow16 = formatFlow16Line(rollingAbsConsSummary(bars, FLOW16_LOOKBACK));
+    flow16El.textContent = flow16.text;
+    flow16El.title = flow16.tip;
+    flow16El.classList.toggle('abs-sell', flow16.text.includes('SELL abs'));
+    flow16El.classList.toggle('abs-buy', flow16.text.includes('BUY abs'));
+    flow16El.classList.toggle('cons-bid', flow16.text.includes('BID cons'));
+    flow16El.classList.toggle('cons-ask', flow16.text.includes('ASK cons'));
   }
   ctx.lineWidth = 1;
 }
