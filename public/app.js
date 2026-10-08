@@ -1570,7 +1570,7 @@ function buildFpGrid() {
         <span class="fp-card-title">${coin.label}</span>
         <span class="fp-card-meta" data-fp-meta>—</span>
       </header>
-      <div class="fp-card-flow8" data-fp-flow8 title="">Last 16 · —</div>
+      <div class="fp-card-flow8" data-fp-flow8 title="">Last 32 · —</div>
       <div class="fp-card-canvas"></div>
       <div class="fp-pattern-tip hidden" data-fp-pattern-tip></div>
     `;
@@ -2214,7 +2214,7 @@ function barFlowSplitNotional(bar) {
   };
 }
 
-const FLOW16_LOOKBACK = 16;
+const FLOW16_LOOKBACK = 32;
 
 function pctOf(part, total) {
   if (!(total > 0) || !Number.isFinite(part)) return 0;
@@ -2269,7 +2269,7 @@ function rollingAbsConsSummary(bars, lookback = FLOW16_LOOKBACK) {
 }
 
 function formatFlow16Line(sum) {
-  if (!sum || sum.candles <= 0) return { text: 'Last 16 · no flow', tip: '' };
+  if (!sum || sum.candles <= 0) return { text: 'Last 32 · no flow', tip: '' };
   const text =
     `${sum.candles}c · ` +
     `Sell abs ${sum.sellAbsPct}% · Buy abs ${sum.buyAbsPct}% · ` +
