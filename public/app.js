@@ -1223,6 +1223,9 @@ let chartTfMinutes = 15;
 const FP_COLS_KEY = 'fpGridCols';
 const FP_COLS_MIN = 1;
 const FP_COLS_MAX = 4;
+const FP_FLOW_LOOKBACK_KEY = 'fpFlowLookback';
+const FP_FLOW_LOOKBACK_OPTIONS = [8, 16, 24, 32, 48, 64];
+const FP_FLOW_LOOKBACK_DEFAULT = 32;
 
 function readFpCols() {
   const n = Number(localStorage.getItem(FP_COLS_KEY));
@@ -1230,7 +1233,15 @@ function readFpCols() {
   return Math.min(FP_COLS_MAX, Math.max(FP_COLS_MIN, Math.round(n)));
 }
 
+function readFpFlowLookback() {
+  const n = Number(localStorage.getItem(FP_FLOW_LOOKBACK_KEY));
+  if (!Number.isFinite(n)) return FP_FLOW_LOOKBACK_DEFAULT;
+  const rounded = Math.round(n);
+  return FP_FLOW_LOOKBACK_OPTIONS.includes(rounded) ? rounded : FP_FLOW_LOOKBACK_DEFAULT;
+}
+
 let fpColsPerRow = readFpCols();
+let fpFlowLookback = readFpFlowLookback();
 
 function applyFpCols(cols = fpColsPerRow) {
   const n = Math.min(FP_COLS_MAX, Math.max(FP_COLS_MIN, Math.round(Number(cols)) || 1));
@@ -1241,6 +1252,22 @@ function applyFpCols(cols = fpColsPerRow) {
   const select = document.getElementById('fp-cols-select');
   if (select && select.value !== String(n)) select.value = String(n);
   resizeAllFpViews();
+}
+
+function applyFpFlowLookback(n = fpFlowLookback) {
+  const rounded = Math.round(Number(n));
+  fpFlowLookback = FP_FLOW_LOOKBACK_OPTIONS.includes(rounded)
+    ? rounded
+    : FP_FLOW_LOOKBACK_DEFAULT;
+  localStorage.setItem(FP_FLOW_LOOKBACK_KEY, String(fpFlowLookback));
+  const select = document.getElementById('fp-flow-lookback-select');
+  if (select && select.value !== String(fpFlowLookback)) select.value = String(fpFlowLookback);
+  for (const el of document.querySelectorAll('[data-fp-flow8]')) {
+    if (!el.textContent || el.textContent.includes('—') || el.textContent.includes('no flow')) {
+      el.textContent = `Last ${fpFlowLookback} · —`;
+    }
+  }
+  for (const sym of fpViews.keys()) drawFootprint(sym);
 }
 /** Current in-progress 1m bar per `symbol_exchange_1`, pushed by the server. */
 const footprintStore = {};
@@ -1570,7 +1597,7 @@ function buildFpGrid() {
         <span class="fp-card-title">${coin.label}</span>
         <span class="fp-card-meta" data-fp-meta>—</span>
       </header>
-      <div class="fp-card-flow8" data-fp-flow8 title="">Last 32 · —</div>
+      <div class="fp-card-flow8" data-fp-flow8 title="">Last ${fpFlowLookback} · —</div>
       <div class="fp-card-canvas"></div>
       <div class="fp-pattern-tip hidden" data-fp-pattern-tip></div>
     `;
@@ -1648,6 +1675,10 @@ function initChart() {
     document.getElementById('fp-cols-select')?.addEventListener('change', (e) => {
       applyFpCols(e.target.value);
     });
+    document.getElementById('fp-flow-lookback-select')?.addEventListener('change', (e) => {
+      applyFpFlowLookback(e.target.value);
+    });
+    applyFpFlowLookback(fpFlowLookback);
   }
   buildFpGrid();
 }
@@ -2214,8 +2245,6 @@ function barFlowSplitNotional(bar) {
   };
 }
 
-const FLOW16_LOOKBACK = 32;
-
 function pctOf(part, total) {
   if (!(total > 0) || !Number.isFinite(part)) return 0;
   return Math.round((part / total) * 100);
@@ -2225,7 +2254,7 @@ function pctOf(part, total) {
  * Last N candles: which absorption side and which consumption side is larger, and by how much (%).
  * Uses completed + live bars already on the chart (no lookahead beyond visible history).
  */
-function rollingAbsConsSummary(bars, lookback = FLOW16_LOOKBACK) {
+function rollingAbsConsSummary(bars, lookback = fpFlowLookback) {
   const slice = (bars ?? []).slice(-lookback);
   let askConsumed = 0;
   let bidConsumed = 0;
@@ -2269,7 +2298,7 @@ function rollingAbsConsSummary(bars, lookback = FLOW16_LOOKBACK) {
 }
 
 function formatFlow16Line(sum) {
-  if (!sum || sum.candles <= 0) return { text: 'Last 32 · no flow', tip: '' };
+  if (!sum || sum.candles <= 0) return { text: `Last ${fpFlowLookback} · no flow`, tip: '' };
   const text =
     `${sum.candles}c · ` +
     `Sell abs ${sum.sellAbsPct}% · Buy abs ${sum.buyAbsPct}% · ` +
@@ -4002,7 +4031,7 @@ function drawFootprint(symbol = selectedSymbol) {
   }
   const flow16El = view.card?.querySelector('[data-fp-flow8]');
   if (flow16El) {
-    const sum = rollingAbsConsSummary(bars, FLOW16_LOOKBACK);
+    const sum = rollingAbsConsSummary(bars, fpFlowLookback);
     const line = formatFlow16Line(sum);
     flow16El.textContent = line.text;
     flow16El.title = line.tip;

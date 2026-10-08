@@ -76,6 +76,17 @@
                 <option value="4">4</option>
               </select>
             </label>
+            <label class="chart-symbol-picker" for="fp-flow-lookback-select" title="How many candles to use for Sell/Buy abs and Bid/Ask cons %">
+              Abs/Cons
+              <select id="fp-flow-lookback-select" aria-label="Absorption and consumption lookback candles">
+                <option value="8">8</option>
+                <option value="16">16</option>
+                <option value="24">24</option>
+                <option value="32" selected>32</option>
+                <option value="48">48</option>
+                <option value="64">64</option>
+              </select>
+            </label>
             <div class="chart-tf-tabs" id="chart-ex-tabs">
               <button class="chart-tf-tab active" data-ex="all" type="button">All</button>
               <button class="chart-tf-tab" data-ex="binance" type="button">Binance</button>
