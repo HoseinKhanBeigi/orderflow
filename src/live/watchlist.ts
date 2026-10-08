@@ -28,16 +28,12 @@ export const WATCHLIST_CATALOG: WatchCoin[] = [
   { symbol: 'PENGUUSDT', label: 'PENGU', minUsd: 500, venue: 'crypto' },
   { symbol: 'OPUSDT', label: 'OP', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'XLMUSDT', label: 'XLM', minUsd: 1_000, venue: 'crypto' },
-  { symbol: 'PYTHUSDT', label: 'PYTH', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'TRUMPUSDT', label: 'TRUMP', minUsd: 500, venue: 'crypto' },
-  { symbol: 'CROUSDT', label: 'CRO', minUsd: 1_000, venue: 'crypto' },
-  { symbol: 'EGLDUSDT', label: 'EGLD', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'ZKCUSDT', label: 'ZKC', minUsd: 500, venue: 'crypto' },
-  { symbol: 'TNSRUSDT', label: 'TNSR', minUsd: 500, venue: 'crypto' },
-  { symbol: 'JUPUSDT', label: 'JUP', minUsd: 500, venue: 'crypto' },
   { symbol: 'ZAMAUSDT', label: 'ZAMA', minUsd: 500, venue: 'crypto' },
-  { symbol: 'WLDUSDT', label: 'WLD', minUsd: 500, venue: 'crypto' },
   { symbol: 'FARTCOINUSDT', label: 'FARTCOIN', minUsd: 500, venue: 'crypto' },
+  { symbol: 'SENTUSDT', label: 'SENT', minUsd: 500, venue: 'crypto' },
+  { symbol: 'TAOUSDT', label: 'TAO', minUsd: 1_000, venue: 'crypto' },
 ];
 
 /**
