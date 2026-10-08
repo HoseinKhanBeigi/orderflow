@@ -2270,17 +2270,10 @@ function rollingAbsConsSummary(bars, lookback = FLOW16_LOOKBACK) {
 
 function formatFlow16Line(sum) {
   if (!sum || sum.candles <= 0) return { text: 'Last 16 · no flow', tip: '' };
-  const absText = sum.biggerAbsorption === 'TIE'
-    ? `Abs even ${sum.sellAbsPct}%/${sum.buyAbsPct}%`
-    : sum.biggerAbsorption === 'SELL'
-      ? `SELL abs ${sum.sellAbsPct}% (+${sum.absorptionLeadPct}%)`
-      : `BUY abs ${sum.buyAbsPct}% (+${sum.absorptionLeadPct}%)`;
-  const consText = sum.biggerConsumption === 'TIE'
-    ? `Cons even ${sum.bidConsPct}%/${sum.askConsPct}%`
-    : sum.biggerConsumption === 'BID'
-      ? `BID cons ${sum.bidConsPct}% (+${sum.consumptionLeadPct}%)`
-      : `ASK cons ${sum.askConsPct}% (+${sum.consumptionLeadPct}%)`;
-  const text = `${sum.candles}c · ${absText} · ${consText}`;
+  const text =
+    `${sum.candles}c · ` +
+    `Sell abs ${sum.sellAbsPct}% · Buy abs ${sum.buyAbsPct}% · ` +
+    `Bid cons ${sum.bidConsPct}% · Ask cons ${sum.askConsPct}%`;
   const tip = [
     `Last ${sum.candles} candles (same split as Asks / Bids / Sell abs / Buy abs)`,
     '',
@@ -4009,13 +4002,14 @@ function drawFootprint(symbol = selectedSymbol) {
   }
   const flow16El = view.card?.querySelector('[data-fp-flow8]');
   if (flow16El) {
-    const flow16 = formatFlow16Line(rollingAbsConsSummary(bars, FLOW16_LOOKBACK));
-    flow16El.textContent = flow16.text;
-    flow16El.title = flow16.tip;
-    flow16El.classList.toggle('abs-sell', flow16.text.includes('SELL abs'));
-    flow16El.classList.toggle('abs-buy', flow16.text.includes('BUY abs'));
-    flow16El.classList.toggle('cons-bid', flow16.text.includes('BID cons'));
-    flow16El.classList.toggle('cons-ask', flow16.text.includes('ASK cons'));
+    const sum = rollingAbsConsSummary(bars, FLOW16_LOOKBACK);
+    const line = formatFlow16Line(sum);
+    flow16El.textContent = line.text;
+    flow16El.title = line.tip;
+    flow16El.classList.toggle('abs-sell', sum.biggerAbsorption === 'SELL');
+    flow16El.classList.toggle('abs-buy', sum.biggerAbsorption === 'BUY');
+    flow16El.classList.toggle('cons-bid', sum.biggerConsumption === 'BID');
+    flow16El.classList.toggle('cons-ask', sum.biggerConsumption === 'ASK');
   }
   ctx.lineWidth = 1;
 }
