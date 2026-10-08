@@ -2214,9 +2214,9 @@ function barBattlePercents(bar) {
   const sellShare = sell / vol;
   const rows = [
     { text: 'Asks', color: '#22c55e', weight: buyShare * closePos },
-    { text: 'Buy abs', color: '#fbbf24', weight: buyShare * (1 - closePos) },
+    { text: 'Attacked Buy abs', color: '#fbbf24', weight: buyShare * (1 - closePos) },
     { text: 'Bids', color: '#ef4444', weight: sellShare * (1 - closePos) },
-    { text: 'Sell abs', color: '#60a5fa', weight: sellShare * closePos },
+    { text: 'Attacked Sell abs', color: '#60a5fa', weight: sellShare * closePos },
   ];
   const pcts = percentsSum100(rows.map((row) => row.weight));
   let best = 0;
