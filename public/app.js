@@ -1678,7 +1678,11 @@ function initChart() {
     document.getElementById('fp-flow-lookback-select')?.addEventListener('change', (e) => {
       applyFpFlowLookback(e.target.value);
     });
+    document.getElementById('fp-delta-progress-select')?.addEventListener('change', (e) => {
+      applyDeltaProgressMode(e.target.value);
+    });
     applyFpFlowLookback(fpFlowLookback);
+    applyDeltaProgressMode(fpDeltaProgressMode);
   }
   buildFpGrid();
 }
@@ -3673,6 +3677,263 @@ function formatCvdLabel(cvd) {
   return `CVD ${sign}${fmtVolShort(Math.abs(cvd))}`;
 }
 
+const DELTA_PROGRESS_CFG = {
+  deltaLookback: 50,
+  minHistory: 20,
+  extremePercentile: 95,
+  strongPercentile: 80,
+  weakPercentile: 20,
+  flatRatioPct: 2,
+  minEffortRatioPct: 15,
+  atrLookback: 14,
+  minAtrBars: 5,
+  lowProgressAtr: 0.1,
+  highProgressAtr: 0.3,
+};
+const DELTA_LABEL_FIRST_OFFSET = 112;
+const DELTA_LABEL_LINE_H = 11;
+const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
+
+function readDeltaProgressMode() {
+  const saved = localStorage.getItem(FP_DELTA_PROGRESS_KEY);
+  return saved === 'COMPACT' || saved === 'OFF' || saved === 'METRICS' ? saved : 'METRICS';
+}
+
+let fpDeltaProgressMode = readDeltaProgressMode();
+
+function applyDeltaProgressMode(mode = fpDeltaProgressMode) {
+  fpDeltaProgressMode = mode === 'COMPACT' || mode === 'OFF' ? mode : 'METRICS';
+  localStorage.setItem(FP_DELTA_PROGRESS_KEY, fpDeltaProgressMode);
+  const select = document.getElementById('fp-delta-progress-select');
+  if (select && select.value !== fpDeltaProgressMode) select.value = fpDeltaProgressMode;
+  for (const sym of fpViews.keys()) drawFootprint(sym);
+}
+
+function priorAtrJs(bars, index, lookback, minBars) {
+  if (index < 1) return null;
+  const start = Math.max(1, index - lookback);
+  let sum = 0;
+  let n = 0;
+  for (let i = start; i < index; i++) {
+    const high = Number(bars[i].high);
+    const low = Number(bars[i].low);
+    const prevClose = Number(bars[i - 1]?.close);
+    if (![high, low].every(Number.isFinite) || high < low) continue;
+    const hl = high - low;
+    const tr = Number.isFinite(prevClose)
+      ? Math.max(hl, Math.abs(high - prevClose), Math.abs(low - prevClose))
+      : hl;
+    sum += tr;
+    n += 1;
+  }
+  if (n < minBars) return null;
+  const atr = sum / n;
+  return atr > 0 ? atr : null;
+}
+
+function annotateDeltaProgress(bars, { lastIsLive = false } = {}) {
+  const cfg = DELTA_PROGRESS_CFG;
+  const absHistory = bars.map((bar) => {
+    const quality = barFlowQuality(bar);
+    if (quality === 'UNAVAILABLE' || quality === 'STALE') return null;
+    const buy = Math.max(0, Number(bar.totalBuy) || 0);
+    const sell = Math.max(0, Number(bar.totalSell) || 0);
+    if (!(buy + sell > 0)) return null;
+    return Math.abs(buy - sell);
+  });
+  return bars.map((bar, index) => {
+    const incomplete = lastIsLive && index === bars.length - 1;
+    const quality = barFlowQuality(bar);
+    const empty = {
+      time: bar.time,
+      delta: null,
+      absoluteDelta: null,
+      deltaStrengthPercentile: null,
+      deltaStrengthState: 'UNAVAILABLE',
+      deltaSide: 'NONE',
+      deltaRatioPercent: null,
+      directionalProgressATR: null,
+      priceProgressState: 'UNAVAILABLE',
+      effortResultState: 'INSUFFICIENT',
+      dataQuality: quality === 'STALE' ? 'STALE' : 'UNAVAILABLE',
+      incomplete,
+    };
+    if (quality === 'UNAVAILABLE' || quality === 'STALE') return empty;
+    const buy = Math.max(0, Number(bar.totalBuy) || 0);
+    const sell = Math.max(0, Number(bar.totalSell) || 0);
+    const total = buy + sell;
+    if (!(total > 0)) return empty;
+    const delta = buy - sell;
+    const ratio = (delta / total) * 100;
+    const from = Math.max(0, index - cfg.deltaLookback);
+    const prior = [];
+    for (let j = from; j < index; j++) if (absHistory[j] != null) prior.push(absHistory[j]);
+    let percentile = null;
+    if (prior.length >= cfg.minHistory) {
+      let le = 0;
+      const absDelta = Math.abs(delta);
+      for (const sample of prior) if (sample <= absDelta) le += 1;
+      percentile = (le / prior.length) * 100;
+    }
+    const deltaStrengthState = percentile == null
+      ? 'INSUFFICIENT_DATA'
+      : percentile >= cfg.extremePercentile
+        ? 'EXTREME'
+        : percentile >= cfg.strongPercentile
+          ? 'STRONG'
+          : percentile < cfg.weakPercentile
+            ? 'WEAK'
+            : 'NORMAL';
+    const deltaSide = Math.abs(ratio) < cfg.flatRatioPct ? 'NONE' : delta > 0 ? 'BUY' : delta < 0 ? 'SELL' : 'NONE';
+    const ohlcOk = [bar.open, bar.high, bar.low, bar.close].every(Number.isFinite) && bar.open > 0 && bar.high >= bar.low;
+    const atr = ohlcOk ? priorAtrJs(bars, index, cfg.atrLookback, cfg.minAtrBars) : null;
+    const disp = ohlcOk ? computeBarDisplacement(bar, atr) : null;
+    let directionalProgressATR = null;
+    let priceProgressState = 'UNAVAILABLE';
+    if (!ohlcOk) priceProgressState = 'UNAVAILABLE';
+    else if (atr == null) priceProgressState = 'INSUFFICIENT_DATA';
+    else if (disp?.displacementATR == null) priceProgressState = 'UNAVAILABLE';
+    else {
+      const sign = delta > 0 ? 1 : delta < 0 ? -1 : 0;
+      directionalProgressATR = sign * disp.displacementATR;
+      const abs = Math.abs(directionalProgressATR);
+      const mag = abs <= cfg.lowProgressAtr ? 'LOW_PROGRESS' : abs <= cfg.highProgressAtr ? 'MODERATE_PROGRESS' : 'HIGH_PROGRESS';
+      priceProgressState = directionalProgressATR < 0 ? 'AGAINST_AGGRESSION' : mag;
+    }
+    const strong = deltaStrengthState === 'STRONG' || deltaStrengthState === 'EXTREME';
+    let effortResultState = 'INSUFFICIENT';
+    if (strong && directionalProgressATR != null) {
+      if (Math.abs(ratio) < cfg.minEffortRatioPct || deltaSide === 'NONE') effortResultState = 'NEUTRAL';
+      else {
+        const withMove = directionalProgressATR > cfg.lowProgressAtr;
+        effortResultState = deltaSide === 'BUY'
+          ? (withMove ? 'BUYERS_EFFECTIVE' : 'BUYER_NO_PROGRESS')
+          : (withMove ? 'SELLERS_EFFECTIVE' : 'SELLER_NO_PROGRESS');
+      }
+    }
+    return {
+      time: bar.time,
+      delta,
+      absoluteDelta: Math.abs(delta),
+      deltaStrengthPercentile: percentile,
+      deltaStrengthState,
+      deltaSide,
+      deltaRatioPercent: ratio,
+      directionalProgressATR,
+      priceProgressState,
+      effortResultState,
+      dataQuality: deltaStrengthState === 'INSUFFICIENT_DATA' || priceProgressState === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT_DATA' : quality,
+      incomplete,
+    };
+  });
+}
+
+function deltaProgressRows(result, mode, dense) {
+  if (!result || mode === 'OFF') return [];
+  const strengthWord = result.deltaStrengthState === 'EXTREME'
+    ? (dense ? 'EXT' : 'EXTREME')
+    : result.deltaStrengthState === 'STRONG'
+      ? (dense ? 'STR' : 'STRONG')
+      : result.deltaStrengthState === 'WEAK'
+        ? 'WEAK'
+        : result.deltaStrengthState === 'NORMAL'
+          ? 'NORM'
+          : null;
+  const strength = strengthWord == null
+    ? null
+    : result.deltaSide === 'BUY'
+      ? (dense ? `BΔ ${strengthWord}` : `BUY Δ ${strengthWord}`)
+      : result.deltaSide === 'SELL'
+        ? (dense ? `SΔ ${strengthWord}` : `SELL Δ ${strengthWord}`)
+        : `Δ ${strengthWord}`;
+  const ratio = result.deltaRatioPercent == null
+    ? null
+    : `ΔR ${result.deltaRatioPercent > 0 ? '+' : result.deltaRatioPercent < 0 ? '−' : ''}${Math.abs(result.deltaRatioPercent).toFixed(0)}%`;
+  const progress = result.directionalProgressATR == null
+    ? null
+    : `PROG ${result.directionalProgressATR < 0 ? '−' : ''}${Math.abs(result.directionalProgressATR).toFixed(2)} ATR`;
+  const effort = result.effortResultState === 'BUYER_NO_PROGRESS'
+    ? (dense ? 'B NP' : 'BUYER NP')
+    : result.effortResultState === 'SELLER_NO_PROGRESS'
+      ? (dense ? 'S NP' : 'SELLER NP')
+      : result.effortResultState === 'BUYERS_EFFECTIVE'
+        ? (dense ? 'B EFF' : 'BUY EFF')
+        : result.effortResultState === 'SELLERS_EFFECTIVE'
+          ? (dense ? 'S EFF' : 'SELL EFF')
+          : null;
+  const tip = [
+    'DELTA / PROGRESS',
+    result.incomplete ? 'Live candle (provisional)' : 'Completed candle',
+    '',
+    `Delta: ${result.delta == null ? 'unavailable' : Math.round(result.delta)}`,
+    `Strength: ${result.deltaStrengthState}${result.deltaStrengthPercentile == null ? '' : ` · ${result.deltaStrengthPercentile.toFixed(0)}th pct`}`,
+    `Delta ratio: ${result.deltaRatioPercent == null ? 'unavailable' : `${result.deltaRatioPercent.toFixed(1)}%`}`,
+    `Progress: ${result.directionalProgressATR == null ? 'unavailable' : `${result.directionalProgressATR.toFixed(3)} ATR`}`,
+    `Progress state: ${result.priceProgressState}`,
+    `Effort / result: ${result.effortResultState}`,
+    '',
+    'No-progress is not a long or short, and not absorption by itself.',
+  ].join('\n');
+  const rows = [];
+  if (mode === 'COMPACT') {
+    if (effort) rows.push({ key: 'effort', text: effort, priority: 100, tip });
+    if (ratio) rows.push({ key: 'ratio', text: ratio, priority: 80, tip });
+    if (!dense && strength && (result.deltaStrengthState === 'STRONG' || result.deltaStrengthState === 'EXTREME')) {
+      rows.push({ key: 'strength', text: strength, priority: 60, tip });
+    }
+  } else {
+    if (strength && (!dense || result.deltaStrengthState === 'STRONG' || result.deltaStrengthState === 'EXTREME')) {
+      rows.push({ key: 'strength', text: strength, priority: 70, tip });
+    }
+    if (ratio) rows.push({ key: 'ratio', text: ratio, priority: 90, tip });
+    if (progress && !dense) rows.push({ key: 'progress', text: progress, priority: 50, tip });
+    if (effort) rows.push({ key: 'effort', text: effort, priority: 100, tip });
+  }
+  const order = { strength: 0, ratio: 1, progress: 2, effort: 3 };
+  return rows.sort((a, b) => b.priority - a.priority).slice(0, dense ? 2 : 4).sort((a, b) => order[a.key] - order[b.key]);
+}
+
+function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
+  const dense = maxW < 46;
+  const rows = deltaProgressRows(result, fpDeltaProgressMode, dense);
+  if (!rows.length) return null;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 9px JetBrains Mono, monospace';
+  let top = null;
+  let bottom = null;
+  rows.forEach((row, i) => {
+    const y = footY + DELTA_LABEL_FIRST_OFFSET + i * DELTA_LABEL_LINE_H;
+    top = top == null ? y - 6 : top;
+    bottom = y + 6;
+    const color = row.key === 'effort'
+      ? (row.text.includes('NP') ? '#fbbf24' : row.text.startsWith('S') || row.text.startsWith('SELL') ? '#fca5a5' : '#86efac')
+      : row.key === 'progress'
+        ? (result.directionalProgressATR < 0 ? '#fca5a5' : result.priceProgressState === 'LOW_PROGRESS' ? '#fbbf24' : '#86efac')
+        : result.deltaSide === 'SELL' || (result.deltaRatioPercent ?? 0) < 0
+          ? '#fca5a5'
+          : result.deltaSide === 'BUY' || (result.deltaRatioPercent ?? 0) > 0
+            ? '#86efac'
+            : '#94a3b8';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.strokeText(row.text, cx, y, maxW);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = result.incomplete ? 0.7 : 1;
+    ctx.fillText(row.text, cx, y, maxW);
+    ctx.globalAlpha = 1;
+  });
+  ctx.restore();
+  return {
+    x0: cx - maxW / 2,
+    x1: cx + maxW / 2,
+    y0: top,
+    y1: bottom,
+    tip: rows[0]?.tip || '',
+  };
+}
+
 function drawFootprint(symbol = selectedSymbol) {
   const view = fpViews.get(symbol);
   if (!view?.ctx || !view.canvas) return;
@@ -3698,7 +3959,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
-  const bottomPad = 140;
+  const bottomPad = fpDeltaProgressMode === 'OFF' ? 140 : 196;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -3811,6 +4072,9 @@ function drawFootprint(symbol = selectedSymbol) {
     resetMode: CVD_RESET_MODE,
   });
   const flowByTime = new Map(flowMetrics.map((m) => [m.time, m]));
+  const deltaByTime = new Map(annotateDeltaProgress(bars, {
+    lastIsLive: lastIsLive && endIdx === bars.length,
+  }).map((row) => [row.time, row]));
   const microByTime = annotateBarsPrimaryMicro(bars, flowByTime, {
     lastIsLive: lastIsLive && endIdx === bars.length,
   });
@@ -3984,6 +4248,8 @@ function drawFootprint(symbol = selectedSymbol) {
 
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + 66, barWidth - 2);
+    const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
+    if (deltaHit?.tip) view.microHits.push(deltaHit);
   }
 
   if (railW > 0) {

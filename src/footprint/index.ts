@@ -4,3 +4,4 @@ export * from './aggregator.js';
 export * from './rollup.js';
 export * from './structure.js';
 export * from './displacement-cvd.js';
+export * from './delta-progress.js';

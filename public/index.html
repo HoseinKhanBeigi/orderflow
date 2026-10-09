@@ -76,6 +76,14 @@
                 <option value="4">4</option>
               </select>
             </label>
+            <label class="chart-symbol-picker" for="fp-delta-progress-select" title="Delta strength, delta ratio, and price progress under each candle">
+              Δ labels
+              <select id="fp-delta-progress-select" aria-label="Delta progress label mode">
+                <option value="METRICS">Metrics</option>
+                <option value="COMPACT">Compact</option>
+                <option value="OFF">Off</option>
+              </select>
+            </label>
             <label class="chart-symbol-picker" for="fp-flow-lookback-select" title="How many candles to use for Sell/Buy abs and Bid/Ask cons %">
               Abs/Cons
               <select id="fp-flow-lookback-select" aria-label="Absorption and consumption lookback candles">
@@ -148,6 +156,6 @@
   </footer>
 
   <script src="/client.bundle.js?v=client-10"></script>
-  <script src="/app.js?v=client-12" type="module"></script>
+  <script src="/app.js?v=client-13" type="module"></script>
 </body>
 </html>
