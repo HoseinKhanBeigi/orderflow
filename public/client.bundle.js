@@ -537,11 +537,11 @@ var process = globalThis.process || { env: {} };
       bar.close = price;
       bar.trades += 1;
       bar.dirty = true;
-      const level = priceToTick(price, tickSize(price));
-      let entry = bar.levels.get(level);
+      const level2 = priceToTick(price, tickSize(price));
+      let entry = bar.levels.get(level2);
       if (!entry) {
-        entry = { price: level, buy: 0, sell: 0 };
-        bar.levels.set(level, entry);
+        entry = { price: level2, buy: 0, sell: 0 };
+        bar.levels.set(level2, entry);
       }
       if (side2 === "BUY") {
         entry.buy += quoteValue;
@@ -7380,19 +7380,19 @@ var process = globalThis.process || { env: {} };
         imbalance: 0
       });
     }
-    for (const level of levels2) {
-      if (level.outOfView || level.quantity <= 0) continue;
+    for (const level2 of levels2) {
+      if (level2.outOfView || level2.quantity <= 0) continue;
       const bucket2 = buckets.find(
-        (b) => level.distanceBps >= b.fromBps && level.distanceBps < b.toBps
+        (b) => level2.distanceBps >= b.fromBps && level2.distanceBps < b.toBps
       );
       if (!bucket2) continue;
-      if (level.side === "BID") {
-        bucket2.bidQuantity += level.quantity;
-        bucket2.bidNotional += level.notionalValue;
+      if (level2.side === "BID") {
+        bucket2.bidQuantity += level2.quantity;
+        bucket2.bidNotional += level2.notionalValue;
         bucket2.bidLevels += 1;
       } else {
-        bucket2.askQuantity += level.quantity;
-        bucket2.askNotional += level.notionalValue;
+        bucket2.askQuantity += level2.quantity;
+        bucket2.askNotional += level2.notionalValue;
         bucket2.askLevels += 1;
       }
     }
@@ -7406,11 +7406,11 @@ var process = globalThis.process || { env: {} };
     return config.imbalanceCutsBps.map((withinBps) => {
       let bidNotional = 0;
       let askNotional = 0;
-      for (const level of levels2) {
-        if (level.outOfView || level.quantity <= 0) continue;
-        if (level.distanceBps > withinBps) continue;
-        if (level.side === "BID") bidNotional += level.notionalValue;
-        else askNotional += level.notionalValue;
+      for (const level2 of levels2) {
+        if (level2.outOfView || level2.quantity <= 0) continue;
+        if (level2.distanceBps > withinBps) continue;
+        if (level2.side === "BID") bidNotional += level2.notionalValue;
+        else askNotional += level2.notionalValue;
       }
       const total = bidNotional + askNotional;
       return {
@@ -7434,22 +7434,22 @@ var process = globalThis.process || { env: {} };
       bidLevels: 0,
       askLevels: 0
     };
-    for (const level of levels2) {
-      if (level.outOfView || level.quantity <= 0) continue;
-      const weighted = level.notionalValue * distanceWeight(level.distanceBps, config.distanceWeightK);
-      const near = level.distanceBps <= config.nearTouchBps;
-      if (level.side === "BID") {
-        out.bidNotional += level.notionalValue;
-        out.bidQuantity += level.quantity;
+    for (const level2 of levels2) {
+      if (level2.outOfView || level2.quantity <= 0) continue;
+      const weighted = level2.notionalValue * distanceWeight(level2.distanceBps, config.distanceWeightK);
+      const near = level2.distanceBps <= config.nearTouchBps;
+      if (level2.side === "BID") {
+        out.bidNotional += level2.notionalValue;
+        out.bidQuantity += level2.quantity;
         out.weightedBidNotional += weighted;
         out.bidLevels += 1;
-        if (near) out.nearBidNotional += level.notionalValue;
+        if (near) out.nearBidNotional += level2.notionalValue;
       } else {
-        out.askNotional += level.notionalValue;
-        out.askQuantity += level.quantity;
+        out.askNotional += level2.notionalValue;
+        out.askQuantity += level2.quantity;
         out.weightedAskNotional += weighted;
         out.askLevels += 1;
-        if (near) out.nearAskNotional += level.notionalValue;
+        if (near) out.nearAskNotional += level2.notionalValue;
       }
     }
     return out;
@@ -7776,17 +7776,17 @@ var process = globalThis.process || { env: {} };
     observe(at, mid, levels2, flow) {
       const depth = { BID: this.emptyAmounts(), ASK: this.emptyAmounts() };
       const flows = { BID: this.emptyFlows(), ASK: this.emptyFlows() };
-      for (const level of levels2) {
-        if (level.outOfView || level.quantity <= 0) continue;
-        const index = this.bandIndex(level.distanceBps);
+      for (const level2 of levels2) {
+        if (level2.outOfView || level2.quantity <= 0) continue;
+        const index = this.bandIndex(level2.distanceBps);
         if (index < 0) continue;
-        depth[level.side][index].quantity += level.quantity;
-        depth[level.side][index].notional += level.notionalValue;
+        depth[level2.side][index].quantity += level2.quantity;
+        depth[level2.side][index].notional += level2.notionalValue;
       }
-      for (const level of flow.levels) {
-        const index = this.bandIndex(level.distanceBps);
+      for (const level2 of flow.levels) {
+        const index = this.bandIndex(level2.distanceBps);
         if (index < 0) continue;
-        addFlow(flows[level.side][index], level);
+        addFlow(flows[level2.side][index], level2);
       }
       const point = { at, mid, depth, flow: flows };
       if (this.points.length === 0) {
@@ -8255,37 +8255,37 @@ var process = globalThis.process || { env: {} };
     }
     fold(levels2, now, mid) {
       if (mid <= 0) return;
-      for (const level of levels2) {
-        if (level.outOfView) continue;
-        const entry = this.entry(level.side, level.price, level.firstSeenAt);
-        if (entry.baseline.firstSeenAt !== level.firstSeenAt) {
-          entry.baseline = newBaseline(level.firstSeenAt);
+      for (const level2 of levels2) {
+        if (level2.outOfView) continue;
+        const entry = this.entry(level2.side, level2.price, level2.firstSeenAt);
+        if (entry.baseline.firstSeenAt !== level2.firstSeenAt) {
+          entry.baseline = newBaseline(level2.firstSeenAt);
         }
         const base = entry.baseline;
-        entry.totalConsumed += Math.max(0, level.consumedNotional - base.consumed);
-        entry.totalReplenished += Math.max(0, level.replenishedNotional - base.replenished);
-        entry.totalCancelled += Math.max(0, level.cancelledNotional - base.cancelled);
-        const newAttacks = Math.max(0, level.attackCount - base.attacks);
-        const newDefended = Math.max(0, level.defendedCount - base.defended);
-        base.consumed = level.consumedNotional;
-        base.replenished = level.replenishedNotional;
-        base.cancelled = level.cancelledNotional;
-        base.attacks = level.attackCount;
-        base.defended = level.defendedCount;
+        entry.totalConsumed += Math.max(0, level2.consumedNotional - base.consumed);
+        entry.totalReplenished += Math.max(0, level2.replenishedNotional - base.replenished);
+        entry.totalCancelled += Math.max(0, level2.cancelledNotional - base.cancelled);
+        const newAttacks = Math.max(0, level2.attackCount - base.attacks);
+        const newDefended = Math.max(0, level2.defendedCount - base.defended);
+        base.consumed = level2.consumedNotional;
+        base.replenished = level2.replenishedNotional;
+        base.cancelled = level2.cancelledNotional;
+        base.attacks = level2.attackCount;
+        base.defended = level2.defendedCount;
         if (newAttacks > 0) {
           entry.attacks += newAttacks;
           entry.lastTestAt = now;
           entry.activeTest = { startMid: mid, extreme: mid };
         }
         if (entry.activeTest) {
-          entry.activeTest.extreme = level.side === "BID" ? Math.min(entry.activeTest.extreme, mid) : Math.max(entry.activeTest.extreme, mid);
+          entry.activeTest.extreme = level2.side === "BID" ? Math.min(entry.activeTest.extreme, mid) : Math.max(entry.activeTest.extreme, mid);
         }
         if (newDefended > 0) {
           entry.defendedTests += newDefended;
           this.closeTest(entry);
         }
         const buffer = this.config.zoneBps / 1e4;
-        const through = level.side === "BID" ? mid < level.price * (1 - buffer) : mid > level.price * (1 + buffer);
+        const through = level2.side === "BID" ? mid < level2.price * (1 - buffer) : mid > level2.price * (1 + buffer);
         if (through && entry.attacks > 0) {
           if (!entry.extendedThrough) entry.brokenTests += 1;
           entry.extendedThrough = true;
@@ -8462,13 +8462,13 @@ var process = globalThis.process || { env: {} };
       replenishedNotional: 0
     };
   }
-  function flowForLevel(flows, level, mid) {
-    let flow = flows.find((entry) => entry.side === level.side && entry.price === level.price);
+  function flowForLevel(flows, level2, mid) {
+    let flow = flows.find((entry) => entry.side === level2.side && entry.price === level2.price);
     if (!flow) {
       flow = {
-        side: level.side,
-        price: level.price,
-        distanceBps: distanceBpsOf(level.side, level.price, mid),
+        side: level2.side,
+        price: level2.price,
+        distanceBps: distanceBpsOf(level2.side, level2.price, mid),
         ...emptyFlow()
       };
       flows.push(flow);
@@ -8549,28 +8549,28 @@ var process = globalThis.process || { env: {} };
     snapshotLevels(now, mid) {
       const out = [];
       for (const side2 of ["ASK", "BID"]) {
-        for (const level of this.levels[side2].values()) {
-          if (level.quantity <= 0 && level.removedAt > 0) continue;
-          out.push(this.toPublic(level, now, mid));
+        for (const level2 of this.levels[side2].values()) {
+          if (level2.quantity <= 0 && level2.removedAt > 0) continue;
+          out.push(this.toPublic(level2, now, mid));
         }
       }
       return out.sort((a, b) => b.price - a.price);
     }
     levelAt(side2, price, now, mid) {
-      const level = this.levels[side2].get(levelKey(price, this.ticks.tickFor(price)));
-      return level ? this.toPublic(level, now, mid) : null;
+      const level2 = this.levels[side2].get(levelKey(price, this.ticks.tickFor(price)));
+      return level2 ? this.toPublic(level2, now, mid) : null;
     }
     timelineAt(side2, price, mid) {
-      const level = this.levels[side2].get(levelKey(price, this.ticks.tickFor(price)));
-      return level ? level.timeline.toArray() : [];
+      const level2 = this.levels[side2].get(levelKey(price, this.ticks.tickFor(price)));
+      return level2 ? level2.timeline.toArray() : [];
     }
     /** Removes long-dead levels so the map stays bounded on a live feed. */
     prune(now) {
       const ttl = Math.max(6e4, this.config.replenishWindowMs * 12);
       for (const side2 of ["BID", "ASK"]) {
         const map = this.levels[side2];
-        for (const [price, level] of map) {
-          if (level.quantity <= 0 && level.removedAt > 0 && now - level.removedAt > ttl) {
+        for (const [price, level2] of map) {
+          if (level2.quantity <= 0 && level2.removedAt > 0 && now - level2.removedAt > ttl) {
             map.delete(price);
           }
         }
@@ -8608,37 +8608,37 @@ var process = globalThis.process || { env: {} };
     reconcile(side2, current, edgePrice, now, mid, flow, delta) {
       const map = this.levels[side2];
       for (const [price, quantity] of current) {
-        const level = map.get(price) ?? this.create(side2, price, now, quantity, mid);
-        if (!map.has(price)) map.set(price, level);
-        level.visible = true;
-        level.outOfView = false;
-        level.removedAt = 0;
-        this.applyQuantity(level, quantity, now, mid, flow, delta.levels);
-        this.trackApproach(level, now, mid);
+        const level2 = map.get(price) ?? this.create(side2, price, now, quantity, mid);
+        if (!map.has(price)) map.set(price, level2);
+        level2.visible = true;
+        level2.outOfView = false;
+        level2.removedAt = 0;
+        this.applyQuantity(level2, quantity, now, mid, flow, delta.levels);
+        this.trackApproach(level2, now, mid);
         if (quantity > 0) this.sizeDist[side2].add(quantity * price);
-        level.sizePercentile = this.sizeDist[side2].midRank(quantity * price);
+        level2.sizePercentile = this.sizeDist[side2].midRank(quantity * price);
       }
-      for (const [price, level] of map) {
+      for (const [price, level2] of map) {
         if (current.has(price)) continue;
-        if (level.quantity <= 0) continue;
+        if (level2.quantity <= 0) continue;
         const beyondEdge = edgePrice > 0 && (side2 === "BID" ? price < edgePrice : price > edgePrice);
         if (beyondEdge) {
-          level.outOfView = true;
-          level.visible = false;
+          level2.outOfView = true;
+          level2.visible = false;
           delta.truncatedLevels += 1;
           continue;
         }
-        level.visible = false;
-        this.applyQuantity(level, 0, now, mid, flow, delta.levels);
-        if (level.quantity <= 0) level.removedAt = now;
+        level2.visible = false;
+        this.applyQuantity(level2, 0, now, mid, flow, delta.levels);
+        if (level2.quantity <= 0) level2.removedAt = now;
       }
-      for (const level of map.values()) {
-        this.settleUnresolved(level, now, mid, flow, delta.levels);
-        this.settleEpisode(level, now, mid);
+      for (const level2 of map.values()) {
+        this.settleUnresolved(level2, now, mid, flow, delta.levels);
+        this.settleEpisode(level2, now, mid);
       }
     }
     create(side2, price, now, quantity, mid) {
-      const level = {
+      const level2 = {
         side: side2,
         price,
         quantity: 0,
@@ -8677,68 +8677,68 @@ var process = globalThis.process || { env: {} };
         lastEvent: "NONE",
         timeline: new RingBuffer(this.config.timelinePoints)
       };
-      return level;
+      return level2;
     }
-    applyQuantity(level, quantity, now, mid, flow, levelFlows) {
-      const previous = level.quantity;
+    applyQuantity(level2, quantity, now, mid, flow, levelFlows) {
+      const previous = level2.quantity;
       const change = quantity - previous;
-      if (previous > 0 && now > level.lastPresentAt) {
-        level.presentMs += now - level.lastPresentAt;
+      if (previous > 0 && now > level2.lastPresentAt) {
+        level2.presentMs += now - level2.lastPresentAt;
       }
-      level.lastPresentAt = now;
+      level2.lastPresentAt = now;
       if (Math.abs(change) < 1e-12) {
-        level.quantity = quantity;
-        level.lastUpdatedAt = now;
+        level2.quantity = quantity;
+        level2.lastUpdatedAt = now;
         return;
       }
       let event = change > 0 ? "LIQUIDITY_ADDED" : "LIQUIDITY_CANCELLED";
       if (change > 0) {
-        const levelFlow = flowForLevel(levelFlows, level, mid);
-        level.addedQuantity += change;
+        const levelFlow = flowForLevel(levelFlows, level2, mid);
+        level2.addedQuantity += change;
         flow.addedQuantity += change;
-        flow.addedNotional += change * level.price;
+        flow.addedNotional += change * level2.price;
         levelFlow.addedQuantity += change;
-        levelFlow.addedNotional += change * level.price;
-        const withinWindow = now - level.lastConsumedAt <= this.config.replenishWindowMs;
-        if (level.outstandingConsumed > 0 && withinWindow) {
-          const replenished = Math.min(change, level.outstandingConsumed);
-          level.replenishedQuantity += replenished;
-          level.outstandingConsumed -= replenished;
-          level.replenishmentCount += 1;
+        levelFlow.addedNotional += change * level2.price;
+        const withinWindow = now - level2.lastConsumedAt <= this.config.replenishWindowMs;
+        if (level2.outstandingConsumed > 0 && withinWindow) {
+          const replenished = Math.min(change, level2.outstandingConsumed);
+          level2.replenishedQuantity += replenished;
+          level2.outstandingConsumed -= replenished;
+          level2.replenishmentCount += 1;
           flow.replenishedQuantity += replenished;
-          flow.replenishedNotional += replenished * level.price;
+          flow.replenishedNotional += replenished * level2.price;
           levelFlow.replenishedQuantity += replenished;
-          levelFlow.replenishedNotional += replenished * level.price;
+          levelFlow.replenishedNotional += replenished * level2.price;
           event = "LIQUIDITY_REPLENISHED";
         }
       } else {
         const drop = -change;
-        const matched = this.matcher.claim(level.side, level.price, drop, now, this.ticks.tick);
+        const matched = this.matcher.claim(level2.side, level2.price, drop, now, this.ticks.tick);
         if (matched > 0) {
-          this.recordConsumption(level, matched, now, flow, previous, levelFlows, mid);
+          this.recordConsumption(level2, matched, now, flow, previous, levelFlows, mid);
           event = "LIQUIDITY_CONSUMED";
         }
         const remainder = drop - matched;
         if (remainder > 1e-12) {
-          level.unresolved.push({ at: now, quantity: remainder });
+          level2.unresolved.push({ at: now, quantity: remainder });
           if (matched <= 0) event = "LIQUIDITY_MOVED";
         }
       }
-      level.quantity = quantity;
-      level.lastUpdatedAt = now;
-      level.updateCount += 1;
-      if (quantity > level.maxQuantity) {
-        level.maxQuantity = quantity;
-        level.maxNotional = quantity * level.price;
+      level2.quantity = quantity;
+      level2.lastUpdatedAt = now;
+      level2.updateCount += 1;
+      if (quantity > level2.maxQuantity) {
+        level2.maxQuantity = quantity;
+        level2.maxNotional = quantity * level2.price;
       }
-      level.lastEvent = event;
-      level.timeline.push({
+      level2.lastEvent = event;
+      level2.timeline.push({
         at: now,
-        notional: quantity * level.price,
+        notional: quantity * level2.price,
         quantity,
         event
       });
-      this.pushEvent(level, event, Math.abs(change), now, mid, eventNote(event));
+      this.pushEvent(level2, event, Math.abs(change), now, mid, eventNote(event));
     }
     /**
      * `sizeBefore` is the resting size immediately before this attack started and
@@ -8748,55 +8748,55 @@ var process = globalThis.process || { env: {} };
      * would be wrong in one of the two paths and would skew every subsequent
      * defended/broken verdict for the level.
      */
-    recordConsumption(level, quantity, now, flow, sizeBefore, levelFlows, mid) {
-      level.consumedQuantity += quantity;
-      level.executionCount += 1;
-      level.outstandingConsumed += quantity;
-      level.lastConsumedAt = now;
+    recordConsumption(level2, quantity, now, flow, sizeBefore, levelFlows, mid) {
+      level2.consumedQuantity += quantity;
+      level2.executionCount += 1;
+      level2.outstandingConsumed += quantity;
+      level2.lastConsumedAt = now;
       flow.consumedQuantity += quantity;
-      flow.consumedNotional += quantity * level.price;
-      const levelFlow = flowForLevel(levelFlows, level, mid);
+      flow.consumedNotional += quantity * level2.price;
+      const levelFlow = flowForLevel(levelFlows, level2, mid);
       levelFlow.consumedQuantity += quantity;
-      levelFlow.consumedNotional += quantity * level.price;
-      if (!level.episode) {
-        level.episode = {
+      levelFlow.consumedNotional += quantity * level2.price;
+      if (!level2.episode) {
+        level2.episode = {
           startedAt: now,
           startQuantity: sizeBefore,
           lastConsumedAt: now,
           consumed: quantity
         };
-        level.attackCount += 1;
+        level2.attackCount += 1;
       } else {
-        level.episode.lastConsumedAt = now;
-        level.episode.consumed += quantity;
+        level2.episode.lastConsumedAt = now;
+        level2.episode.consumed += quantity;
       }
     }
     /**
      * Retries unmatched drops against trades that arrived after the book update,
      * then commits whatever is still unexplained as a cancellation.
      */
-    settleUnresolved(level, now, mid, flow, levelFlows) {
-      if (!level.unresolved.length) return;
+    settleUnresolved(level2, now, mid, flow, levelFlows) {
+      if (!level2.unresolved.length) return;
       const kept = [];
-      for (const pending of level.unresolved) {
+      for (const pending of level2.unresolved) {
         let remaining = pending.quantity;
         if (now - pending.at <= this.config.tradeMatchWindowMs) {
-          const matched = this.matcher.claim(level.side, level.price, remaining, pending.at, this.ticks.tick);
+          const matched = this.matcher.claim(level2.side, level2.price, remaining, pending.at, this.ticks.tick);
           if (matched > 0) {
-            this.recordConsumption(level, matched, pending.at, flow, level.quantity + pending.quantity, levelFlows, mid);
+            this.recordConsumption(level2, matched, pending.at, flow, level2.quantity + pending.quantity, levelFlows, mid);
             remaining -= matched;
           }
         }
         if (remaining <= 1e-12) continue;
         if (now - pending.at >= this.config.unresolvedCommitMs) {
-          level.cancelledQuantity += remaining;
+          level2.cancelledQuantity += remaining;
           flow.cancelledQuantity += remaining;
-          flow.cancelledNotional += remaining * level.price;
-          const levelFlow = flowForLevel(levelFlows, level, mid);
+          flow.cancelledNotional += remaining * level2.price;
+          const levelFlow = flowForLevel(levelFlows, level2, mid);
           levelFlow.cancelledQuantity += remaining;
-          levelFlow.cancelledNotional += remaining * level.price;
+          levelFlow.cancelledNotional += remaining * level2.price;
           this.pushEvent(
-            level,
+            level2,
             "LIQUIDITY_CANCELLED",
             remaining,
             now,
@@ -8807,7 +8807,7 @@ var process = globalThis.process || { env: {} };
           kept.push({ at: pending.at, quantity: remaining });
         }
       }
-      level.unresolved = kept;
+      level2.unresolved = kept;
     }
     /**
      * Closes an attack episode once consumption stops, then decides whether the
@@ -8818,52 +8818,52 @@ var process = globalThis.process || { env: {} };
      * under sustained pressure that refills after every hit — the clearest form of
      * defence there is — never settles, and so never counts as defended at all.
      */
-    settleEpisode(level, now, mid) {
-      const episode = level.episode;
+    settleEpisode(level2, now, mid) {
+      const episode = level2.episode;
       if (!episode) return;
-      const recovered = episode.startQuantity > 0 && level.quantity >= episode.startQuantity && level.outstandingConsumed <= 1e-12;
+      const recovered = episode.startQuantity > 0 && level2.quantity >= episode.startQuantity && level2.outstandingConsumed <= 1e-12;
       if (!recovered && now - episode.lastConsumedAt < this.config.replenishWindowMs) return;
       const start = episode.startQuantity;
-      level.episode = null;
+      level2.episode = null;
       if (start <= 0) return;
-      if (level.quantity >= start * 0.6) {
-        level.defendedCount += 1;
-        this.pushEvent(level, "WALL_DEFENDED", level.quantity, now, mid, "size restored after attack");
+      if (level2.quantity >= start * 0.6) {
+        level2.defendedCount += 1;
+        this.pushEvent(level2, "WALL_DEFENDED", level2.quantity, now, mid, "size restored after attack");
         return;
       }
-      if (level.quantity <= start * (1 - this.config.wallBreakFraction)) {
-        level.brokenCount += 1;
-        this.pushEvent(level, "WALL_BROKEN", episode.consumed, now, mid, "level gave way under aggression");
+      if (level2.quantity <= start * (1 - this.config.wallBreakFraction)) {
+        level2.brokenCount += 1;
+        this.pushEvent(level2, "WALL_BROKEN", episode.consumed, now, mid, "level gave way under aggression");
       }
     }
     /**
      * Records what a level does as price closes in on it. Losing size to
      * cancellations during an approach is withdrawal, not defence.
      */
-    trackApproach(level, now, mid) {
-      const bps2 = distanceBpsOf(level.side, level.price, mid);
-      if (bps2 < level.closestApproachBps) {
-        level.closestApproachBps = bps2;
-        level.quantityAtClosestApproach = level.quantity;
+    trackApproach(level2, now, mid) {
+      const bps2 = distanceBpsOf(level2.side, level2.price, mid);
+      if (bps2 < level2.closestApproachBps) {
+        level2.closestApproachBps = bps2;
+        level2.quantityAtClosestApproach = level2.quantity;
       }
-      if (bps2 > level.approachRefBps) {
-        level.approachRefBps = bps2;
-        level.approachRefQuantity = level.quantity;
-        level.approachRefCancelled = level.cancelledQuantity;
-        level.approachRefConsumed = level.consumedQuantity;
+      if (bps2 > level2.approachRefBps) {
+        level2.approachRefBps = bps2;
+        level2.approachRefQuantity = level2.quantity;
+        level2.approachRefCancelled = level2.cancelledQuantity;
+        level2.approachRefConsumed = level2.consumedQuantity;
         return;
       }
-      if (level.approachRefBps - bps2 < this.config.approachArmBps) return;
-      if (level.approachRefQuantity <= 0) return;
-      const lost = level.approachRefQuantity - level.quantity;
+      if (level2.approachRefBps - bps2 < this.config.approachArmBps) return;
+      if (level2.approachRefQuantity <= 0) return;
+      const lost = level2.approachRefQuantity - level2.quantity;
       if (lost <= 0) return;
-      const spanCancelled = level.cancelledQuantity - level.approachRefCancelled;
-      const spanConsumed = level.consumedQuantity - level.approachRefConsumed;
-      const shrankEnough = lost >= level.approachRefQuantity * this.config.approachWithdrawalFraction;
+      const spanCancelled = level2.cancelledQuantity - level2.approachRefCancelled;
+      const spanConsumed = level2.consumedQuantity - level2.approachRefConsumed;
+      const shrankEnough = lost >= level2.approachRefQuantity * this.config.approachWithdrawalFraction;
       if (shrankEnough && spanCancelled > spanConsumed) {
-        if (!level.approachWithdrawal) {
+        if (!level2.approachWithdrawal) {
           this.pushEvent(
-            level,
+            level2,
             "WALL_DISAPPEARED",
             lost,
             now,
@@ -8871,88 +8871,88 @@ var process = globalThis.process || { env: {} };
             "size pulled as price approached, before being attacked"
           );
         }
-        level.approachWithdrawal = true;
+        level2.approachWithdrawal = true;
       }
     }
-    pushEvent(level, type, quantity, now, mid, note) {
+    pushEvent(level2, type, quantity, now, mid, note) {
       this.events.push({
         type,
-        side: level.side,
-        price: level.price,
+        side: level2.side,
+        price: level2.price,
         timestamp: now,
         quantity,
-        notional: quantity * level.price,
-        distanceBps: distanceBpsOf(level.side, level.price, mid),
+        notional: quantity * level2.price,
+        distanceBps: distanceBpsOf(level2.side, level2.price, mid),
         note
       });
     }
-    toPublic(level, now, mid) {
-      const reference = mid || this.lastMid || level.price;
-      const distanceFromMid = Math.max(0, level.side === "ASK" ? level.price - reference : reference - level.price);
+    toPublic(level2, now, mid) {
+      const reference = mid || this.lastMid || level2.price;
+      const distanceFromMid = Math.max(0, level2.side === "ASK" ? level2.price - reference : reference - level2.price);
       const distanceBps = reference > 0 ? distanceFromMid / reference * 1e4 : 0;
-      const ageMs = Math.max(0, now - level.firstSeenAt);
-      const unresolved = level.unresolved.reduce((sum, u) => sum + u.quantity, 0);
+      const ageMs = Math.max(0, now - level2.firstSeenAt);
+      const unresolved = level2.unresolved.reduce((sum, u) => sum + u.quantity, 0);
       const scoreInput = {
         ageMs,
-        presentMs: level.presentMs,
+        presentMs: level2.presentMs,
         distanceBps,
-        quantity: level.quantity,
-        maxQuantity: level.maxQuantity,
-        consumedQuantity: level.consumedQuantity,
-        cancelledQuantity: level.cancelledQuantity,
-        replenishedQuantity: level.replenishedQuantity,
-        attackCount: level.attackCount,
-        defendedCount: level.defendedCount,
-        replenishmentCount: level.replenishmentCount
+        quantity: level2.quantity,
+        maxQuantity: level2.maxQuantity,
+        consumedQuantity: level2.consumedQuantity,
+        cancelledQuantity: level2.cancelledQuantity,
+        replenishedQuantity: level2.replenishedQuantity,
+        attackCount: level2.attackCount,
+        defendedCount: level2.defendedCount,
+        replenishmentCount: level2.replenishmentCount
       };
       const persistence = persistenceScore(scoreInput, this.config);
       const replenishment = replenishmentScoreOf(scoreInput);
       const withdrawal = withdrawalScoreOf(scoreInput, this.config);
       const absorption = absorptionScoreOf(scoreInput);
-      const isWall = level.sizePercentile >= this.config.wallMinPercentile && level.quantity > 0;
+      const isWall = level2.sizePercentile >= this.config.wallMinPercentile && level2.quantity > 0;
       return {
-        side: level.side,
-        price: level.price,
-        quantity: level.quantity,
-        notionalValue: level.quantity * level.price,
+        side: level2.side,
+        price: level2.price,
+        quantity: level2.quantity,
+        notionalValue: level2.quantity * level2.price,
         distanceFromMid,
         distanceBps,
         distancePercent: distanceBps / 100,
-        firstSeenAt: level.firstSeenAt,
-        lastUpdatedAt: level.lastUpdatedAt,
+        firstSeenAt: level2.firstSeenAt,
+        lastUpdatedAt: level2.lastUpdatedAt,
         ageMs,
-        presentMs: level.presentMs,
-        initialQuantity: level.initialQuantity,
-        initialNotional: level.initialQuantity * level.price,
-        addedQuantity: level.addedQuantity,
-        addedNotional: level.addedQuantity * level.price,
-        consumedQuantity: level.consumedQuantity,
-        consumedNotional: level.consumedQuantity * level.price,
-        cancelledQuantity: level.cancelledQuantity,
-        cancelledNotional: level.cancelledQuantity * level.price,
-        replenishedQuantity: level.replenishedQuantity,
-        replenishedNotional: level.replenishedQuantity * level.price,
+        presentMs: level2.presentMs,
+        initialQuantity: level2.initialQuantity,
+        initialNotional: level2.initialQuantity * level2.price,
+        addedQuantity: level2.addedQuantity,
+        addedNotional: level2.addedQuantity * level2.price,
+        consumedQuantity: level2.consumedQuantity,
+        consumedNotional: level2.consumedQuantity * level2.price,
+        cancelledQuantity: level2.cancelledQuantity,
+        cancelledNotional: level2.cancelledQuantity * level2.price,
+        replenishedQuantity: level2.replenishedQuantity,
+        replenishedNotional: level2.replenishedQuantity * level2.price,
         unresolvedQuantity: unresolved,
-        maxQuantity: level.maxQuantity,
-        maxNotional: level.maxNotional,
-        executionCount: level.executionCount,
-        updateCount: level.updateCount,
-        replenishmentCount: level.replenishmentCount,
-        attackCount: level.attackCount,
-        defendedCount: level.defendedCount,
-        replenishmentRatio: replenishmentRatio(level.replenishedQuantity, level.consumedQuantity),
+        maxQuantity: level2.maxQuantity,
+        maxNotional: level2.maxNotional,
+        executionCount: level2.executionCount,
+        updateCount: level2.updateCount,
+        replenishmentCount: level2.replenishmentCount,
+        attackCount: level2.attackCount,
+        defendedCount: level2.defendedCount,
+        replenishmentRatio: replenishmentRatio(level2.replenishedQuantity, level2.consumedQuantity),
         persistenceScore: persistence,
         replenishmentScore: replenishment,
         withdrawalScore: withdrawal,
         absorptionScore: absorption,
-        sizePercentile: level.sizePercentile,
+        sizePercentile: level2.sizePercentile,
         isWall,
-        closestApproachBps: level.closestApproachBps,
-        notionalAtClosestApproach: level.quantityAtClosestApproach * level.price,
-        approachWithdrawal: level.approachWithdrawal,
-        visible: level.visible,
-        outOfView: level.outOfView,
-        state: classifyLevelState(level, {
+        closestApproachBps: level2.closestApproachBps,
+        notionalAtClosestApproach: level2.quantityAtClosestApproach * level2.price,
+        approachWithdrawal: level2.approachWithdrawal,
+        visible: level2.visible,
+        outOfView: level2.outOfView,
+        state: classifyLevelState(level2, {
           persistence,
           replenishment,
           withdrawal,
@@ -8968,23 +8968,23 @@ var process = globalThis.process || { env: {} };
     const distance = side2 === "ASK" ? price - mid : mid - price;
     return Math.max(0, distance) / mid * 1e4;
   }
-  function classifyLevelState(level, scores, config) {
-    if (level.outOfView) return "PERSISTENT";
-    if (level.quantity <= 0) {
-      return level.consumedQuantity > level.cancelledQuantity ? "BROKEN" : "VACUUM";
+  function classifyLevelState(level2, scores, config) {
+    if (level2.outOfView) return "PERSISTENT";
+    if (level2.quantity <= 0) {
+      return level2.consumedQuantity > level2.cancelledQuantity ? "BROKEN" : "VACUUM";
     }
-    if (level.brokenCount > 0 && level.quantity < level.maxQuantity * 0.2) return "BROKEN";
-    if (level.approachWithdrawal) return "WITHDRAWING";
+    if (level2.brokenCount > 0 && level2.quantity < level2.maxQuantity * 0.2) return "BROKEN";
+    if (level2.approachWithdrawal) return "WITHDRAWING";
     if (scores.isWall && scores.ageMs < config.wallYoungMs) return "UNRELIABLE";
     if (scores.withdrawal >= 60 && scores.withdrawal > scores.replenishment) return "WITHDRAWING";
     if (scores.absorption >= config.minAbsorptionScore) return "ABSORBING";
-    if (level.defendedCount >= 2 && scores.replenishment >= 50) return "DEFENDING";
-    if (level.episode && scores.replenishment >= 50) return "REPLENISHING";
-    if (level.episode) return "BEING_CONSUMED";
-    if (level.quantity > level.maxQuantity * 0.95 && level.addedQuantity > level.initialQuantity) {
+    if (level2.defendedCount >= 2 && scores.replenishment >= 50) return "DEFENDING";
+    if (level2.episode && scores.replenishment >= 50) return "REPLENISHING";
+    if (level2.episode) return "BEING_CONSUMED";
+    if (level2.quantity > level2.maxQuantity * 0.95 && level2.addedQuantity > level2.initialQuantity) {
       return "BUILDING";
     }
-    if (level.quantity < level.maxQuantity * 0.5) return "WEAKENING";
+    if (level2.quantity < level2.maxQuantity * 0.5) return "WEAKENING";
     if (scores.persistence >= 55) return "PERSISTENT";
     return "NEW";
   }
@@ -9407,16 +9407,16 @@ var process = globalThis.process || { env: {} };
      */
     detect(levels2, now, priceRejection) {
       const bySide = { BID: [], ASK: [] };
-      for (const level of levels2) {
-        if (level.outOfView) continue;
-        bySide[level.side].push(level);
+      for (const level2 of levels2) {
+        if (level2.outOfView) continue;
+        bySide[level2.side].push(level2);
       }
       const walls = [];
       for (const side2 of ["BID", "ASK"]) {
         const sorted = bySide[side2].sort((a, b) => a.distanceBps - b.distanceBps);
         for (let i = 0; i < sorted.length; i++) {
-          const level = sorted[i];
-          if (!level || level.quantity <= 0) continue;
+          const level2 = sorted[i];
+          if (!level2 || level2.quantity <= 0) continue;
           const neighbours = [];
           for (let j = Math.max(0, i - 4); j <= Math.min(sorted.length - 1, i + 4); j++) {
             if (j === i) continue;
@@ -9424,64 +9424,64 @@ var process = globalThis.process || { env: {} };
             if (n) neighbours.push(n.notionalValue);
           }
           const nearbyMedian = median2(neighbours);
-          const vsNearbyMedian = nearbyMedian > 0 ? level.notionalValue / nearbyMedian : 0;
-          const unusualSize = level.sizePercentile >= this.config.wallMinPercentile;
+          const vsNearbyMedian = nearbyMedian > 0 ? level2.notionalValue / nearbyMedian : 0;
+          const unusualSize = level2.sizePercentile >= this.config.wallMinPercentile;
           const unusualLocally = vsNearbyMedian >= this.config.wallMinVsNearbyMedian;
           if (!unusualSize && !unusualLocally) continue;
-          this.persistenceDist.add(level.persistenceScore);
-          this.replenishDist.add(level.replenishmentScore);
+          this.persistenceDist.add(level2.persistenceScore);
+          this.replenishDist.add(level2.replenishmentScore);
           walls.push(
-            this.build(level, vsNearbyMedian, now, side2 === "BID" ? priceRejection.bid : priceRejection.ask)
+            this.build(level2, vsNearbyMedian, now, side2 === "BID" ? priceRejection.bid : priceRejection.ask)
           );
         }
       }
       this.trackDisappearance(walls, now);
       return walls.sort((a, b) => a.distanceBps - b.distanceBps);
     }
-    build(level, vsNearbyMedian, now, priceRejection) {
-      const persistencePercentile = this.persistenceDist.size >= 8 ? this.persistenceDist.midRank(level.persistenceScore) : level.persistenceScore;
-      const replenishmentPercentile = this.replenishDist.size >= 8 ? this.replenishDist.midRank(level.replenishmentScore) : level.replenishmentScore;
-      const young = level.ageMs < this.config.wallYoungMs;
+    build(level2, vsNearbyMedian, now, priceRejection) {
+      const persistencePercentile = this.persistenceDist.size >= 8 ? this.persistenceDist.midRank(level2.persistenceScore) : level2.persistenceScore;
+      const replenishmentPercentile = this.replenishDist.size >= 8 ? this.replenishDist.midRank(level2.replenishmentScore) : level2.replenishmentScore;
+      const young = level2.ageMs < this.config.wallYoungMs;
       const ageFactor = clamp(
-        Math.log1p(level.presentMs / 1e3) / Math.log1p(this.config.wallMatureMs / 1e3),
+        Math.log1p(level2.presentMs / 1e3) / Math.log1p(this.config.wallMatureMs / 1e3),
         0,
         1
       );
-      const defence = level.attackCount > 0 ? clamp(level.defendedCount / level.attackCount, 0, 1) : 0;
-      const attackCredit = clamp(level.attackCount / 4, 0, 1);
-      const replenish = clamp(level.replenishmentRatio, 0, 1);
-      const withdrawal = level.withdrawalScore / 100;
-      const proximity = distanceWeight(level.distanceBps, this.config.distanceWeightK);
-      const strengthRaw = 0.18 * (level.sizePercentile / 100) + 0.1 * clamp(vsNearbyMedian / 6, 0, 1) + 0.22 * (0.5 * ageFactor + 0.5 * persistencePercentile / 100) + 0.2 * replenish + 0.12 * (0.6 * defence + 0.4 * attackCredit) + 0.1 * proximity + 0.08 * clamp(priceRejection, 0, 1) - 0.3 * withdrawal - (young ? 0.25 : 0) - (level.approachWithdrawal ? 0.3 : 0);
-      const reliabilityRaw = 0.35 * ageFactor + 0.25 * replenish + 0.2 * defence + 0.2 * (1 - withdrawal) - (level.approachWithdrawal ? 0.4 : 0) - (young ? 0.2 : 0);
+      const defence = level2.attackCount > 0 ? clamp(level2.defendedCount / level2.attackCount, 0, 1) : 0;
+      const attackCredit = clamp(level2.attackCount / 4, 0, 1);
+      const replenish = clamp(level2.replenishmentRatio, 0, 1);
+      const withdrawal = level2.withdrawalScore / 100;
+      const proximity = distanceWeight(level2.distanceBps, this.config.distanceWeightK);
+      const strengthRaw = 0.18 * (level2.sizePercentile / 100) + 0.1 * clamp(vsNearbyMedian / 6, 0, 1) + 0.22 * (0.5 * ageFactor + 0.5 * persistencePercentile / 100) + 0.2 * replenish + 0.12 * (0.6 * defence + 0.4 * attackCredit) + 0.1 * proximity + 0.08 * clamp(priceRejection, 0, 1) - 0.3 * withdrawal - (young ? 0.25 : 0) - (level2.approachWithdrawal ? 0.3 : 0);
+      const reliabilityRaw = 0.35 * ageFactor + 0.25 * replenish + 0.2 * defence + 0.2 * (1 - withdrawal) - (level2.approachWithdrawal ? 0.4 : 0) - (young ? 0.2 : 0);
       const strength = clamp(strengthRaw, 0, 1) * 100;
       const reliability = clamp(reliabilityRaw, 0, 1) * 100;
       const labels = [];
       if (young || persistencePercentile < 30) labels.push("LOW_PERSISTENCE_WALL");
-      if (level.approachWithdrawal) labels.push("APPROACH_WITHDRAWAL");
+      if (level2.approachWithdrawal) labels.push("APPROACH_WITHDRAWAL");
       if (reliability < 35) labels.push("UNRELIABLE_LIQUIDITY");
-      if (this.reappearedFarther(level, now)) labels.push("REAPPEARS_FARTHER");
+      if (this.reappearedFarther(level2, now)) labels.push("REAPPEARS_FARTHER");
       return {
-        side: level.side,
-        price: level.price,
-        quantity: level.quantity,
-        notional: level.notionalValue,
-        distanceBps: level.distanceBps,
-        sizePercentile: level.sizePercentile,
+        side: level2.side,
+        price: level2.price,
+        quantity: level2.quantity,
+        notional: level2.notionalValue,
+        distanceBps: level2.distanceBps,
+        sizePercentile: level2.sizePercentile,
         persistencePercentile,
         replenishmentPercentile,
         vsNearbyMedian,
-        ageMs: level.ageMs,
-        attackCount: level.attackCount,
-        defendedCount: level.defendedCount,
-        consumedNotional: level.consumedNotional,
-        replenishedNotional: level.replenishedNotional,
-        cancelledNotional: level.cancelledNotional,
+        ageMs: level2.ageMs,
+        attackCount: level2.attackCount,
+        defendedCount: level2.defendedCount,
+        consumedNotional: level2.consumedNotional,
+        replenishedNotional: level2.replenishedNotional,
+        cancelledNotional: level2.cancelledNotional,
         strength,
         reliability,
-        lifecycle: lifecycleOf(level, young),
+        lifecycle: lifecycleOf(level2, young),
         labels,
-        state: level.state
+        state: level2.state
       };
     }
     /** Remembers walls that vanished so a later wall farther out can be linked. */
@@ -9506,26 +9506,26 @@ var process = globalThis.process || { env: {} };
       while (this.vanished.length && (this.vanished[0]?.at ?? 0) < cutoff) this.vanished.shift();
       if (this.vanished.length > 256) this.vanished.splice(0, this.vanished.length - 256);
     }
-    reappearedFarther(level, now) {
-      if (level.ageMs > 3e4) return false;
+    reappearedFarther(level2, now) {
+      if (level2.ageMs > 3e4) return false;
       for (const gone of this.vanished) {
-        if (gone.side !== level.side) continue;
+        if (gone.side !== level2.side) continue;
         if (now - gone.at > 3e4) continue;
-        const farther = level.side === "ASK" ? level.price > gone.price : level.price < gone.price;
-        const comparableSize = gone.notional > 0 && level.notionalValue >= gone.notional * 0.6 && level.notionalValue <= gone.notional * 1.8;
+        const farther = level2.side === "ASK" ? level2.price > gone.price : level2.price < gone.price;
+        const comparableSize = gone.notional > 0 && level2.notionalValue >= gone.notional * 0.6 && level2.notionalValue <= gone.notional * 1.8;
         if (farther && comparableSize) return true;
       }
       return false;
     }
   };
-  function lifecycleOf(level, young) {
-    if (level.quantity <= 0) {
-      return level.consumedQuantity > level.cancelledQuantity ? "CONSUMED" : "WITHDRAWN";
+  function lifecycleOf(level2, young) {
+    if (level2.quantity <= 0) {
+      return level2.consumedQuantity > level2.cancelledQuantity ? "CONSUMED" : "WITHDRAWN";
     }
-    if (level.approachWithdrawal) return "WITHDRAWN";
-    if (level.state === "BROKEN") return "BROKEN";
-    if (level.defendedCount > 0 && level.quantity >= level.maxQuantity * 0.6) return "DEFENDED";
-    if (level.attackCount > 0 && level.consumedQuantity > 0) return "ATTACKED";
+    if (level2.approachWithdrawal) return "WITHDRAWN";
+    if (level2.state === "BROKEN") return "BROKEN";
+    if (level2.defendedCount > 0 && level2.quantity >= level2.maxQuantity * 0.6) return "DEFENDED";
+    if (level2.attackCount > 0 && level2.consumedQuantity > 0) return "ATTACKED";
     if (young) return "FORMING";
     return "HOLDING";
   }
@@ -10169,10 +10169,10 @@ var process = globalThis.process || { env: {} };
     }
     levelDetail(side2, price, now) {
       const mid = this.tracker.mid;
-      const level = this.tracker.levelAt(side2, price, now, mid);
-      if (!level) return null;
+      const level2 = this.tracker.levelAt(side2, price, now, mid);
+      if (!level2) return null;
       return {
-        level,
+        level: level2,
         timeline: this.tracker.timelineAt(side2, price, mid),
         wall: null,
         memory: this.memory.get(side2, price, mid)
@@ -10252,11 +10252,11 @@ var process = globalThis.process || { env: {} };
       let withdrawalWeighted = 0;
       let weight = 0;
       let count = 0;
-      for (const level of levels2) {
-        if (level.side !== side2 || level.outOfView || level.quantity <= 0) continue;
-        persistenceWeighted += level.persistenceScore * level.notionalValue;
-        withdrawalWeighted += level.withdrawalScore * level.notionalValue;
-        weight += level.notionalValue;
+      for (const level2 of levels2) {
+        if (level2.side !== side2 || level2.outOfView || level2.quantity <= 0) continue;
+        persistenceWeighted += level2.persistenceScore * level2.notionalValue;
+        withdrawalWeighted += level2.withdrawalScore * level2.notionalValue;
+        weight += level2.notionalValue;
         count += 1;
       }
       const ratio = metricFlow.consumedNotional > 0 ? metricFlow.replenishedNotional / metricFlow.consumedNotional : metricFlow.replenishedNotional > 0 ? 1 : 0;
@@ -10384,20 +10384,20 @@ var process = globalThis.process || { env: {} };
   function buildEffortVsResult(flow, passiveBuyerStrength, passiveSellerStrength) {
     const sellLed = flow.aggressiveSellPercentile > flow.aggressiveBuyPercentile;
     const effortScore = sellLed ? flow.aggressiveSellPercentile : flow.aggressiveBuyPercentile;
-    const resultScore = sellLed ? flow.downsideDisplacementPercentile : flow.upsideDisplacementPercentile;
+    const resultScore2 = sellLed ? flow.downsideDisplacementPercentile : flow.upsideDisplacementPercentile;
     const passiveDefenseScore = sellLed ? passiveBuyerStrength : passiveSellerStrength;
     const labels = [];
-    if (effortScore >= 70 && resultScore <= 35) {
+    if (effortScore >= 70 && resultScore2 <= 35) {
       labels.push(sellLed ? "SELLERS_INEFFICIENT" : "BUYERS_INEFFICIENT");
       if (passiveDefenseScore >= 60) {
         labels.push(sellLed ? "PASSIVE_BUYERS_ABSORBING" : "PASSIVE_SELLERS_ABSORBING");
       }
-    } else if (effortScore >= 70 && resultScore >= 70) {
+    } else if (effortScore >= 70 && resultScore2 >= 70) {
       labels.push(sellLed ? "SELLERS_EFFICIENT" : "BUYERS_EFFICIENT");
     }
     return {
       effortScore: clamp(effortScore, 0, 100),
-      resultScore: clamp(resultScore, 0, 100),
+      resultScore: clamp(resultScore2, 0, 100),
       passiveDefenseScore: clamp(passiveDefenseScore, 0, 100),
       labels
     };
@@ -13936,13 +13936,13 @@ var process = globalThis.process || { env: {} };
       acc.sellTrades += bar.sellTrades ?? 0;
       acc.largestBuy = Math.max(acc.largestBuy, bar.largestBuy ?? 0);
       acc.largestSell = Math.max(acc.largestSell, bar.largestSell ?? 0);
-      for (const level of bar.levels) {
-        const entry = acc.levels.get(level.price);
+      for (const level2 of bar.levels) {
+        const entry = acc.levels.get(level2.price);
         if (entry) {
-          entry.buy += level.buy;
-          entry.sell += level.sell;
+          entry.buy += level2.buy;
+          entry.sell += level2.sell;
         } else {
-          acc.levels.set(level.price, { price: level.price, buy: level.buy, sell: level.sell });
+          acc.levels.set(level2.price, { price: level2.price, buy: level2.buy, sell: level2.sell });
         }
       }
     }
@@ -14589,8 +14589,8 @@ var process = globalThis.process || { env: {} };
 
   // src/pattern-recognition/from-bars.ts
   var PATTERN_TF_MINUTES = [1, 5, 15, 30, 45, 60, 120, 240, 1440];
-  function historyPatternView(bars, timeframeMinutes, options) {
-    const tf = minutesToTimeframe(timeframeMinutes);
+  function historyPatternView(bars, timeframeMinutes2, options) {
+    const tf = minutesToTimeframe(timeframeMinutes2);
     const { finalized, preview } = labelFootprintBars(bars, tf, { lastIsLive: options?.lastIsLive });
     const engine2 = new PatternRecognitionEngine();
     const { snapshots, last } = replayPatterns(finalized, engine2);
@@ -14631,23 +14631,23 @@ var process = globalThis.process || { env: {} };
     if (bars.length <= 1) return bars;
     return rollup(bars, 1);
   }
-  function completedTfBar(minuteBars, timeframeMinutes, closedMinuteTime) {
-    if (timeframeMinutes <= 1) {
+  function completedTfBar(minuteBars, timeframeMinutes2, closedMinuteTime) {
+    if (timeframeMinutes2 <= 1) {
       return minuteBars.find((b) => b.time === closedMinuteTime) ?? null;
     }
-    const bucketSec = timeframeMinutes * 60;
+    const bucketSec = timeframeMinutes2 * 60;
     if (closedMinuteTime % bucketSec !== 0) return null;
     const start = closedMinuteTime - bucketSec;
     const slice = minuteBars.filter((b) => b.time >= start && b.time < closedMinuteTime);
     if (!slice.length) return null;
-    return rollup(slice, timeframeMinutes)[0] ?? null;
+    return rollup(slice, timeframeMinutes2)[0] ?? null;
   }
-  function currentTfBar(minuteBars, timeframeMinutes, currentMinuteTime) {
-    const bucketSec = timeframeMinutes * 60;
+  function currentTfBar(minuteBars, timeframeMinutes2, currentMinuteTime) {
+    const bucketSec = timeframeMinutes2 * 60;
     const start = currentMinuteTime - currentMinuteTime % bucketSec;
     const slice = minuteBars.filter((b) => b.time >= start && b.time <= currentMinuteTime);
     if (!slice.length) return null;
-    return rollup(slice, timeframeMinutes)[0] ?? null;
+    return rollup(slice, timeframeMinutes2)[0] ?? null;
   }
 
   // src/pattern-recognition/live-hub.ts
@@ -14678,8 +14678,8 @@ var process = globalThis.process || { env: {} };
       }
       return { alerts, dirty: [...new Set(dirty)] };
     }
-    snapshot(symbol, timeframeMinutes, market = "perp") {
-      return this.lastSnap.get(`${symbol}|${market}|${minutesToTimeframe(timeframeMinutes)}`) ?? null;
+    snapshot(symbol, timeframeMinutes2, market = "perp") {
+      return this.lastSnap.get(`${symbol}|${market}|${minutesToTimeframe(timeframeMinutes2)}`) ?? null;
     }
     snapshotsForSymbol(symbol, market = "perp") {
       const prefix = `${symbol}|${market}|`;
@@ -14816,6 +14816,945 @@ var process = globalThis.process || { env: {} };
     arr[idx] = bar;
     buf.clear();
     for (const item of arr) buf.push(item);
+  }
+
+  // src/level-interaction/types.ts
+  var LEVEL_EVENT_SHORT = {
+    FAIL_UP: "FAIL \u2191",
+    FAIL_DOWN: "FAIL \u2193",
+    RECLAIM_UP: "REC \u2191",
+    RECLAIM_DOWN: "REC \u2193"
+  };
+  var LEVEL_EVENT_PRIORITY = {
+    RECLAIM_UP: 100,
+    RECLAIM_DOWN: 100,
+    FAIL_UP: 80,
+    FAIL_DOWN: 80
+  };
+  var FAIL_RECLAIM_WICK_GAP = 14;
+  function failReclaimLabelY(barHighY, gap = FAIL_RECLAIM_WICK_GAP) {
+    return barHighY - gap;
+  }
+
+  // src/level-interaction/config.ts
+  var DEFAULT_LEVEL_INTERACTION_CONFIG = {
+    minConsecutiveCloses: 2,
+    atrPenetration: 0.08,
+    bpsPenetration: 4,
+    minPenetrationPrice: 0,
+    minRangeAtr: 0.12,
+    minAttemptVolume: 0,
+    altVolumeRatio: 0.45,
+    altDispBps: 12,
+    cooldownBars: 3,
+    reclaimWindowBars: 12,
+    lineExtendBars: 2,
+    maxEventLines: 24,
+    atrLookback: 8,
+    minAtrBars: 2,
+    zonePadAtr: 0.12,
+    zoneMergeAtr: 0.35,
+    swingLookback: 48,
+    imbalanceRatio: 3,
+    aggressionRatio: 0.18,
+    effortHigh: 62,
+    resultStrong: 55,
+    resultWeak: 28,
+    maxTrackedLevels: 48,
+    weights: {
+      levelSignificance: 0.15,
+      timeVolumeBeyond: 0.25,
+      aggressiveFlow: 0.18,
+      effortResult: 0.15,
+      passiveDefense: 0.12,
+      followThrough: 0.15
+    }
+  };
+  function mergeLevelInteractionConfig(partial) {
+    if (!partial) return { ...DEFAULT_LEVEL_INTERACTION_CONFIG, weights: { ...DEFAULT_LEVEL_INTERACTION_CONFIG.weights } };
+    return {
+      ...DEFAULT_LEVEL_INTERACTION_CONFIG,
+      ...partial,
+      weights: { ...DEFAULT_LEVEL_INTERACTION_CONFIG.weights, ...partial.weights ?? {} }
+    };
+  }
+
+  // src/footprint/displacement-cvd.ts
+  var EPS = 1e-12;
+  function aggressiveVolumes(bar) {
+    const buy = Number(bar.aggressiveBuy ?? bar.totalBuy ?? 0);
+    const sell = Number(bar.aggressiveSell ?? bar.totalSell ?? 0);
+    return {
+      buy: Number.isFinite(buy) && buy > 0 ? buy : 0,
+      sell: Number.isFinite(sell) && sell > 0 ? sell : 0
+    };
+  }
+  function displacementDirection(bps2, neutralBps = 1) {
+    if (!Number.isFinite(bps2)) return "NEUTRAL";
+    if (bps2 > neutralBps) return "BULLISH";
+    if (bps2 < -neutralBps) return "BEARISH";
+    return "NEUTRAL";
+  }
+  function computeDisplacement(bar, opts) {
+    const open = Number(bar.open);
+    const high = Number(bar.high);
+    const low = Number(bar.low);
+    const close = Number(bar.close);
+    const atr = opts?.atr;
+    const neutralBps = opts?.neutralBps ?? 1;
+    if (![open, high, low, close].every((n) => Number.isFinite(n)) || open <= 0) {
+      return {
+        displacementRaw: 0,
+        displacementPct: 0,
+        displacementBps: 0,
+        rangeRaw: 0,
+        rangeBps: 0,
+        bodyEfficiency: 0,
+        displacementATR: null,
+        direction: "NEUTRAL"
+      };
+    }
+    const displacementRaw = close - open;
+    const displacementPct = displacementRaw / open * 100;
+    const displacementBps = displacementRaw / open * 1e4;
+    const rangeRaw = Math.max(0, high - low);
+    const rangeBps = rangeRaw / open * 1e4;
+    const bodyEfficiency = Math.abs(displacementRaw) / Math.max(rangeRaw, EPS);
+    const displacementATR = atr != null && Number.isFinite(atr) && atr > 0 ? displacementRaw / atr : null;
+    return {
+      displacementRaw,
+      displacementPct,
+      displacementBps,
+      rangeRaw,
+      rangeBps,
+      bodyEfficiency: Math.min(1, Math.max(0, bodyEfficiency)),
+      displacementATR,
+      direction: displacementDirection(displacementBps, neutralBps)
+    };
+  }
+  function flowDataQuality(bar) {
+    if (bar.flowQuality) return bar.flowQuality;
+    const { buy, sell } = aggressiveVolumes(bar);
+    if (bar.hasFootprint === false && buy + sell <= 0) return "UNAVAILABLE";
+    if (buy + sell <= 0) return "UNAVAILABLE";
+    if (bar.hasFootprint === false) return "PARTIAL";
+    return "GOOD";
+  }
+
+  // src/market-sequence/label-selector.ts
+  function deriveEffortResult(buyEffort, sellEffort, upResult, downResult, cfg) {
+    if (buyEffort >= cfg.effortHigh && upResult >= cfg.resultStrong) return "BUYERS_EFFECTIVE";
+    if (buyEffort >= cfg.effortHigh && upResult <= cfg.resultWeak) return "BUYERS_INEFFECTIVE";
+    if (sellEffort >= cfg.effortHigh && downResult >= cfg.resultStrong) return "SELLERS_EFFECTIVE";
+    if (sellEffort >= cfg.effortHigh && downResult <= cfg.resultWeak) return "SELLERS_INEFFECTIVE";
+    return "UNCLEAR";
+  }
+
+  // src/market-sequence/adapters.ts
+  function resultScore(dispBps, dir, neutral = 2) {
+    const raw = dir === "UP" ? dispBps : -dispBps;
+    if (raw <= 0) return Math.max(0, 20 + raw);
+    return Math.min(100, Math.round(raw / Math.max(neutral * 8, 1) * 100));
+  }
+  function effortScores(buy, sell, delta) {
+    const vol = buy + sell;
+    if (vol <= 0) return { buyEffort: 0, sellEffort: 0 };
+    const dAmp = Math.min(1, Math.abs(delta) / vol) * 40;
+    return {
+      buyEffort: Math.round(Math.min(100, buy / vol * 70 + (delta > 0 ? dAmp : 0))),
+      sellEffort: Math.round(Math.min(100, sell / vol * 70 + (delta < 0 ? dAmp : 0)))
+    };
+  }
+
+  // src/level-interaction/evidence.ts
+  function levelSide(type) {
+    if (type === "HISTORICAL_SUPPORT" || type === "SWING_LOW" || type === "PREV_15M_LOW") {
+      return "LOW";
+    }
+    return "HIGH";
+  }
+  function zoneBounds(level2) {
+    const lo = level2.zoneLow ?? level2.price;
+    const hi = level2.zoneHigh ?? level2.price;
+    return { lo: Math.min(lo, hi), hi: Math.max(lo, hi), mid: (lo + hi) / 2 };
+  }
+  function farBoundary(level2) {
+    const z = zoneBounds(level2);
+    return levelSide(level2.type) === "HIGH" ? z.hi : z.lo;
+  }
+  function priorAtr(bars, index, cfg) {
+    const start = Math.max(0, index - cfg.atrLookback);
+    const end = index;
+    if (end - start < cfg.minAtrBars) return null;
+    let sum = 0;
+    let n = 0;
+    let prevClose = start > 0 ? bars[start - 1]?.close ?? null : null;
+    for (let i = start; i < end; i++) {
+      const b = bars[i];
+      if (!b || !Number.isFinite(b.high) || !Number.isFinite(b.low)) continue;
+      const tr = prevClose != null ? Math.max(b.high - b.low, Math.abs(b.high - prevClose), Math.abs(b.low - prevClose)) : b.high - b.low;
+      if (tr > 0 && Number.isFinite(tr)) {
+        sum += tr;
+        n += 1;
+      }
+      prevClose = b.close;
+    }
+    if (n < cfg.minAtrBars || !(sum > 0)) return null;
+    return sum / n;
+  }
+  function penetrationTolerance(price, atr, cfg) {
+    const tick = tickSize(price);
+    const fromAtr = atr != null && atr > 0 ? atr * cfg.atrPenetration : 0;
+    const fromBps = price > 0 ? price * (cfg.bpsPenetration / 1e4) : 0;
+    return Math.max(tick, fromAtr, fromBps, cfg.minPenetrationPrice);
+  }
+  function volumeBeyondLevel(bar, boundary, side2) {
+    const levels2 = bar.levels ?? [];
+    if (!levels2.length) return { ratio: null, beyond: 0, total: 0 };
+    let beyond = 0;
+    let total = 0;
+    for (const lv of levels2) {
+      const vol = (lv.buy || 0) + (lv.sell || 0);
+      if (!(vol > 0)) continue;
+      total += vol;
+      if (side2 === "HIGH" && lv.price > boundary) beyond += vol;
+      if (side2 === "LOW" && lv.price < boundary) beyond += vol;
+    }
+    if (!(total > 0)) return { ratio: null, beyond, total };
+    return { ratio: beyond / total, beyond, total };
+  }
+  function imbalanceBeyond(bar, boundary, side2, ratio) {
+    const levels2 = bar.levels ?? [];
+    if (!levels2.length) return null;
+    let count = 0;
+    for (const lv of levels2) {
+      const onFar = side2 === "HIGH" ? lv.price > boundary : lv.price < boundary;
+      if (!onFar) continue;
+      const buy = lv.buy || 0;
+      const sell = lv.sell || 0;
+      if (buy >= sell * ratio && buy > 0) count += 1;
+      else if (sell >= buy * ratio && sell > 0) count += 1;
+    }
+    return count;
+  }
+  function aggressiveVolumes2(bar) {
+    const buy = Number(bar.aggressiveBuy ?? bar.totalBuy ?? 0);
+    const sell = Number(bar.aggressiveSell ?? bar.totalSell ?? 0);
+    return {
+      buy: Number.isFinite(buy) && buy > 0 ? buy : 0,
+      sell: Number.isFinite(sell) && sell > 0 ? sell : 0
+    };
+  }
+  function barIsValid(bar) {
+    return [bar.open, bar.high, bar.low, bar.close].every((n) => Number.isFinite(n) && n > 0) && bar.high >= Math.max(bar.open, bar.close) && bar.low <= Math.min(bar.open, bar.close);
+  }
+  function isNarrowOrQuiet(bar, atr, cfg) {
+    const range = bar.high - bar.low;
+    if (atr != null && atr > 0 && range < atr * cfg.minRangeAtr) return true;
+    const { buy, sell } = aggressiveVolumes2(bar);
+    if (cfg.minAttemptVolume > 0 && buy + sell < cfg.minAttemptVolume) return true;
+    return false;
+  }
+  function collectEvidence(bar, level2, atr, cfg, consecutiveBeyond, consecutiveOriginal) {
+    const side2 = levelSide(level2.type);
+    const boundary = farBoundary(level2);
+    const tol = penetrationTolerance(bar.close || level2.price, atr, cfg);
+    const disp = computeDisplacement(bar, { atr });
+    const { buy, sell } = aggressiveVolumes2(bar);
+    const vol = buy + sell;
+    const delta = vol > 0 ? buy - sell : null;
+    const deltaRatio = vol > 0 && delta != null ? delta / vol * 100 : null;
+    const quality = flowDataQuality({
+      aggressiveBuy: buy,
+      aggressiveSell: sell,
+      hasFootprint: bar.hasFootprint ?? Boolean(bar.levels?.length || vol > 0)
+    });
+    const closeBeyond = side2 === "HIGH" ? bar.close >= boundary + tol : bar.close <= boundary - tol;
+    const penetrated = side2 === "HIGH" ? bar.high >= boundary + tol : bar.low <= boundary - tol;
+    const wickOnly = penetrated && !closeBeyond;
+    const bodyBeyond = side2 === "HIGH" ? Math.min(bar.open, bar.close) > boundary : Math.max(bar.open, bar.close) < boundary;
+    const volBeyond = volumeBeyondLevel(bar, boundary, side2);
+    const efforts = effortScores(buy, sell, delta ?? 0);
+    const upResult = resultScore(disp.displacementBps, "UP");
+    const downResult = resultScore(disp.displacementBps, "DOWN");
+    const effort = deriveEffortResult(efforts.buyEffort, efforts.sellEffort, upResult, downResult, {
+      effortHigh: cfg.effortHigh,
+      resultStrong: cfg.resultStrong,
+      resultWeak: cfg.resultWeak,
+      maxBarsBetweenStages: 8,
+      maxSequenceBars: 24,
+      expansionDispBps: 18,
+      maxActiveSequences: 32
+    });
+    const effortSide = efforts.buyEffort >= cfg.effortHigh && efforts.buyEffort >= efforts.sellEffort ? "BUYERS" : efforts.sellEffort >= cfg.effortHigh ? "SELLERS" : "UNCLEAR";
+    const followThrough = side2 === "HIGH" ? disp.displacementBps > 0 && bar.close > bar.open : disp.displacementBps < 0 && bar.close < bar.open;
+    const ask = bar.askDefense;
+    const bid = bar.bidDefense;
+    return {
+      closeBeyond,
+      penetrated,
+      wickOnly,
+      bodyBeyond,
+      consecutiveClosesBeyond: consecutiveBeyond,
+      consecutiveClosesOriginal: consecutiveOriginal,
+      volumeBeyondRatio: volBeyond.ratio,
+      timeBeyondMs: bar.timeBeyondMs ?? null,
+      delta,
+      deltaRatio,
+      displacementBps: disp.displacementBps,
+      displacementAtr: disp.displacementATR,
+      bodyEfficiency: disp.bodyEfficiency,
+      effortSide,
+      effortEffective: effort === "BUYERS_EFFECTIVE" || effort === "SELLERS_EFFECTIVE",
+      imbalanceBeyond: imbalanceBeyond(bar, boundary, side2, cfg.imbalanceRatio),
+      askDefense: ask != null && Number.isFinite(ask) ? ask : null,
+      bidDefense: bid != null && Number.isFinite(bid) ? bid : null,
+      followThrough,
+      dataQuality: quality === "GOOD" ? "GOOD" : quality === "UNAVAILABLE" ? "UNAVAILABLE" : "PARTIAL"
+    };
+  }
+  function canConfirmReclaim(ev, cfg, hadLossOrAcceptedBreak, barsSinceLoss, incomplete) {
+    if (incomplete) return false;
+    if (!hadLossOrAcceptedBreak) return false;
+    if (barsSinceLoss > cfg.reclaimWindowBars) return false;
+    if (ev.closeBeyond) return false;
+    return ev.consecutiveClosesOriginal >= cfg.minConsecutiveCloses;
+  }
+  function clamp012(n) {
+    if (!Number.isFinite(n)) return 0;
+    return Math.min(1, Math.max(0, n));
+  }
+  function eventConfidence(eventType, ev, level2, cfg) {
+    const w = cfg.weights;
+    const parts = [];
+    const significance = clamp012((level2.strength ?? level2.confidence ?? 55) / 100);
+    parts.push({ w: w.levelSignificance, v: significance });
+    const vol = ev.volumeBeyondRatio != null ? clamp012(ev.volumeBeyondRatio / 0.55) : null;
+    const time = ev.timeBeyondMs != null ? clamp012(ev.timeBeyondMs / 6e4) : null;
+    if (vol != null || time != null) {
+      const tv = Math.max(vol ?? 0, time ?? 0);
+      parts.push({ w: w.timeVolumeBeyond, v: tv });
+    }
+    if (ev.deltaRatio != null) {
+      const flow = clamp012(Math.abs(ev.deltaRatio) / 50);
+      const imb = ev.imbalanceBeyond != null ? clamp012(ev.imbalanceBeyond / 3) : 0;
+      parts.push({ w: w.aggressiveFlow, v: Math.max(flow, imb * 0.7) });
+    }
+    const effort = ev.effortEffective ? 0.85 : ev.effortSide !== "UNCLEAR" ? 0.45 : 0.2;
+    parts.push({ w: w.effortResult, v: effort });
+    const defense = eventType.endsWith("_UP") ? ev.askDefense : ev.bidDefense;
+    if (defense != null) {
+      parts.push({ w: w.passiveDefense, v: clamp012(defense / 100) });
+    }
+    parts.push({ w: w.followThrough, v: ev.followThrough ? 0.9 : 0.25 });
+    const weightSum = parts.reduce((s, p) => s + p.w, 0);
+    if (!(weightSum > 0)) return 50;
+    const raw = parts.reduce((s, p) => s + p.w / weightSum * p.v, 0);
+    let score = Math.round(40 + raw * 55);
+    if (ev.dataQuality === "UNAVAILABLE") score -= 8;
+    if (defense == null) score -= 4;
+    if (eventType.startsWith("RECLAIM") && ev.deltaRatio == null) {
+      score = Math.max(score, 58);
+    }
+    return Math.max(35, Math.min(95, score));
+  }
+  function eventReasons(eventType, ev, level2) {
+    const side2 = eventType.endsWith("_UP") ? "above" : "below";
+    const name = level2.type.replace(/_/g, " ").toLowerCase();
+    const out = [];
+    if (eventType.startsWith("FAIL")) {
+      out.push(`Break attempt ${side2} ${name} failed to hold`);
+      out.push("Price returned without holding beyond the level");
+      if (ev.deltaRatio != null && Math.abs(ev.deltaRatio) >= 25) {
+        out.push(`Strong ${ev.deltaRatio > 0 ? "positive" : "negative"} delta did not hold the break`);
+      }
+      if (eventType === "FAIL_UP" && ev.askDefense != null && ev.askDefense >= 60) {
+        out.push("Ask defense present during the failed break");
+      }
+      if (eventType === "FAIL_DOWN" && ev.bidDefense != null && ev.bidDefense >= 60) {
+        out.push("Bid defense present during the failed break");
+      }
+    } else {
+      out.push(`Returned across ${name} after a prior loss/break`);
+      out.push(`${ev.consecutiveClosesOriginal} close${ev.consecutiveClosesOriginal === 1 ? "" : "s"} back on the original side`);
+      if (ev.followThrough) out.push("Price response after the reclaim");
+    }
+    return out;
+  }
+  function eventInvalidation(eventType) {
+    if (eventType.startsWith("FAIL")) {
+      return ["Immediate continuation through the level", "A later confirmed hold beyond the same level"];
+    }
+    return ["Loss of the reclaimed side within the reclaim window", "Failed to hold the original side"];
+  }
+
+  // src/level-interaction/levels.ts
+  var PERIOD_15M = 15 * 60;
+  function confirmedSwings(bars, upto) {
+    const out = [];
+    const lastConfirmable = Math.min(upto - 2, bars.length - 3);
+    for (let i = 2; i <= lastConfirmable; i++) {
+      const a = bars[i - 2];
+      const b = bars[i - 1];
+      const c = bars[i];
+      const d = bars[i + 1];
+      const e = bars[i + 2];
+      if (!a || !b || !c || !d || !e) continue;
+      const knownAt = e.time;
+      if (c.high >= a.high && c.high >= b.high && c.high >= d.high && c.high >= e.high) {
+        out.push({ index: i, time: c.time, price: c.high, knownAt, kind: "HIGH" });
+      }
+      if (c.low <= a.low && c.low <= b.low && c.low <= d.low && c.low <= e.low) {
+        out.push({ index: i, time: c.time, price: c.low, knownAt, kind: "LOW" });
+      }
+    }
+    return out;
+  }
+  function clusterSwings(swings, kind, atr, cfg, timeframe, atTime) {
+    const pad = atr != null && atr > 0 ? atr * cfg.zonePadAtr : 0;
+    const merge2 = atr != null && atr > 0 ? atr * cfg.zoneMergeAtr : 0;
+    const items = swings.filter((s) => s.kind === kind && s.knownAt <= atTime);
+    if (!items.length) return [];
+    const sorted = [...items].sort((a, b) => a.price - b.price);
+    const groups = [];
+    let cur = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const s = sorted[i];
+      const prev = cur[cur.length - 1];
+      if (merge2 > 0 && s.price - prev.price <= merge2) cur.push(s);
+      else {
+        groups.push(cur);
+        cur = [s];
+      }
+    }
+    groups.push(cur);
+    const type = kind === "HIGH" ? "HISTORICAL_RESISTANCE" : "HISTORICAL_SUPPORT";
+    return groups.map((g) => {
+      const prices = g.map((x) => x.price);
+      const lo = Math.min(...prices) - pad;
+      const hi = Math.max(...prices) + pad;
+      const latest = g.reduce((a, b) => a.knownAt >= b.knownAt ? a : b);
+      const tests = g.length;
+      return {
+        id: `${type}:${latest.time}:${latest.price}`,
+        type,
+        price: kind === "HIGH" ? Math.max(...prices) : Math.min(...prices),
+        zoneLow: lo,
+        zoneHigh: hi,
+        timeframe,
+        createdAt: Math.min(...g.map((x) => x.time)),
+        knownAt: latest.knownAt,
+        strength: Math.min(90, 45 + tests * 12),
+        confidence: Math.min(88, 50 + tests * 10)
+      };
+    });
+  }
+  function timeframeMinutes(tf) {
+    const m = /^(\d+)/.exec(tf);
+    if (!m) return 15;
+    return Number(m[1]);
+  }
+  function previous15mLevel(bars, index, timeframe) {
+    if (timeframeMinutes(timeframe) >= 15) return [];
+    const cur = bars[index];
+    if (!cur) return [];
+    const periodStart = cur.time - cur.time % PERIOD_15M;
+    const prevStart = periodStart - PERIOD_15M;
+    let hi = -Infinity;
+    let lo = Infinity;
+    let lastT = 0;
+    for (let i = 0; i < index; i++) {
+      const b = bars[i];
+      if (!b) continue;
+      if (b.time < prevStart || b.time >= periodStart) continue;
+      if (b.high > hi) hi = b.high;
+      if (b.low < lo) lo = b.low;
+      lastT = b.time;
+    }
+    if (!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= 0) return [];
+    const knownAt = periodStart;
+    return [
+      {
+        id: `PREV_15M_HIGH:${knownAt}:${hi}`,
+        type: "PREV_15M_HIGH",
+        price: hi,
+        timeframe,
+        createdAt: lastT,
+        knownAt,
+        strength: 48,
+        confidence: 52
+      },
+      {
+        id: `PREV_15M_LOW:${knownAt}:${lo}`,
+        type: "PREV_15M_LOW",
+        price: lo,
+        timeframe,
+        createdAt: lastT,
+        knownAt,
+        strength: 48,
+        confidence: 52
+      }
+    ];
+  }
+  function swingLevels(swings, atTime, timeframe) {
+    const out = [];
+    const highs = swings.filter((s) => s.kind === "HIGH" && s.knownAt <= atTime);
+    const lows = swings.filter((s) => s.kind === "LOW" && s.knownAt <= atTime);
+    const lastH = highs[highs.length - 1];
+    const lastL = lows[lows.length - 1];
+    if (lastH) {
+      out.push({
+        id: `SWING_HIGH:${lastH.time}:${lastH.price}`,
+        type: "SWING_HIGH",
+        price: lastH.price,
+        timeframe,
+        createdAt: lastH.time,
+        knownAt: lastH.knownAt,
+        strength: 50,
+        confidence: 50
+      });
+    }
+    if (lastL) {
+      out.push({
+        id: `SWING_LOW:${lastL.time}:${lastL.price}`,
+        type: "SWING_LOW",
+        price: lastL.price,
+        timeframe,
+        createdAt: lastL.time,
+        knownAt: lastL.knownAt,
+        strength: 50,
+        confidence: 50
+      });
+    }
+    return out;
+  }
+  function collectLevelsKnownAt(bars, index, cfg, timeframe, extras = []) {
+    const bar = bars[index];
+    if (!bar) return extras.filter((l) => l.knownAt <= (bars[index - 1]?.time ?? 0));
+    const atTime = bar.time;
+    const swings = confirmedSwings(bars, index);
+    const atr = priorAtr(bars, index, cfg);
+    const hist = [
+      ...clusterSwings(swings, "HIGH", atr, cfg, timeframe, atTime),
+      ...clusterSwings(swings, "LOW", atr, cfg, timeframe, atTime)
+    ];
+    const recentSwings = swings.slice(-cfg.swingLookback);
+    const swingsLv = swingLevels(recentSwings, atTime, timeframe);
+    const prev15 = previous15mLevel(bars, index, timeframe);
+    const extra = extras.filter((l) => l.knownAt <= atTime);
+    const all = [...hist, ...swingsLv, ...prev15, ...extra];
+    const dedup = /* @__PURE__ */ new Map();
+    for (const lv of all) {
+      if (lv.knownAt > atTime) continue;
+      const key3 = `${lv.type}:${lv.price.toFixed(6)}`;
+      const prev = dedup.get(key3);
+      if (!prev || lv.knownAt >= prev.knownAt) dedup.set(key3, lv);
+    }
+    return [...dedup.values()].slice(-cfg.maxTrackedLevels);
+  }
+
+  // src/level-interaction/engine.ts
+  function newTrack(level2) {
+    return {
+      level: level2,
+      side: levelSide(level2.type),
+      failedBreak: "NONE",
+      reclaim: "NONE",
+      consecutiveBeyond: 0,
+      consecutiveOriginal: 0,
+      attemptOriginTime: null,
+      attemptOriginIndex: null,
+      lostAt: null,
+      lostAtIndex: null,
+      everLost: false,
+      lastConfirmBar: -999,
+      lastConfirmType: null,
+      attemptId: 0,
+      sweepAttempt: false
+    };
+  }
+  function eventId(levelId, type, origin, attempt) {
+    return `${type}:${levelId}:${origin}:${attempt}`;
+  }
+  function lineStyle(type) {
+    if (type === "FAIL_UP") return { pattern: "DASHED", color: "#f59e0b", label: "FAIL \u2191" };
+    if (type === "FAIL_DOWN") return { pattern: "DASHED", color: "#84cc16", label: "FAIL \u2193" };
+    if (type === "RECLAIM_UP") return { pattern: "DOTTED", color: "#22c55e", label: "REC \u2191" };
+    return { pattern: "DOTTED", color: "#ef4444", label: "REC \u2193" };
+  }
+  function emptyAnnotation(time) {
+    return {
+      time,
+      compactLabel: null,
+      secondaryLabels: [],
+      events: [],
+      status: "CONFIRMED",
+      forming: []
+    };
+  }
+  function pickCompact(events) {
+    if (!events.length) return null;
+    const ranked = [...events].sort((a, b) => {
+      const pa = LEVEL_EVENT_PRIORITY[a.eventType];
+      const pb = LEVEL_EVENT_PRIORITY[b.eventType];
+      if (pb !== pa) return pb - pa;
+      return (b.confidence ?? 0) - (a.confidence ?? 0);
+    });
+    return ranked[0]?.compactLabel ?? null;
+  }
+  function dedupCandleEvents(events) {
+    const byType = /* @__PURE__ */ new Map();
+    for (const ev of events) {
+      const prev = byType.get(ev.eventType);
+      if (!prev || (ev.confidence ?? 0) > (prev.confidence ?? 0)) byType.set(ev.eventType, ev);
+    }
+    return [...byType.values()];
+  }
+  function returnedToOriginal(bar, level2, tol) {
+    const side2 = levelSide(level2.type);
+    const boundary = farBoundary(level2);
+    if (side2 === "HIGH") return bar.close <= boundary + tol * 0.25;
+    return bar.close >= boundary - tol * 0.25;
+  }
+  function makeEvent(type, track, bar, originTime, ev, cfg, status) {
+    const confirmed = status === "CONFIRMED";
+    const { buy, sell } = aggressiveVolumes2(bar);
+    const reasons = eventReasons(type, ev, track.level);
+    return {
+      id: eventId(track.level.id, type, originTime, track.attemptId),
+      type,
+      eventType: type,
+      status,
+      confidence: eventConfidence(type, ev, track.level, cfg),
+      levelId: track.level.id,
+      levelType: track.level.type,
+      levelPrice: track.level.price,
+      zoneLow: track.level.zoneLow,
+      zoneHigh: track.level.zoneHigh,
+      timeframe: track.level.timeframe,
+      eventOriginTime: originTime,
+      confirmedAt: confirmed ? bar.time : void 0,
+      confirmationCandleId: confirmed ? String(bar.time) : void 0,
+      originBarTime: originTime,
+      confirmBarTime: confirmed ? bar.time : null,
+      direction: type.endsWith("_UP") ? "UP" : "DOWN",
+      compactLabel: LEVEL_EVENT_SHORT[type],
+      dataQuality: ev.dataQuality,
+      reasons,
+      reason: reasons,
+      invalidation: eventInvalidation(type),
+      sweepReclaim: type.startsWith("RECLAIM") && track.sweepAttempt,
+      metrics: {
+        delta: ev.delta,
+        deltaRatio: ev.deltaRatio,
+        priceProgressAtr: ev.displacementAtr,
+        volumeBeyondRatio: ev.volumeBeyondRatio,
+        timeBeyondMs: ev.timeBeyondMs,
+        askDefense: ev.askDefense,
+        bidDefense: ev.bidDefense,
+        aggressiveBuy: buy || null,
+        aggressiveSell: sell || null
+      }
+    };
+  }
+  function cooldownOk(track, index, type, cfg) {
+    if (track.lastConfirmType !== type) return true;
+    return index - track.lastConfirmBar >= cfg.cooldownBars;
+  }
+  function stepTrack(track, bar, index, ev, cfg, incomplete, atr) {
+    const confirmed = [];
+    const forming = [];
+    const origin = track.attemptOriginTime ?? bar.time;
+    const failType = track.side === "HIGH" ? "FAIL_UP" : "FAIL_DOWN";
+    const reclaimType = track.side === "HIGH" ? "RECLAIM_DOWN" : "RECLAIM_UP";
+    const tol = penetrationTolerance(bar.close || track.level.price, atr, cfg);
+    const backInside = returnedToOriginal(bar, track.level, tol);
+    if (ev.closeBeyond) {
+      track.consecutiveBeyond += 1;
+      track.consecutiveOriginal = 0;
+      if (track.attemptOriginTime == null) {
+        track.attemptOriginTime = bar.time;
+        track.attemptOriginIndex = index;
+      }
+      if (track.failedBreak === "ATTACK" || track.failedBreak === "PENETRATION" || track.failedBreak === "FAILURE_FORMING") {
+        track.failedBreak = "FAILURE_INVALIDATED";
+      }
+      if (!track.everLost) {
+        track.everLost = true;
+        track.lostAt = bar.time;
+        track.lostAtIndex = index;
+      }
+      track.reclaim = "LEVEL_LOST";
+      return { confirmed, forming };
+    }
+    if (ev.penetrated && !ev.closeBeyond) {
+      if (track.attemptOriginTime == null) {
+        track.attemptOriginTime = bar.time;
+        track.attemptOriginIndex = index;
+      }
+      track.consecutiveBeyond = 0;
+      track.consecutiveOriginal += 1;
+      track.sweepAttempt = true;
+      if (track.failedBreak === "NONE" || track.failedBreak === "FAILURE_INVALIDATED" || track.failedBreak === "FAILED_UP" || track.failedBreak === "FAILED_DOWN") {
+        track.failedBreak = backInside ? "PENETRATION" : "ATTACK";
+      } else if (track.failedBreak === "ATTACK") {
+        track.failedBreak = "PENETRATION";
+      }
+      if (track.everLost) {
+        track.reclaim = track.reclaim === "LEVEL_LOST" ? "RETURN_ATTEMPT" : track.reclaim;
+      }
+    } else {
+      track.consecutiveBeyond = 0;
+      if (backInside) track.consecutiveOriginal += 1;
+      else track.consecutiveOriginal = 0;
+    }
+    if ((track.failedBreak === "ATTACK" || track.failedBreak === "PENETRATION" || track.failedBreak === "FAILURE_FORMING") && backInside) {
+      track.failedBreak = "FAILURE_FORMING";
+      const hadAttempt = ev.penetrated || track.attemptOriginTime != null;
+      const laterBar = track.attemptOriginIndex != null && index > track.attemptOriginIndex;
+      const failReady = !incomplete && hadAttempt && backInside && !ev.closeBeyond && !track.everLost && laterBar;
+      if (failReady && cooldownOk(track, index, failType, cfg)) {
+        const originFail = track.attemptOriginTime ?? bar.time;
+        track.failedBreak = failType === "FAIL_UP" ? "FAILED_UP" : "FAILED_DOWN";
+        track.lastConfirmBar = index;
+        track.lastConfirmType = failType;
+        confirmed.push(makeEvent(failType, track, bar, originFail, ev, cfg, "CONFIRMED"));
+        track.attemptId += 1;
+        track.attemptOriginTime = null;
+        track.attemptOriginIndex = null;
+        track.sweepAttempt = false;
+      } else if (hadAttempt) {
+        forming.push(makeEvent(failType, track, bar, track.attemptOriginTime ?? bar.time, ev, cfg, incomplete ? "PROVISIONAL" : "FORMING"));
+      }
+    }
+    const barsSinceLoss = track.lostAtIndex != null ? index - track.lostAtIndex : cfg.reclaimWindowBars + 1;
+    if (track.everLost && backInside) {
+      if (track.reclaim === "NONE" || track.reclaim === "LEVEL_LOST" || track.reclaim === "RECLAIM_FAILED") {
+        track.reclaim = ev.penetrated || track.consecutiveOriginal > 0 ? "RECLAIM_FORMING" : "LEVEL_LOST";
+      } else if (track.reclaim === "RETURN_ATTEMPT") {
+        track.reclaim = "RECLAIM_FORMING";
+      }
+      if (canConfirmReclaim(ev, cfg, track.everLost, barsSinceLoss, incomplete) && cooldownOk(track, index, reclaimType, cfg)) {
+        track.reclaim = reclaimType === "RECLAIM_UP" ? "RECLAIMED_UP" : "RECLAIMED_DOWN";
+        track.lastConfirmBar = index;
+        track.lastConfirmType = reclaimType;
+        const originRec = track.lostAt ?? track.attemptOriginTime ?? bar.time;
+        confirmed.push(makeEvent(reclaimType, track, bar, originRec, ev, cfg, "CONFIRMED"));
+        track.attemptId += 1;
+        track.attemptOriginTime = null;
+        track.attemptOriginIndex = null;
+        track.everLost = false;
+        track.lostAt = null;
+        track.lostAtIndex = null;
+        track.failedBreak = "NONE";
+        track.level = {
+          ...track.level,
+          type: "RECLAIMED_LEVEL",
+          id: `RECLAIMED_LEVEL:${track.level.id}`
+        };
+      } else if (track.reclaim === "RECLAIM_FORMING" || track.reclaim === "RETURN_ATTEMPT") {
+        forming.push(makeEvent(reclaimType, track, bar, track.lostAt ?? origin, ev, cfg, incomplete ? "PROVISIONAL" : "FORMING"));
+      }
+    } else if (track.everLost && !backInside && !ev.closeBeyond) {
+      track.reclaim = "LEVEL_LOST";
+    }
+    if (track.reclaim === "RECLAIM_FORMING" && ev.closeBeyond) {
+      track.reclaim = "RECLAIM_FAILED";
+    }
+    return { confirmed, forming };
+  }
+  function toLines(events, bars, cfg) {
+    const confirmed = events.filter((e) => e.status === "CONFIRMED");
+    const sliced = confirmed.slice(-cfg.maxEventLines);
+    const timeIndex = new Map(bars.map((b, i) => [b.time, i]));
+    return sliced.map((e) => {
+      const style = lineStyle(e.eventType);
+      const confirmIdx = e.confirmBarTime != null ? timeIndex.get(e.confirmBarTime) : void 0;
+      const endIdx = confirmIdx != null ? Math.min(bars.length - 1, confirmIdx + cfg.lineExtendBars) : confirmIdx;
+      const endTime = endIdx != null ? bars[endIdx]?.time ?? e.confirmBarTime ?? e.eventOriginTime : e.confirmBarTime ?? e.eventOriginTime;
+      return {
+        eventId: e.id,
+        eventType: e.eventType,
+        price: e.levelPrice,
+        zoneLow: e.zoneLow,
+        zoneHigh: e.zoneHigh,
+        startTime: e.eventOriginTime,
+        endTime,
+        confirmTime: e.confirmedAt,
+        ...style
+      };
+    });
+  }
+  function mergeLevels(auto, injected, extras, atTime) {
+    const all = [...injected, ...auto, ...extras].filter((l) => l.knownAt <= atTime);
+    const map = /* @__PURE__ */ new Map();
+    for (const lv of all) {
+      const prev = map.get(lv.id);
+      if (!prev) map.set(lv.id, lv);
+    }
+    return [...map.values()];
+  }
+  function annotateLevelInteractions(bars, opts = {}) {
+    const cfg = mergeLevelInteractionConfig(opts.cfg);
+    const timeframe = opts.timeframe ?? "15m";
+    const lastIsLive = Boolean(opts.lastIsLive);
+    const useAuto = opts.autoLevels ?? opts.levels == null;
+    const injected = opts.levels ?? [];
+    const byTime = /* @__PURE__ */ new Map();
+    const mem = {
+      tracks: /* @__PURE__ */ new Map(),
+      extras: [...opts.extraLevels ?? []],
+      confirmed: [],
+      forming: []
+    };
+    if (!bars.length) {
+      return { events: [], confirmed: [], lines: [], byTime, levelsUsed: [] };
+    }
+    const last = bars.length - 1;
+    const levelsUsed = [];
+    for (let i = 0; i < bars.length; i++) {
+      const bar = bars[i];
+      const incomplete = Boolean(bar.incomplete) || lastIsLive && i === last;
+      const ann = emptyAnnotation(bar.time);
+      ann.status = incomplete ? "PROVISIONAL" : "CONFIRMED";
+      if (!barIsValid(bar)) {
+        byTime.set(bar.time, ann);
+        continue;
+      }
+      const atr = priorAtr(bars, i, cfg);
+      const auto = useAuto ? collectLevelsKnownAt(bars, i, cfg, timeframe, mem.extras) : [];
+      const known = mergeLevels(auto, injected, mem.extras, bar.time);
+      for (const lv of known) {
+        if (!levelsUsed.some((x) => x.id === lv.id)) levelsUsed.push(lv);
+        if (!mem.tracks.has(lv.id)) mem.tracks.set(lv.id, newTrack(lv));
+      }
+      const candleConfirmed = [];
+      const candleForming = [];
+      for (const lv of known) {
+        const track = mem.tracks.get(lv.id);
+        if (!track) continue;
+        const snapshot = incomplete ? {
+          ...track,
+          level: { ...track.level }
+        } : null;
+        const ev = collectEvidence(
+          bar,
+          track.level,
+          atr,
+          cfg,
+          track.consecutiveBeyond + /* preview increment happens in step */
+          0,
+          track.consecutiveOriginal
+        );
+        const previewBeyond = ev.closeBeyond ? track.consecutiveBeyond + 1 : 0;
+        const previewOriginal = !ev.closeBeyond && returnedToOriginal(bar, track.level, penetrationTolerance(bar.close, atr, cfg)) ? track.consecutiveOriginal + 1 : ev.closeBeyond ? 0 : track.consecutiveOriginal;
+        const evNow = {
+          ...ev,
+          consecutiveClosesBeyond: previewBeyond,
+          consecutiveClosesOriginal: previewOriginal
+        };
+        const quiet = isNarrowOrQuiet(bar, atr, cfg) && !ev.penetrated && !ev.closeBeyond;
+        if (quiet) {
+          if (snapshot) Object.assign(track, snapshot);
+          continue;
+        }
+        const out = stepTrack(track, bar, i, evNow, cfg, incomplete, atr);
+        if (incomplete && snapshot) {
+          Object.assign(track, snapshot);
+          candleForming.push(...out.forming, ...out.confirmed.map((e) => ({ ...e, status: "PROVISIONAL", confirmedAt: void 0, confirmBarTime: null })));
+        } else {
+          candleForming.push(...out.forming);
+          for (const evnt of out.confirmed) {
+            if (mem.confirmed.some((x) => x.id === evnt.id)) continue;
+            const atrNow = atr != null && atr > 0 ? atr : evnt.levelPrice * 4e-3;
+            const band = Math.max(atrNow * Math.max(cfg.zoneMergeAtr, 0.5), evnt.levelPrice * 4e-3);
+            const interval = i > 0 ? Math.max(1, bar.time - (bars[i - 1]?.time ?? bar.time - 1)) : 1;
+            const nearDup = mem.confirmed.some((x) => x.eventType === evnt.eventType && Math.abs(x.levelPrice - evnt.levelPrice) <= band && evnt.confirmBarTime != null && x.confirmBarTime != null && Math.abs(evnt.confirmBarTime - x.confirmBarTime) <= interval * 3);
+            if (nearDup) continue;
+            mem.confirmed.push(evnt);
+            candleConfirmed.push(evnt);
+          }
+        }
+      }
+      const display = candleConfirmed.length ? dedupCandleEvents(candleConfirmed) : [];
+      ann.events = display;
+      ann.forming = candleForming;
+      ann.secondaryLabels = [...new Set(display.map((e) => e.compactLabel))];
+      ann.compactLabel = pickCompact(display);
+      byTime.set(bar.time, ann);
+    }
+    const lines = toLines(mem.confirmed, bars, cfg);
+    return {
+      events: mem.confirmed,
+      confirmed: mem.confirmed,
+      lines,
+      byTime,
+      levelsUsed
+    };
+  }
+  function fmtEventClock(time) {
+    if (time == null) return "\u2014";
+    if (time > 1e11) return new Date(time).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+    return String(time);
+  }
+  function formatLevelEventTooltip(event, extras) {
+    const m = event.metrics;
+    const kind = event.eventType === "FAIL_UP" ? "Failed upward break" : event.eventType === "FAIL_DOWN" ? "Failed downward break" : event.eventType === "RECLAIM_UP" ? "Bullish reclaim" : "Bearish reclaim";
+    const cvd = extras?.cvd;
+    const lines = [
+      `${event.compactLabel}  ${kind}  ${event.status}`,
+      "",
+      `Level: ${event.levelType.replace(/_/g, " ")}  ${event.levelPrice}`,
+      event.zoneLow != null && event.zoneHigh != null ? `Zone: ${event.zoneLow} \u2013 ${event.zoneHigh}` : null,
+      `Timeframe: ${event.timeframe}`,
+      `Origin: ${fmtEventClock(event.eventOriginTime)}`,
+      `Confirmed: ${fmtEventClock(event.confirmedAt ?? event.confirmBarTime)}`,
+      `Candle: ${event.confirmationCandleId ?? "\u2014"}`,
+      `Confidence: ${event.confidence ?? "\u2014"}  \xB7  Data: ${event.dataQuality}`,
+      m.aggressiveBuy != null || m.aggressiveSell != null ? `Aggressive: buy ${m.aggressiveBuy != null ? Math.round(m.aggressiveBuy) : "\u2014"}  sell ${m.aggressiveSell != null ? Math.round(m.aggressiveSell) : "\u2014"}` : "Aggressive: n/a",
+      m.delta != null ? `Delta: ${m.delta >= 0 ? "+" : ""}${Math.round(m.delta)}` : "Delta: n/a",
+      m.deltaRatio != null ? `Delta ratio: ${m.deltaRatio >= 0 ? "+" : ""}${m.deltaRatio.toFixed(1)}%` : "Delta ratio: n/a",
+      cvd != null && Number.isFinite(cvd) ? `CVD: ${cvd >= 0 ? "+" : ""}${Math.round(cvd)}` : "CVD: see candle CVD label",
+      m.priceProgressAtr != null ? `Price progress: ${m.priceProgressAtr.toFixed(2)} ATR` : "Price progress: n/a",
+      m.volumeBeyondRatio != null ? `Volume beyond level: ${Math.round(m.volumeBeyondRatio * 100)}%` : "Volume beyond level: n/a",
+      m.askDefense != null ? `Ask defense: ${Math.round(m.askDefense)}` : "Ask defense: unavailable",
+      m.bidDefense != null ? `Bid defense: ${Math.round(m.bidDefense)}` : "Bid defense: unavailable",
+      event.sweepReclaim ? "Kind: sweep reclaim" : null,
+      "",
+      "Confirmation",
+      ...event.reason.map((r) => `\u2022 ${r}`),
+      "",
+      "Invalidation",
+      ...event.invalidation.map((r) => `\u2022 ${r}`)
+    ];
+    return lines.filter((x) => x != null).join("\n");
+  }
+
+  // src/level-interaction/adapters.ts
+  function projectLevelEventLine(line, viewport) {
+    const i0 = viewport.times.findIndex((t) => t >= line.startTime);
+    const i1 = viewport.times.findIndex((t) => t >= line.endTime);
+    const start = i0 >= 0 ? i0 : 0;
+    const end = i1 >= 0 ? i1 : viewport.times.length - 1;
+    const visible = viewport.times.some((t) => t >= line.startTime && t <= line.endTime) || viewport.times[0] != null && viewport.times[viewport.times.length - 1] != null && line.startTime <= viewport.times[viewport.times.length - 1] && line.endTime >= viewport.times[0];
+    return {
+      eventId: line.eventId,
+      price: line.price,
+      x0: viewport.xForIndex(Math.max(0, start)),
+      x1: viewport.xForIndex(Math.max(start, end)),
+      y: viewport.yForPrice(line.price),
+      yZoneLow: line.zoneLow != null ? viewport.yForPrice(line.zoneLow) : void 0,
+      yZoneHigh: line.zoneHigh != null ? viewport.yForPrice(line.zoneHigh) : void 0,
+      visible
+    };
+  }
+  function projectFailReclaimLabel(confirmTime, barHigh, viewport, gap = 14) {
+    const i = viewport.times.indexOf(confirmTime);
+    return {
+      x: i >= 0 ? viewport.xForIndex(i) : viewport.xForIndex(0),
+      y: viewport.yForPrice(barHigh) - gap,
+      visible: i >= 0
+    };
   }
 
   // src/spot/types.ts
@@ -15954,6 +16893,12 @@ var process = globalThis.process || { env: {} };
     handleMessage: (msg) => hub.handleMessage(msg),
     setWatchlist: (symbols) => hub.setWatchlist(symbols),
     recognizePatterns: (body) => hub.recognizePatterns(body),
+    annotateLevelInteractions,
+    formatLevelEventTooltip,
+    projectLevelEventLine,
+    projectFailReclaimLabel,
+    failReclaimLabelY,
+    LEVEL_EVENT_SHORT,
     catalog: FULL_WATCHLIST_CATALOG
   };
 })();

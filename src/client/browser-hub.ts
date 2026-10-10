@@ -23,6 +23,14 @@ import {
   type PatternMarker,
   type PatternSnapshot,
 } from '../pattern-recognition/index.js';
+import {
+  annotateLevelInteractions,
+  formatLevelEventTooltip,
+  projectLevelEventLine,
+  projectFailReclaimLabel,
+  LEVEL_EVENT_SHORT,
+  failReclaimLabelY,
+} from '../level-interaction/index.js';
 import { DEFAULT_IMBALANCE_RATIO, SpotFlowEngine } from '../spot/index.js';
 
 const WATCHLIST_KEY = 'orderflow.activeWatchlist';
@@ -445,6 +453,12 @@ declare global {
       recognizePatterns: (body: Parameters<BrowserOrderFlowHub['recognizePatterns']>[0]) => ReturnType<
         BrowserOrderFlowHub['recognizePatterns']
       >;
+      annotateLevelInteractions: typeof annotateLevelInteractions;
+      formatLevelEventTooltip: typeof formatLevelEventTooltip;
+      projectLevelEventLine: typeof projectLevelEventLine;
+      projectFailReclaimLabel: typeof projectFailReclaimLabel;
+      failReclaimLabelY: typeof failReclaimLabelY;
+      LEVEL_EVENT_SHORT: typeof LEVEL_EVENT_SHORT;
       catalog: typeof FULL_WATCHLIST_CATALOG;
     };
   }
@@ -458,5 +472,11 @@ globalThis.window.OrderFlowClient = {
   handleMessage: (msg: Parameters<BrowserOrderFlowHub['handleMessage']>[0]) => hub.handleMessage(msg),
   setWatchlist: (symbols: string[]) => hub.setWatchlist(symbols),
   recognizePatterns: (body) => hub.recognizePatterns(body),
+  annotateLevelInteractions,
+  formatLevelEventTooltip,
+  projectLevelEventLine,
+  projectFailReclaimLabel,
+  failReclaimLabelY,
+  LEVEL_EVENT_SHORT,
   catalog: FULL_WATCHLIST_CATALOG,
 };

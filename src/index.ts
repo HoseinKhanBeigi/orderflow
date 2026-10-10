@@ -154,6 +154,24 @@ export type {
   PriceZone,
 } from './location-label/index.js';
 
+export {
+  LEVEL_INTERACTION_VERSION,
+  annotateLevelInteractions,
+  formatLevelEventTooltip,
+  projectLevelEventLine,
+  projectFailReclaimLabel,
+  failReclaimLabelY,
+  mapLevelEventToFailureReclaim,
+  LEVEL_EVENT_SHORT,
+  mergeLevelInteractionConfig,
+} from './level-interaction/index.js';
+export type {
+  InteractionLevel,
+  LevelInteractionEvent,
+  LevelEventLine,
+  InteractionBar,
+} from './level-interaction/index.js';
+
 export * from './models/index.js';
 export * as simulation from './simulation/index.js';
 export * as backtest from './backtest/index.js';

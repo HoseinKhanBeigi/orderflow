@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-trade-decision-v1" />
+  <link rel="stylesheet" href="/styles.css?v=fp-level-events-v1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -95,6 +95,16 @@
                 <option value="64">64</option>
               </select>
             </label>
+            <details class="level-events-ctrl" id="level-events-ctrl">
+              <summary title="Failed breaks and reclaims at structural levels">Fail / Reclaim</summary>
+              <div class="level-events-menu">
+                <label><input type="checkbox" data-le="failed" checked /> Show Failed Breaks</label>
+                <label><input type="checkbox" data-le="reclaim" checked /> Show Reclaims</label>
+                <label><input type="checkbox" data-le="lines" /> Show Event Lines</label>
+                <label><input type="checkbox" data-le="forming" /> Show Forming Events</label>
+                <label><input type="checkbox" data-le="confirmedOnly" checked /> Show Confirmed Only</label>
+              </div>
+            </details>
             <div class="chart-tf-tabs" id="chart-ex-tabs">
               <button class="chart-tf-tab active" data-ex="all" type="button">All</button>
               <button class="chart-tf-tab" data-ex="binance" type="button">Binance</button>
@@ -152,10 +162,12 @@
       <span class="legend-item fp-withdraw" title="Under each candle: Bid ✕ / Ask ✕ = share of cancelled (pulled) liquidity on that bar">Candle Bid✕ / Ask✕ %</span>
       <span class="legend-item fp-dist">Distribution at highs</span>
       <span class="legend-item fp-hunt">Stop hunt</span>
+      <span class="legend-item fp-fail">FAIL ↑↓ failed break</span>
+      <span class="legend-item fp-rec">REC ↑↓ reclaim</span>
     </div>
   </footer>
 
-  <script src="/client.bundle.js?v=client-10"></script>
-  <script src="/app.js?v=client-13" type="module"></script>
+  <script src="/client.bundle.js?v=fail-reclaim-v3b"></script>
+  <script src="/app.js?v=fail-reclaim-v3b" type="module"></script>
 </body>
 </html>

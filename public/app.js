@@ -1616,6 +1616,7 @@ function buildFpGrid() {
       card,
       patternHits: [],
       microHits: [],
+      levelEventHits: [],
     });
     bindFpCanvas(coin.symbol, canvas);
     card.addEventListener('pointerdown', () => focusFootprintSymbol(coin.symbol));
@@ -1681,8 +1682,14 @@ function initChart() {
     document.getElementById('fp-delta-progress-select')?.addEventListener('change', (e) => {
       applyDeltaProgressMode(e.target.value);
     });
+    document.getElementById('level-events-ctrl')?.addEventListener('change', (e) => {
+      const input = e.target.closest('[data-le]');
+      if (!input) return;
+      applyLevelEventOpts({ ...fpLevelEventOpts, [input.dataset.le]: input.checked });
+    });
     applyFpFlowLookback(fpFlowLookback);
     applyDeltaProgressMode(fpDeltaProgressMode);
+    applyLevelEventOpts(fpLevelEventOpts);
   }
   buildFpGrid();
 }
@@ -3036,34 +3043,25 @@ function annotateBarsPrimaryMicro(bars, flowByTime, { lastIsLive = false } = {})
     const secondary = selectMicroSecondaries(cands);
     const secLabels = secondary.map((s) => s.label);
     const location = classifyChartLocation(bar, prior, secLabels);
-    const tipParts = [
-      'PRIMARY',
-      primaryShort ? `${primaryShort}${provisional ? ' (live)' : ''}` : '—',
-      '',
-      'SECONDARY',
-      ...(secondary.map((s) => s.short).length ? secondary.map((s) => s.short) : ['—']),
-      '',
-      location.tip,
-      '',
-      strategyStoryTooltip(story),
-      ...secondary.map((s) => s.tip).filter(Boolean),
-    ].filter((x) => x != null);
     const locShort = provisional && location.short
       ? `${location.short}?`
       : location.short;
+    const secMapped = secondary.map((s) => ({
+      short: provisional
+        ? MICRO_LABEL_SHORT[s.label].replace('↑', '↑?').replace('↓', '↓?').replace(' NP', ' NP?')
+        : MICRO_LABEL_SHORT[s.label],
+      label: s.label,
+      tip: '',
+    }));
     out.set(bar.time, {
       primaryShort: provisional && primaryShort ? `${primaryShort}?` : primaryShort,
       primaryColor: bias === 'BULLISH' ? '#22c55e' : bias === 'BEARISH' ? '#ef4444' : '#8b949e',
-      secondary: secondary.map((s) => ({
-        short: provisional
-          ? MICRO_LABEL_SHORT[s.label].replace('↑', '↑?').replace('↓', '↓?').replace(' NP', ' NP?')
-          : MICRO_LABEL_SHORT[s.label],
-        label: s.label,
-        tip: s.tip,
-      })),
+      secondary: secMapped,
       locationShort: locShort,
       locationLabel: location.label,
-      tip: tipParts.join('\n'),
+      tip: [provisional && primaryShort ? `${primaryShort}?` : primaryShort, ...secMapped.map((s) => s.short), locShort]
+        .filter(Boolean)
+        .join(' · '),
       bias,
       provisional,
     });
@@ -3074,6 +3072,256 @@ function annotateBarsPrimaryMicro(bars, flowByTime, { lastIsLive = false } = {})
     }
   }
   return out;
+}
+
+const FP_LEVEL_EVENTS_KEY = 'fpLevelEvents';
+const DEFAULT_LEVEL_EVENT_OPTS = {
+  failed: true,
+  reclaim: true,
+  lines: false,
+  forming: false,
+  confirmedOnly: true,
+};
+
+function readLevelEventOpts() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FP_LEVEL_EVENTS_KEY) || '{}');
+    const { acceptance: _acc, v, ...rest } = raw;
+    return {
+      ...DEFAULT_LEVEL_EVENT_OPTS,
+      ...rest,
+      ...(v === 3 ? {} : { lines: false }),
+    };
+  } catch {
+    return { ...DEFAULT_LEVEL_EVENT_OPTS };
+  }
+}
+
+let fpLevelEventOpts = readLevelEventOpts();
+
+function applyLevelEventOpts(next = fpLevelEventOpts) {
+  fpLevelEventOpts = { ...DEFAULT_LEVEL_EVENT_OPTS, ...next };
+  localStorage.setItem(FP_LEVEL_EVENTS_KEY, JSON.stringify({ ...fpLevelEventOpts, v: 3 }));
+  const root = document.getElementById('level-events-ctrl');
+  if (root) {
+    for (const input of root.querySelectorAll('[data-le]')) {
+      const key = input.dataset.le;
+      if (key in fpLevelEventOpts) input.checked = Boolean(fpLevelEventOpts[key]);
+    }
+  }
+  for (const symbol of fpViews.keys()) drawFootprint(symbol);
+}
+
+function lieApi() {
+  return window.OrderFlowClient?.annotateLevelInteractions || null;
+}
+
+function lieEventAllowed(event, opts = fpLevelEventOpts) {
+  if (!event) return false;
+  if ((event.eventType === 'FAIL_UP' || event.eventType === 'FAIL_DOWN') && !opts.failed) return false;
+  if ((event.eventType === 'RECLAIM_UP' || event.eventType === 'RECLAIM_DOWN') && !opts.reclaim) return false;
+  if (event.status === 'CONFIRMED') return true;
+  if (opts.forming) return true;
+  if (!opts.confirmedOnly && event.status === 'PROVISIONAL') return true;
+  return false;
+}
+
+const lieCache = new Map();
+
+function runLevelEvents(symbol, bars, { lastIsLive = false } = {}) {
+  const api = lieApi();
+  if (!api || !bars.length) {
+    return { events: [], confirmed: [], lines: [], byTime: new Map() };
+  }
+  const last = bars[bars.length - 1];
+  const key = `${symbol}|${chartTfMinutes}|${bars.length}|${last?.time}|${lastIsLive}|${last?.close}|${last?.high}`;
+  const hit = lieCache.get(key);
+  if (hit) return hit;
+  const result = api(bars.map((b) => ({
+    time: b.time,
+    open: b.open,
+    high: b.high,
+    low: b.low,
+    close: b.close,
+    totalBuy: b.totalBuy,
+    totalSell: b.totalSell,
+    aggressiveBuy: b.totalBuy,
+    aggressiveSell: b.totalSell,
+    levels: b.levels instanceof Map
+      ? [...b.levels.values()]
+      : Array.isArray(b.levels) ? b.levels : [],
+    incomplete: lastIsLive && b.time === last.time,
+  })), {
+    symbol,
+    timeframe: `${chartTfMinutes}m`,
+    lastIsLive,
+    autoLevels: true,
+  });
+  lieCache.set(key, result);
+  if (lieCache.size > 24) {
+    const first = lieCache.keys().next().value;
+    lieCache.delete(first);
+  }
+  return result;
+}
+
+const FR_LABEL = {
+  FAIL_UP: { short: 'FAIL ↑', color: '#f59e0b' },
+  FAIL_DOWN: { short: 'FAIL ↓', color: '#84cc16' },
+  RECLAIM_UP: { short: 'REC ↑', color: '#22c55e' },
+  RECLAIM_DOWN: { short: 'REC ↓', color: '#ef4444' },
+};
+
+function frConfirmTimeKey(event) {
+  if (event.confirmBarTime != null) return event.confirmBarTime;
+  if (event.confirmedAt != null) return event.confirmedAt;
+  if (event.confirmationCandleId != null) {
+    const n = Number(event.confirmationCandleId);
+    return Number.isFinite(n) ? n : event.confirmationCandleId;
+  }
+  return null;
+}
+
+function buildFrByConfirmTime(lie) {
+  const map = new Map();
+  const pool = [...(lie?.confirmed ?? []), ...(lie?.events ?? [])];
+  for (const e of pool) {
+    if (!FR_LABEL[e.eventType]) continue;
+    const t = frConfirmTimeKey(e);
+    if (t == null) continue;
+    const list = map.get(t) ?? [];
+    list.push(e);
+    map.set(t, list);
+  }
+  return map;
+}
+
+function lieAnnAt(lie, time) {
+  const bt = lie?.byTime;
+  if (!bt) return null;
+  if (bt instanceof Map) return bt.get(time);
+  if (typeof bt.get === 'function') return bt.get(time);
+  return bt[time] ?? null;
+}
+
+function failReclaimEventsForBar(lie, time, frByTime) {
+  const fromIndex = frByTime?.get(time);
+  const lieAnn = lieAnnAt(lie, time);
+  const fromAnn = [
+    ...(lieAnn?.events || []),
+    ...(fpLevelEventOpts.forming ? lieAnn?.forming || [] : []),
+  ];
+  const merged = (fromIndex?.length ? fromIndex : fromAnn);
+  return pickFailReclaimDisplay(
+    merged.filter((e) => lieEventAllowed(e) && FR_LABEL[e.eventType]),
+  );
+}
+
+function frDisplayRank(event) {
+  const confirmed = event.status === 'CONFIRMED' ? 1000 : 0;
+  const reclaim = String(event.eventType || '').startsWith('RECLAIM') ? 200 : 0;
+  const control = event.sweepReclaim || (event.confidence ?? 0) >= 75 ? 50 : 0;
+  return confirmed + reclaim + control + (event.confidence ?? 0);
+}
+
+function pickFailReclaimDisplay(events) {
+  const byType = new Map();
+  for (const ev of events) {
+    const prev = byType.get(ev.eventType);
+    if (!prev || frDisplayRank(ev) > frDisplayRank(prev)) byType.set(ev.eventType, ev);
+  }
+  return [...byType.values()].sort((a, b) => frDisplayRank(b) - frDisplayRank(a));
+}
+
+function formatFailReclaimTip(event, extras, hidden = []) {
+  const api = window.OrderFlowClient?.formatLevelEventTooltip;
+  const base = api ? api(event, extras) : `${FR_LABEL[event.eventType]?.short || event.eventType}  ${event.status || ''}`;
+  if (!hidden.length) return base;
+  const extra = hidden.map((e) => {
+    const short = FR_LABEL[e.eventType]?.short || e.eventType;
+    return `${short}  ${e.status || ''}  ${e.levelType ? String(e.levelType).replace(/_/g, ' ') : ''}`.trim();
+  });
+  return `${base}\n\nAlso on this candle\n${extra.map((line) => `• ${line}`).join('\n')}`;
+}
+
+function xForVisibleTime(visible, time, plotRight, stride, barWidth) {
+  if (!visible.length) return null;
+  const i = visible.findIndex((b) => b.time === time);
+  if (i >= 0) return plotRight - (visible.length - i) * stride + barWidth / 2;
+  if (time < visible[0].time) return plotRight - visible.length * stride + barWidth / 2;
+  if (time > visible[visible.length - 1].time) return plotRight - stride + barWidth / 2;
+  let lo = 0;
+  for (let k = 0; k < visible.length; k++) {
+    if (visible[k].time <= time) lo = k;
+  }
+  return plotRight - (visible.length - lo) * stride + barWidth / 2;
+}
+
+function drawLevelEventLines(ctx, lie, visible, { plotRight, stride, barWidth, yForPrice, topPad, chartH, leftPad }) {
+  const hits = [];
+  if (!fpLevelEventOpts.lines || !lie?.lines?.length || !visible.length) return hits;
+  const t0 = visible[0].time;
+  const t1 = visible[visible.length - 1].time;
+  const project = window.OrderFlowClient?.projectLevelEventLine;
+  for (const line of lie.lines) {
+    if (!lieEventAllowed({ ...line, status: 'CONFIRMED', eventType: line.eventType })) continue;
+    if (line.endTime < t0 || line.startTime > t1) continue;
+    const x0 = xForVisibleTime(visible, line.startTime, plotRight, stride, barWidth);
+    const x1 = xForVisibleTime(visible, line.endTime, plotRight, stride, barWidth);
+    if (x0 == null || x1 == null) continue;
+    const y = yForPrice(line.price);
+    if (y < topPad || y > topPad + chartH) continue;
+    if (project) {
+      const mapped = project(line, {
+        times: visible.map((b) => b.time),
+        xForIndex: (i) => xForVisibleTime(visible, visible[i]?.time, plotRight, stride, barWidth) ?? x0,
+        yForPrice,
+      });
+      if (mapped.price !== line.price) continue;
+    }
+    ctx.save();
+    ctx.strokeStyle = line.color || '#f59e0b';
+    ctx.lineWidth = 1.35;
+    ctx.globalAlpha = 0.92;
+    if (line.pattern === 'DASHED') ctx.setLineDash([6, 4]);
+    else if (line.pattern === 'DOTTED') ctx.setLineDash([2, 3]);
+    else ctx.setLineDash([]);
+    const from = Math.max(leftPad, Math.min(x0, x1));
+    const to = Math.min(plotRight - 4, Math.max(x0, x1));
+    ctx.beginPath();
+    ctx.moveTo(from, y);
+    ctx.lineTo(to, y);
+    ctx.stroke();
+    if (line.zoneLow != null && line.zoneHigh != null && Math.abs(line.zoneHigh - line.zoneLow) > (line.price * 0.0008)) {
+      ctx.globalAlpha = 0.28;
+      ctx.setLineDash([3, 3]);
+      const yLo = yForPrice(line.zoneLow);
+      const yHi = yForPrice(line.zoneHigh);
+      ctx.beginPath();
+      ctx.moveTo(from, yLo);
+      ctx.lineTo(to, yLo);
+      ctx.moveTo(from, yHi);
+      ctx.lineTo(to, yHi);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.font = '700 10px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    const label = line.label || '';
+    const tw = ctx.measureText(label).width;
+    const lx = Math.min(to + 4, plotRight - tw - 8);
+    const occupied = hits.filter((h) => Math.abs(((h.y0 + h.y1) / 2) - y) < 12).length;
+    const ly = y - 3 - occupied * 12;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
+    ctx.strokeText(label, lx, ly);
+    ctx.fillStyle = line.color || '#e6edf3';
+    ctx.fillText(label, lx, ly);
+    ctx.restore();
+  }
+  return hits;
 }
 
 /** Ultra-short secondary codes so they fit a candle column without clipping. */
@@ -3094,6 +3342,8 @@ function microShortCompact(label, short) {
 }
 
 function microSecColor(label) {
+  if (label === 'ACCEPT_UP') return '#5eead4';
+  if (label === 'ACCEPT_DOWN') return '#f87171';
   if (label.endsWith('_UP') || label === 'BUYER_NO_PROGRESS') return '#86efac';
   if (label.endsWith('_DOWN') || label === 'SELLER_NO_PROGRESS') return '#fca5a5';
   return '#cbd5e1';
@@ -3106,32 +3356,41 @@ function microSecColor(label) {
  *   LOCATION
  * No per-candle boxes, no PRIMARY·SECONDARY mash that clips letters.
  */
-function drawCandleTopLabels(ctx, ann, cx, maxW) {
-  if (!ann) return null;
-  const primary = ann.primaryShort || '';
-  const locationRaw = ann.locationShort || '';
-  if (!primary && !(ann.secondary || []).length && !locationRaw) return null;
+function drawCandleTopLabels(ctx, ann, cx, maxW, frEvents = [], frExtras = {}) {
+  const primary = ann?.primaryShort || '';
+  const locationRaw = ann?.locationShort || '';
+  const frShown = pickFailReclaimDisplay(frEvents);
+  if (!ann && !frShown.length) return null;
+  if (!primary && !(ann?.secondary || []).length && !locationRaw && !frShown.length) return null;
 
   const colW = Math.max(40, maxW);
   const textW = colW - 2;
   const veryNarrow = colW < 52;
   const narrow = colW < 72;
 
-  let secs = (ann.secondary || []).slice(0, veryNarrow ? 0 : narrow ? 1 : 2);
+  const allSecs = ann?.secondary || [];
+  const keep = veryNarrow ? 1 : 2;
+  let secs = allSecs.slice(0, keep);
   const secTexts = secs.map((s) => ({
     label: s.label,
-    text: narrow ? microShortCompact(s.label, s.short) : s.short,
+    text: (narrow || veryNarrow) ? microShortCompact(s.label, s.short) : s.short,
     color: microSecColor(s.label),
   }));
 
   const location = locationRaw
-    ? (narrow ? (LOCATION_LABEL_COMPACT[ann.locationLabel] || locationRaw) : locationRaw)
+    ? (narrow ? (LOCATION_LABEL_COMPACT[ann?.locationLabel] || locationRaw) : locationRaw)
     : '';
 
   const y1 = 15;
   const y2 = 30;
   const y3 = 44;
-  const bottom = location ? (secTexts.length ? y3 + 8 : y2 + 8) : (secTexts.length ? y2 + 8 : y1 + 8);
+  const yFr = 58;
+  let frHit = null;
+  const bottom = frShown.length
+    ? yFr + 10
+    : location
+      ? (secTexts.length ? y3 + 8 : y2 + 8)
+      : (secTexts.length ? y2 + 8 : y1 + 8);
 
   ctx.save();
   ctx.textAlign = 'center';
@@ -3157,16 +3416,16 @@ function drawCandleTopLabels(ctx, ann, cx, maxW) {
       primary,
       y1,
       '700 14px Inter, system-ui, sans-serif',
-      ann.primaryColor || '#e6edf3',
-      ann.provisional ? 0.7 : 1,
+      ann?.primaryColor || '#e6edf3',
+      ann?.provisional ? 0.7 : 1,
     );
     if (ok === false) {
       paint(
         primary,
         y1,
         '700 12px Inter, system-ui, sans-serif',
-        ann.primaryColor || '#e6edf3',
-        ann.provisional ? 0.7 : 1,
+        ann?.primaryColor || '#e6edf3',
+        ann?.provisional ? 0.7 : 1,
       );
     }
   }
@@ -3181,13 +3440,13 @@ function drawCandleTopLabels(ctx, ann, cx, maxW) {
       widths.pop();
       total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, secTexts.length - 1);
     }
-    if (secTexts.length && total <= textW + 6) {
+    if (secTexts.length && total <= textW + 18) {
       let x = cx - total / 2;
       secTexts.forEach((s, i) => {
         const tw = widths[i];
         const tx = x + tw / 2;
-        ctx.font = '600 12px Inter, system-ui, sans-serif';
-        ctx.globalAlpha = ann.provisional ? 0.62 : 0.92;
+        ctx.font = veryNarrow ? '700 10px Inter, system-ui, sans-serif' : '600 12px Inter, system-ui, sans-serif';
+        ctx.globalAlpha = ann?.provisional ? 0.62 : 0.92;
         ctx.lineWidth = 3;
         ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
         ctx.strokeText(s.text, tx, y2);
@@ -3205,8 +3464,28 @@ function drawCandleTopLabels(ctx, ann, cx, maxW) {
       secTexts.length ? y3 : y2,
       '600 11px Inter, system-ui, sans-serif',
       '#9aa4b2',
-      ann.provisional ? 0.6 : 0.9,
+      ann?.provisional ? 0.6 : 0.9,
     );
+  }
+
+  if (frShown.length) {
+    const parts = frShown.map((ev) => {
+      const meta = FR_LABEL[ev.eventType];
+      return ev.status === 'CONFIRMED' ? meta.short : `${meta.short}?`;
+    });
+    const frText = parts.join(' ');
+    const frColor = FR_LABEL[frShown[0].eventType].color;
+    const frFont = veryNarrow ? '700 10px Inter, system-ui, sans-serif' : '700 12px Inter, system-ui, sans-serif';
+    if (!paint(frText, yFr, frFont, frColor, frShown[0].status === 'CONFIRMED' ? 1 : 0.72)) {
+      paint(frShown[0].status === 'CONFIRMED' ? FR_LABEL[frShown[0].eventType].short : `${FR_LABEL[frShown[0].eventType].short}?`, yFr, '700 10px Inter, system-ui, sans-serif', frColor, frShown[0].status === 'CONFIRMED' ? 1 : 0.72);
+    }
+    frHit = {
+      x0: cx - colW / 2,
+      x1: cx + colW / 2,
+      y0: yFr - 10,
+      y1: yFr + 10,
+      tip: formatFailReclaimTip(frShown[0], frExtras, frShown.slice(1)),
+    };
   }
 
   ctx.restore();
@@ -3215,7 +3494,9 @@ function drawCandleTopLabels(ctx, ann, cx, maxW) {
     x1: cx + colW / 2,
     y0: 4,
     y1: bottom,
-    tip: ann.tip || '',
+    tip: ann?.tip || '',
+    frHit,
+    hasFr: frShown.length > 0,
   };
 }
 
@@ -3389,6 +3670,17 @@ function showPatternTip(symbol, event) {
   const rect = view.canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+
+  const frHit = (view.levelEventHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  if (frHit?.tip) {
+    tip.classList.remove('hidden');
+    tip.innerHTML = `<pre style="margin:0;white-space:pre-wrap;font:11px JetBrains Mono,monospace">${escapeHtml(frHit.tip)}</pre>`;
+    const host = view.card?.querySelector('.fp-card-canvas');
+    const maxX = (host?.clientWidth ?? 200) - 240;
+    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+    tip.style.top = `${Math.max(8, y + 14)}px`;
+    return;
+  }
 
   const microHit = (view.microHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
   if (microHit?.tip) {
@@ -4062,6 +4354,7 @@ function drawFootprint(symbol = selectedSymbol) {
 
   view.patternHits = [];
   view.microHits = [];
+  view.levelEventHits = [];
   const patternByTime = new Map();
   for (const marker of patternMarkersFor(symbol)) {
     if (marker?.t != null) patternByTime.set(marker.t, marker);
@@ -4078,6 +4371,10 @@ function drawFootprint(symbol = selectedSymbol) {
   const microByTime = annotateBarsPrimaryMicro(bars, flowByTime, {
     lastIsLive: lastIsLive && endIdx === bars.length,
   });
+  const lie = runLevelEvents(symbol, bars, {
+    lastIsLive: lastIsLive && endIdx === bars.length,
+  });
+  const frByTime = buildFrByConfirmTime(lie);
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -4087,12 +4384,16 @@ function drawFootprint(symbol = selectedSymbol) {
     const half = cellW / 2;
     const cx = x + barWidth / 2;
     const isLiveBar = lastIsLive && i === visible.length - 1;
+    const frEvs = failReclaimEventsForBar(lie, bar.time, frByTime);
     const microAnn = microByTime.get(bar.time);
-    const topHit = drawCandleTopLabels(ctx, microAnn, cx, barWidth - 4);
+    const topHit = drawCandleTopLabels(ctx, microAnn, cx, barWidth - 4, frEvs, {
+      cvd: flowByTime.get(bar.time)?.cvd ?? null,
+    });
     if (topHit?.tip) view.microHits.push(topHit);
+    if (topHit?.frHit) view.levelEventHits.push(topHit.frHit);
     const marker = patternByTime.get(bar.time);
     if (marker) {
-      const hit = drawPatternBadge(ctx, marker, cx, 58);
+      const hit = drawPatternBadge(ctx, marker, cx, topHit?.hasFr ? 72 : 58);
       view.patternHits.push({ ...hit, marker });
     }
     const poc = levels.reduce((best, lv) => (lv.buy + lv.sell > best.vol ? { vol: lv.buy + lv.sell, price: lv.price } : best), { vol: 0, price: 0 });
@@ -4251,6 +4552,16 @@ function drawFootprint(symbol = selectedSymbol) {
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
     if (deltaHit?.tip) view.microHits.push(deltaHit);
   }
+
+  drawLevelEventLines(ctx, lie, visible, {
+    plotRight,
+    stride,
+    barWidth,
+    yForPrice,
+    topPad,
+    chartH,
+    leftPad,
+  });
 
   if (railW > 0) {
     drawPassiveRail(ctx, symbol, {
