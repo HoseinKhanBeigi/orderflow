@@ -4192,13 +4192,20 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = '600 9px JetBrains Mono, monospace';
   let top = null;
   let bottom = null;
-  rows.forEach((row, i) => {
-    const y = footY + DELTA_LABEL_FIRST_OFFSET + i * DELTA_LABEL_LINE_H;
-    top = top == null ? y - 6 : top;
-    bottom = y + 6;
+  let yCursor = footY + DELTA_LABEL_FIRST_OFFSET;
+  rows.forEach((row) => {
+    // ΔR (and strength) — larger / heavier; other rows stay compact
+    const isDeltaMetric = row.key === 'ratio' || row.key === 'strength';
+    const fontPx = isDeltaMetric ? (dense ? 13 : 15) : (dense ? 8 : 9);
+    const fontWt = isDeltaMetric ? 800 : 600;
+    const lineH = isDeltaMetric ? DELTA_LABEL_LINE_H + 5 : DELTA_LABEL_LINE_H;
+    ctx.font = `${fontWt} ${fontPx}px JetBrains Mono, monospace`;
+    const y = yCursor;
+    yCursor += lineH;
+    top = top == null ? y - 7 : top;
+    bottom = y + 7;
     const color = row.key === 'effort'
       ? (row.text.includes('NP') ? '#fbbf24' : row.text.startsWith('S') || row.text.startsWith('SELL') ? '#fca5a5' : '#86efac')
       : row.key === 'progress'
@@ -4208,7 +4215,7 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
           : result.deltaSide === 'BUY' || (result.deltaRatioPercent ?? 0) > 0
             ? '#86efac'
             : '#94a3b8';
-    ctx.lineWidth = 3;
+    ctx.lineWidth = isDeltaMetric ? 4 : 3;
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
     ctx.strokeText(row.text, cx, y, maxW);
     ctx.fillStyle = color;
@@ -4512,7 +4519,6 @@ function drawFootprint(symbol = selectedSymbol) {
     const metrics = flowByTime.get(bar.time);
     if (metrics) {
       // Compact under each candle: Displacement · Delta · CVD
-      ctx.font = '600 10px JetBrains Mono, monospace';
       ctx.textAlign = 'center';
       ctx.globalAlpha = metrics.incomplete ? 0.65 : 0.92;
 
@@ -4520,6 +4526,7 @@ function drawFootprint(symbol = selectedSymbol) {
         metrics.displacementBps > 0 ? '#86efac'
           : metrics.displacementBps < 0 ? '#fca5a5'
             : '#94a3b8';
+      ctx.font = '600 10px JetBrains Mono, monospace';
       ctx.fillStyle = dispColor;
       const dispLabel = metrics.incomplete
         ? `${formatDispBp(metrics.displacementBps)} · LIVE`
@@ -4528,20 +4535,25 @@ function drawFootprint(symbol = selectedSymbol) {
 
       const hasFlow = metrics.dataQuality !== 'UNAVAILABLE';
       if (hasFlow) {
+        // Δ — larger / heavier so aggression size reads first
+        ctx.font = '800 16px JetBrains Mono, monospace';
         ctx.fillStyle = metrics.delta >= 0 ? '#86efac' : '#fca5a5';
         const dSign = metrics.delta >= 0 ? '+' : '−';
-        ctx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 40, barWidth - 2);
+        ctx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 44, barWidth - 2);
+        ctx.font = '600 10px JetBrains Mono, monospace';
         ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
-        ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 52, barWidth - 2);
+        ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
       } else {
         const seriesHasFlow = flowMetrics.some((m) => m.dataQuality !== 'UNAVAILABLE');
+        ctx.font = '800 16px JetBrains Mono, monospace';
         ctx.fillStyle = '#64748b';
-        ctx.fillText('Δ —', cx, footY + 40, barWidth - 2);
+        ctx.fillText('Δ —', cx, footY + 44, barWidth - 2);
+        ctx.font = '600 10px JetBrains Mono, monospace';
         if (seriesHasFlow) {
           ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
-          ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 52, barWidth - 2);
+          ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
         } else {
-          ctx.fillText('CVD —', cx, footY + 52, barWidth - 2);
+          ctx.fillText('CVD —', cx, footY + 60, barWidth - 2);
         }
       }
       ctx.globalAlpha = 1;
