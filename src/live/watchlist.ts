@@ -15,6 +15,7 @@ export const WATCHLIST_CATALOG: WatchCoin[] = [
   { symbol: 'BTCUSDT', label: 'BTC', minUsd: 10_000, venue: 'crypto' },
   { symbol: 'ETHUSDT', label: 'ETH', minUsd: 5_000, venue: 'crypto' },
   { symbol: 'AVAXUSDT', label: 'AVAX', minUsd: 1_000, venue: 'crypto' },
+  { symbol: 'AVAUSDT', label: 'AVA', minUsd: 500, venue: 'crypto' },
   { symbol: 'NEARUSDT', label: 'NEAR', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'DOTUSDT', label: 'DOT', minUsd: 1_000, venue: 'crypto' },
   { symbol: 'SOLUSDT', label: 'SOL', minUsd: 3_000, venue: 'crypto' },
