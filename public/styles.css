@@ -194,12 +194,14 @@ body {
   --fp-cols: 1;
   display: grid;
   grid-template-columns: repeat(var(--fp-cols), minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
+  --fp-row-min: 0px;
+  grid-auto-rows: minmax(var(--fp-row-min), 1fr);
   gap: 4px;
   width: 100%;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--bg);
   padding: 4px;
 }

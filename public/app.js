@@ -1526,13 +1526,29 @@ function resizeFpView(symbol) {
   view.ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
 
+function fpGridScrollable() {
+  const grid = document.getElementById('fp-grid');
+  return !!grid && grid.scrollHeight > grid.clientHeight + 1;
+}
+
+function syncFpRowHeight() {
+  const grid = document.getElementById('fp-grid');
+  if (!grid) return;
+  const rows = Math.ceil(fpViews.size / Math.max(1, fpColsPerRow));
+  const pad = 8;
+  const h = rows > 1 ? Math.max(320, grid.clientHeight - pad) : 0;
+  grid.style.setProperty('--fp-row-min', `${h}px`);
+}
+
 function resizeAllFpViews() {
+  syncFpRowHeight();
   for (const symbol of fpViews.keys()) resizeFpView(symbol);
   scheduleDraw();
 }
 
 function bindFpCanvas(symbol, canvas) {
   canvas.addEventListener('wheel', (e) => {
+    if (fpGridScrollable() && !e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) return;
     e.preventDefault();
     e.stopPropagation();
     const view = fpViews.get(symbol);
