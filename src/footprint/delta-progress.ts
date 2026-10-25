@@ -53,7 +53,7 @@ export type DeltaProgressQuality =
   | 'INSUFFICIENT_DATA'
   | 'INVALID';
 
-export type DeltaLabelMode = 'COMPACT' | 'METRICS' | 'OFF';
+export type DeltaLabelMode = 'COMPACT' | 'METRICS' | 'EFFORT_RESPONSE' | 'OFF';
 
 export interface DeltaProgressConfig {
   /** Prior completed candles used as the absolute-delta baseline. */
@@ -111,7 +111,7 @@ export interface DeltaProgressResult {
 }
 
 export interface DeltaLabelRow {
-  key: 'strength' | 'ratio' | 'progress' | 'effort';
+  key: 'strength' | 'ratio' | 'progress' | 'effort' | 'effortLevel' | 'response';
   text: string;
   /** Higher priority survives dense zoom. */
   priority: number;
@@ -363,6 +363,28 @@ export function effortLabelText(state: DeltaEffortState, dense = false): string 
   }
 }
 
+export function effortLevelLabelText(result: DeltaProgressResult, dense = false): string | null {
+  const state = result.deltaStrengthState;
+  if (state === 'UNAVAILABLE' || state === 'INSUFFICIENT_DATA') return null;
+  const word = state === 'EXTREME' ? (dense ? 'EXT' : 'EXTREME')
+    : state === 'STRONG' ? (dense ? 'STR' : 'STRONG')
+      : state === 'WEAK' ? 'WEAK'
+        : 'NORM';
+  const side = result.deltaSide === 'BUY' ? (dense ? 'B ' : 'BUY ')
+    : result.deltaSide === 'SELL' ? (dense ? 'S ' : 'SELL ')
+      : '';
+  return `${dense ? 'E' : 'EFFORT'} ${side}${word}`;
+}
+
+export function responseLabelText(state: PriceProgressState, dense = false): string | null {
+  const word = state === 'HIGH_PROGRESS' ? 'HIGH'
+    : state === 'MODERATE_PROGRESS' ? (dense ? 'MOD' : 'MODERATE')
+      : state === 'LOW_PROGRESS' ? 'LOW'
+        : state === 'AGAINST_AGGRESSION' ? (dense ? 'AGST' : 'AGAINST')
+          : null;
+  return word == null ? null : `${dense ? 'R' : 'RESPONSE'} ${word}`;
+}
+
 export function deltaProgressTooltip(result: DeltaProgressResult, config: DeltaProgressConfig = DEFAULT_DELTA_PROGRESS_CONFIG): string {
   const lines = [
     'DELTA / PROGRESS',
@@ -401,6 +423,14 @@ export function deltaProgressLabelRows(
   const tip = deltaProgressTooltip(result, options.config);
   const rows: DeltaLabelRow[] = [];
 
+  if (mode === 'EFFORT_RESPONSE') {
+    const effortLevel = effortLevelLabelText(result, dense);
+    const response = responseLabelText(result.priceProgressState, dense);
+    if (effortLevel) rows.push({ key: 'effortLevel', text: effortLevel, priority: 100, tip });
+    if (response) rows.push({ key: 'response', text: response, priority: 90, tip });
+    return rows;
+  }
+
   const strength = strengthLabelText(result, dense);
   const ratio = result.deltaRatioPercent == null ? null : `ΔR ${fmtRatio(result.deltaRatioPercent)}`;
   const progress = result.directionalProgressATR == null ? null : `PROG ${fmtProg(result.directionalProgressATR)}`;
@@ -423,7 +453,7 @@ export function deltaProgressLabelRows(
 
   const cap = dense ? 2 : 4;
   return rows.sort((a, b) => b.priority - a.priority).slice(0, cap).sort((a, b) => {
-    const order = { strength: 0, ratio: 1, progress: 2, effort: 3 };
+    const order: Record<DeltaLabelRow['key'], number> = { strength: 0, ratio: 1, progress: 2, effort: 3, effortLevel: 4, response: 5 };
     return order[a.key] - order[b.key];
   });
 }

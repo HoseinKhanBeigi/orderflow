@@ -4002,15 +4002,17 @@ const DELTA_LABEL_FIRST_OFFSET = 112;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
+const DELTA_PROGRESS_MODES = ['METRICS', 'COMPACT', 'EFFORT_RESPONSE', 'OFF'];
+
 function readDeltaProgressMode() {
   const saved = localStorage.getItem(FP_DELTA_PROGRESS_KEY);
-  return saved === 'COMPACT' || saved === 'OFF' || saved === 'METRICS' ? saved : 'METRICS';
+  return DELTA_PROGRESS_MODES.includes(saved) ? saved : 'METRICS';
 }
 
 let fpDeltaProgressMode = readDeltaProgressMode();
 
 function applyDeltaProgressMode(mode = fpDeltaProgressMode) {
-  fpDeltaProgressMode = mode === 'COMPACT' || mode === 'OFF' ? mode : 'METRICS';
+  fpDeltaProgressMode = DELTA_PROGRESS_MODES.includes(mode) ? mode : 'METRICS';
   localStorage.setItem(FP_DELTA_PROGRESS_KEY, fpDeltaProgressMode);
   const select = document.getElementById('fp-delta-progress-select');
   if (select && select.value !== fpDeltaProgressMode) select.value = fpDeltaProgressMode;
@@ -4183,6 +4185,23 @@ function deltaProgressRows(result, mode, dense) {
     'No-progress is not a long or short, and not absorption by itself.',
   ].join('\n');
   const rows = [];
+  if (mode === 'EFFORT_RESPONSE') {
+    if (strengthWord) {
+      const side = result.deltaSide === 'BUY' ? (dense ? 'B ' : 'BUY ') : result.deltaSide === 'SELL' ? (dense ? 'S ' : 'SELL ') : '';
+      rows.push({ key: 'effortLevel', text: `${dense ? 'E' : 'EFFORT'} ${side}${strengthWord}`, priority: 100, tip });
+    }
+    const response = result.priceProgressState === 'HIGH_PROGRESS'
+      ? 'HIGH'
+      : result.priceProgressState === 'MODERATE_PROGRESS'
+        ? (dense ? 'MOD' : 'MODERATE')
+        : result.priceProgressState === 'LOW_PROGRESS'
+          ? 'LOW'
+          : result.priceProgressState === 'AGAINST_AGGRESSION'
+            ? (dense ? 'AGST' : 'AGAINST')
+            : null;
+    if (response) rows.push({ key: 'response', text: `${dense ? 'R' : 'RESPONSE'} ${response}`, priority: 90, tip });
+    return rows;
+  }
   if (mode === 'COMPACT') {
     if (effort) rows.push({ key: 'effort', text: effort, priority: 100, tip });
     if (ratio) rows.push({ key: 'ratio', text: ratio, priority: 80, tip });
@@ -4214,9 +4233,10 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
   rows.forEach((row) => {
     // ΔR (and strength) — larger / heavier; other rows stay compact
     const isDeltaMetric = row.key === 'ratio' || row.key === 'strength';
-    const fontPx = isDeltaMetric ? (dense ? 13 : 15) : (dense ? 8 : 9);
-    const fontWt = isDeltaMetric ? 800 : 600;
-    const lineH = isDeltaMetric ? DELTA_LABEL_LINE_H + 5 : DELTA_LABEL_LINE_H;
+    const isEffortResponse = row.key === 'effortLevel' || row.key === 'response';
+    const fontPx = isDeltaMetric ? (dense ? 13 : 15) : isEffortResponse ? (dense ? 10 : 11) : (dense ? 8 : 9);
+    const fontWt = isDeltaMetric ? 800 : isEffortResponse ? 700 : 600;
+    const lineH = isDeltaMetric ? DELTA_LABEL_LINE_H + 5 : isEffortResponse ? DELTA_LABEL_LINE_H + 3 : DELTA_LABEL_LINE_H;
     ctx.font = `${fontWt} ${fontPx}px JetBrains Mono, monospace`;
     const y = yCursor;
     yCursor += lineH;
@@ -4224,7 +4244,7 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
     bottom = y + 7;
     const color = row.key === 'effort'
       ? (row.text.includes('NP') ? '#fbbf24' : row.text.startsWith('S') || row.text.startsWith('SELL') ? '#fca5a5' : '#86efac')
-      : row.key === 'progress'
+      : row.key === 'progress' || row.key === 'response'
         ? (result.directionalProgressATR < 0 ? '#fca5a5' : result.priceProgressState === 'LOW_PROGRESS' ? '#fbbf24' : '#86efac')
         : result.deltaSide === 'SELL' || (result.deltaRatioPercent ?? 0) < 0
           ? '#fca5a5'

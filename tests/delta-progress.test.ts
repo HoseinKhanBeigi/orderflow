@@ -277,10 +277,23 @@ describe('below-candle labels', () => {
     expect(dense.every((row) => row.key === 'effort' || row.key === 'ratio' || row.key === 'strength')).toBe(true);
   });
 
+  it('effort/response mode shows only the effort and response labels', () => {
+    const bars = historyThen({ open: 100, close: 100.02, high: 100.4, low: 99.6, totalBuy: 200, totalSell: 40 });
+    const last = annotateDeltaProgress(bars, ready).at(-1)!;
+    const rows = deltaProgressLabelRows(last, 'EFFORT_RESPONSE');
+    expect(rows.map((row) => row.key)).toEqual(['effortLevel', 'response']);
+    expect(rows[0]!.text).toMatch(/^EFFORT BUY /);
+    expect(rows[1]!.text).toMatch(/^RESPONSE /);
+    const dense = deltaProgressLabelRows(last, 'EFFORT_RESPONSE', { dense: true });
+    expect(dense[0]!.text).toMatch(/^E B /);
+    expect(dense[1]!.text).toMatch(/^R /);
+  });
+
   it('does not emit a placeholder row when the state is unavailable', () => {
     const bars = historyThen({ totalBuy: 0, totalSell: 0 });
     const last = annotateDeltaProgress(bars, ready).at(-1)!;
     expect(deltaProgressLabelRows(last, 'METRICS')).toEqual([]);
     expect(deltaProgressLabelRows(last, 'COMPACT')).toEqual([]);
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE')).toEqual([]);
   });
 });
