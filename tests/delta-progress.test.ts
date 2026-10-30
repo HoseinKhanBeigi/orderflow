@@ -4,6 +4,7 @@ import {
   deltaLabelYOffsets,
   deltaProgressLabelRows,
   deltaRatioPercent,
+  effortResponseRatio,
   DELTA_LABEL_ANCHOR,
   DELTA_LABEL_FIRST_OFFSET,
   percentileRank,
@@ -42,6 +43,29 @@ function historyThen(subject: Partial<DeltaProgressBar>, priorAbs = 10): DeltaPr
   }
   bars.push(bar({
     time: 1_700_000_000 + 24 * 60,
+    ...subject,
+  }));
+  return bars;
+}
+
+/** Longer history so ATR + Effort÷Response percentile both warm up. */
+function longHistoryThen(subject: Partial<DeltaProgressBar>, priorAbs = 10): DeltaProgressBar[] {
+  const bars: DeltaProgressBar[] = [];
+  for (let i = 0; i < 40; i++) {
+    const buy = 50 + priorAbs / 2;
+    const sell = 50 - priorAbs / 2;
+    bars.push(bar({
+      time: 1_700_000_000 + i * 60,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100 + (i % 2 === 0 ? 0.2 : -0.2),
+      totalBuy: buy,
+      totalSell: sell,
+    }));
+  }
+  bars.push(bar({
+    time: 1_700_000_000 + 40 * 60,
     ...subject,
   }));
   return bars;
@@ -277,16 +301,18 @@ describe('below-candle labels', () => {
     expect(dense.every((row) => row.key === 'effort' || row.key === 'ratio' || row.key === 'strength')).toBe(true);
   });
 
-  it('effort/response mode shows only the effort and response labels', () => {
-    const bars = historyThen({ open: 100, close: 100.02, high: 100.4, low: 99.6, totalBuy: 200, totalSell: 40 });
+  it('effort/response mode shows effort, response, and E/R ratio labels', () => {
+    const bars = longHistoryThen({ open: 100, close: 100.02, high: 100.4, low: 99.6, totalBuy: 200, totalSell: 40 });
     const last = annotateDeltaProgress(bars, ready).at(-1)!;
     const rows = deltaProgressLabelRows(last, 'EFFORT_RESPONSE');
-    expect(rows.map((row) => row.key)).toEqual(['effortLevel', 'response']);
+    expect(rows.map((row) => row.key)).toEqual(['effortLevel', 'response', 'effortResponse']);
     expect(rows[0]!.text).toMatch(/^EFFORT BUY /);
     expect(rows[1]!.text).toMatch(/^RESPONSE /);
+    expect(rows[2]!.text).toMatch(/^E\/R /);
     const dense = deltaProgressLabelRows(last, 'EFFORT_RESPONSE', { dense: true });
     expect(dense[0]!.text).toMatch(/^E B /);
     expect(dense[1]!.text).toMatch(/^R /);
+    expect(dense[2]!.text).toMatch(/^ER /);
   });
 
   it('does not emit a placeholder row when the state is unavailable', () => {
@@ -295,5 +321,68 @@ describe('below-candle labels', () => {
     expect(deltaProgressLabelRows(last, 'METRICS')).toEqual([]);
     expect(deltaProgressLabelRows(last, 'COMPACT')).toEqual([]);
     expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE')).toEqual([]);
+  });
+});
+
+describe('effort-to-response ratio', () => {
+  /** Priors with large delta and tiny progress → high E/R baseline. */
+  function inefficientHistoryThen(subject: Partial<DeltaProgressBar>): DeltaProgressBar[] {
+    const bars: DeltaProgressBar[] = [];
+    for (let i = 0; i < 40; i++) {
+      bars.push(bar({
+        time: 1_700_000_000 + i * 60,
+        open: 100,
+        high: 101,
+        low: 99,
+        close: 100.02,
+        totalBuy: 200,
+        totalSell: 40,
+      }));
+    }
+    bars.push(bar({
+      time: 1_700_000_000 + 40 * 60,
+      ...subject,
+    }));
+    return bars;
+  }
+
+  it('computes |delta| / max(|progress ATR|, floor)', () => {
+    expect(effortResponseRatio(160, 0.8, 0.01)).toBeCloseTo(200, 6);
+    expect(effortResponseRatio(160, 0, 0.01)).toBeCloseTo(16000, 6);
+    expect(effortResponseRatio(160, null)).toBeNull();
+  });
+
+  it('ranks strong delta with tiny progress as high (inefficient)', () => {
+    const bars = longHistoryThen({ open: 100, close: 100.02, high: 100.4, low: 99.6, totalBuy: 200, totalSell: 40 });
+    const last = annotateDeltaProgress(bars, ready).at(-1)!;
+    expect(last.effortResponseRatio).toBeGreaterThan(0);
+    expect(last.effortResponsePercentile).not.toBeNull();
+    expect(last.effortResponseState).toBe('HIGH');
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'E/R HIGH')).toBe(true);
+  });
+
+  it('ranks small effort with large progress as low (efficient) vs inefficient history', () => {
+    const bars = inefficientHistoryThen({
+      open: 100,
+      close: 103,
+      high: 103.2,
+      low: 99.5,
+      totalBuy: 70,
+      totalSell: 50,
+    });
+    const last = annotateDeltaProgress(bars, ready).at(-1)!;
+    expect(last.directionalProgressATR).toBeGreaterThan(0.3);
+    expect(last.effortResponsePercentile).not.toBeNull();
+    expect(last.effortResponseState).toBe('LOW');
+    expect(last.effortResponseState).not.toBe('HIGH');
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'E/R LOW')).toBe(true);
+  });
+
+  it('labels against-aggression as E/R AGST', () => {
+    const bars = longHistoryThen({ open: 100, close: 98, high: 100.4, low: 97.5, totalBuy: 200, totalSell: 40 });
+    const last = annotateDeltaProgress(bars, ready).at(-1)!;
+    expect(last.priceProgressState).toBe('AGAINST_AGGRESSION');
+    expect(last.effortResponseState).toBe('AGAINST');
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'E/R AGST')).toBe(true);
   });
 });
