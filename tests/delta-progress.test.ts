@@ -5,6 +5,7 @@ import {
   deltaProgressLabelRows,
   deltaRatioPercent,
   effortResponseRatio,
+  responseEffortRatio,
   DELTA_LABEL_ANCHOR,
   DELTA_LABEL_FIRST_OFFSET,
   percentileRank,
@@ -301,18 +302,20 @@ describe('below-candle labels', () => {
     expect(dense.every((row) => row.key === 'effort' || row.key === 'ratio' || row.key === 'strength')).toBe(true);
   });
 
-  it('effort/response mode shows effort, response, and E/R ratio labels', () => {
+  it('effort/response mode shows effort, response, E/R, and R/E labels', () => {
     const bars = longHistoryThen({ open: 100, close: 100.02, high: 100.4, low: 99.6, totalBuy: 200, totalSell: 40 });
     const last = annotateDeltaProgress(bars, ready).at(-1)!;
     const rows = deltaProgressLabelRows(last, 'EFFORT_RESPONSE');
-    expect(rows.map((row) => row.key)).toEqual(['effortLevel', 'response', 'effortResponse']);
+    expect(rows.map((row) => row.key)).toEqual(['effortLevel', 'response', 'effortResponse', 'responseEffort']);
     expect(rows[0]!.text).toMatch(/^EFFORT BUY /);
     expect(rows[1]!.text).toMatch(/^RESPONSE /);
     expect(rows[2]!.text).toMatch(/^E\/R /);
+    expect(rows[3]!.text).toMatch(/^R\/E /);
     const dense = deltaProgressLabelRows(last, 'EFFORT_RESPONSE', { dense: true });
     expect(dense[0]!.text).toMatch(/^E B /);
     expect(dense[1]!.text).toMatch(/^R /);
     expect(dense[2]!.text).toMatch(/^ER /);
+    expect(dense[3]!.text).toMatch(/^RE /);
   });
 
   it('does not emit a placeholder row when the state is unavailable', () => {
@@ -352,16 +355,25 @@ describe('effort-to-response ratio', () => {
     expect(effortResponseRatio(160, null)).toBeNull();
   });
 
-  it('ranks strong delta with tiny progress as high (inefficient)', () => {
+  it('computes |progress ATR| / max(|delta|, floor) as the inverse form', () => {
+    expect(responseEffortRatio(160, 0.8, 1)).toBeCloseTo(0.005, 6);
+    expect(responseEffortRatio(0, 0.8, 1)).toBeCloseTo(0.8, 6);
+    expect(responseEffortRatio(160, null)).toBeNull();
+  });
+
+  it('ranks strong delta with tiny progress as high E/R and low R/E (inefficient)', () => {
     const bars = longHistoryThen({ open: 100, close: 100.02, high: 100.4, low: 99.6, totalBuy: 200, totalSell: 40 });
     const last = annotateDeltaProgress(bars, ready).at(-1)!;
     expect(last.effortResponseRatio).toBeGreaterThan(0);
     expect(last.effortResponsePercentile).not.toBeNull();
     expect(last.effortResponseState).toBe('HIGH');
+    expect(last.responseEffortState).toBe('LOW');
+    expect(last.responseEffortPercentile).toBeCloseTo(100 - last.effortResponsePercentile!, 8);
     expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'E/R HIGH')).toBe(true);
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'R/E LOW')).toBe(true);
   });
 
-  it('ranks small effort with large progress as low (efficient) vs inefficient history', () => {
+  it('ranks small effort with large progress as low E/R and high R/E (efficient) vs inefficient history', () => {
     const bars = inefficientHistoryThen({
       open: 100,
       close: 103,
@@ -374,15 +386,19 @@ describe('effort-to-response ratio', () => {
     expect(last.directionalProgressATR).toBeGreaterThan(0.3);
     expect(last.effortResponsePercentile).not.toBeNull();
     expect(last.effortResponseState).toBe('LOW');
+    expect(last.responseEffortState).toBe('HIGH');
     expect(last.effortResponseState).not.toBe('HIGH');
     expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'E/R LOW')).toBe(true);
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'R/E HIGH')).toBe(true);
   });
 
-  it('labels against-aggression as E/R AGST', () => {
+  it('labels against-aggression as E/R AGST and R/E AGST', () => {
     const bars = longHistoryThen({ open: 100, close: 98, high: 100.4, low: 97.5, totalBuy: 200, totalSell: 40 });
     const last = annotateDeltaProgress(bars, ready).at(-1)!;
     expect(last.priceProgressState).toBe('AGAINST_AGGRESSION');
     expect(last.effortResponseState).toBe('AGAINST');
+    expect(last.responseEffortState).toBe('AGAINST');
     expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'E/R AGST')).toBe(true);
+    expect(deltaProgressLabelRows(last, 'EFFORT_RESPONSE').some((row) => row.text === 'R/E AGST')).toBe(true);
   });
 });

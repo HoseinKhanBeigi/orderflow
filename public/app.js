@@ -3998,6 +3998,7 @@ const DELTA_PROGRESS_CFG = {
   lowProgressAtr: 0.1,
   highProgressAtr: 0.3,
   effortResponseProgressFloor: 0.01,
+  responseEffortDeltaFloor: 1,
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
@@ -4052,6 +4053,20 @@ function effortResponseRatioJs(absoluteDelta, directionalProgressATR, progressFl
   return Number.isFinite(ratio) ? ratio : null;
 }
 
+function responseEffortRatioJs(absoluteDelta, directionalProgressATR, deltaFloor) {
+  if (!(absoluteDelta >= 0) || !Number.isFinite(absoluteDelta)) return null;
+  if (directionalProgressATR == null || !Number.isFinite(directionalProgressATR)) return null;
+  const floor = deltaFloor > 0 && Number.isFinite(deltaFloor) ? deltaFloor : 1;
+  const ratio = Math.abs(directionalProgressATR) / Math.max(absoluteDelta, floor);
+  return Number.isFinite(ratio) ? ratio : null;
+}
+
+function responseEffortStateFromJs(effortResponseState) {
+  if (effortResponseState === 'HIGH') return 'LOW';
+  if (effortResponseState === 'LOW') return 'HIGH';
+  return effortResponseState;
+}
+
 function annotateDeltaProgress(bars, { lastIsLive = false } = {}) {
   const cfg = DELTA_PROGRESS_CFG;
   const absHistory = bars.map((bar) => {
@@ -4079,6 +4094,9 @@ function annotateDeltaProgress(bars, { lastIsLive = false } = {}) {
       effortResponseRatio: null,
       effortResponsePercentile: null,
       effortResponseState: 'UNAVAILABLE',
+      responseEffortRatio: null,
+      responseEffortPercentile: null,
+      responseEffortState: 'UNAVAILABLE',
       dataQuality: quality === 'STALE' ? 'STALE' : 'UNAVAILABLE',
       incomplete,
     };
@@ -4141,6 +4159,11 @@ function annotateDeltaProgress(bars, { lastIsLive = false } = {}) {
       directionalProgressATR,
       cfg.effortResponseProgressFloor,
     );
+    const responseEffortRatio = responseEffortRatioJs(
+      absoluteDelta,
+      directionalProgressATR,
+      cfg.responseEffortDeltaFloor,
+    );
     return {
       time: bar.time,
       delta,
@@ -4155,6 +4178,9 @@ function annotateDeltaProgress(bars, { lastIsLive = false } = {}) {
       effortResponseRatio,
       effortResponsePercentile: null,
       effortResponseState: effortResponseRatio == null ? 'UNAVAILABLE' : 'INSUFFICIENT',
+      responseEffortRatio,
+      responseEffortPercentile: null,
+      responseEffortState: responseEffortRatio == null ? 'UNAVAILABLE' : 'INSUFFICIENT',
       dataQuality: deltaStrengthState === 'INSUFFICIENT_DATA' || priceProgressState === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT_DATA' : quality,
       incomplete,
     };
@@ -4186,6 +4212,8 @@ function annotateDeltaProgress(bars, { lastIsLive = false } = {}) {
       ...draft,
       effortResponsePercentile: erPercentile,
       effortResponseState,
+      responseEffortPercentile: erPercentile == null ? null : 100 - erPercentile,
+      responseEffortState: responseEffortStateFromJs(effortResponseState),
     };
   });
 }
@@ -4234,8 +4262,9 @@ function deltaProgressRows(result, mode, dense) {
     `Progress state: ${result.priceProgressState}`,
     `Effort / result: ${result.effortResultState}`,
     `Effort÷Response: ${result.effortResponseState ?? 'UNAVAILABLE'}${result.effortResponsePercentile == null ? '' : ` · ${result.effortResponsePercentile.toFixed(0)}th pct`}${result.effortResponseRatio == null ? '' : ` · raw ${result.effortResponseRatio.toFixed(1)}`}`,
+    `Response÷Effort: ${result.responseEffortState ?? 'UNAVAILABLE'}${result.responseEffortPercentile == null ? '' : ` · ${result.responseEffortPercentile.toFixed(0)}th pct`}${result.responseEffortRatio == null ? '' : ` · raw ${result.responseEffortRatio.toExponential(2)}`}`,
     '',
-    'E/R = |Δ| / max(|progress ATR|, floor) · LOW = efficient · HIGH = absorption · AGST = price vs delta',
+    'E/R HIGH = inefficient · R/E HIGH = efficient · AGST = price vs delta',
     'No-progress is not a long or short, and not absorption by itself.',
   ].join('\n');
   const rows = [];
@@ -4264,6 +4293,16 @@ function deltaProgressRows(result, mode, dense) {
             ? (dense ? 'ER AGST' : 'E/R AGST')
             : null;
     if (er) rows.push({ key: 'effortResponse', text: er, priority: 80, tip });
+    const re = result.responseEffortState === 'LOW'
+      ? (dense ? 'RE L' : 'R/E LOW')
+      : result.responseEffortState === 'NORMAL'
+        ? (dense ? 'RE N' : 'R/E NORM')
+        : result.responseEffortState === 'HIGH'
+          ? (dense ? 'RE H' : 'R/E HIGH')
+          : result.responseEffortState === 'AGAINST'
+            ? (dense ? 'RE AGST' : 'R/E AGST')
+            : null;
+    if (re) rows.push({ key: 'responseEffort', text: re, priority: 70, tip });
     return rows;
   }
   if (mode === 'COMPACT') {
@@ -4297,7 +4336,7 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
   rows.forEach((row) => {
     // ΔR (and strength) — larger / heavier; other rows stay compact
     const isDeltaMetric = row.key === 'ratio' || row.key === 'strength';
-    const isEffortResponse = row.key === 'effortLevel' || row.key === 'response' || row.key === 'effortResponse';
+    const isEffortResponse = row.key === 'effortLevel' || row.key === 'response' || row.key === 'effortResponse' || row.key === 'responseEffort';
     const fontPx = isDeltaMetric ? (dense ? 13 : 15) : isEffortResponse ? (dense ? 10 : 11) : (dense ? 8 : 9);
     const fontWt = isDeltaMetric ? 800 : isEffortResponse ? 700 : 600;
     const lineH = isDeltaMetric ? DELTA_LABEL_LINE_H + 5 : isEffortResponse ? DELTA_LABEL_LINE_H + 3 : DELTA_LABEL_LINE_H;
@@ -4311,6 +4350,11 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
         : result.effortResponseState === 'HIGH' || result.effortResponseState === 'AGAINST' ? '#fca5a5'
           : result.effortResponseState === 'NORMAL' ? '#fbbf24'
             : '#94a3b8')
+      : row.key === 'responseEffort'
+        ? (result.responseEffortState === 'HIGH' ? '#86efac'
+          : result.responseEffortState === 'LOW' || result.responseEffortState === 'AGAINST' ? '#fca5a5'
+            : result.responseEffortState === 'NORMAL' ? '#fbbf24'
+              : '#94a3b8')
       : row.key === 'effort'
         ? (row.text.includes('NP') ? '#fbbf24' : row.text.startsWith('S') || row.text.startsWith('SELL') ? '#fca5a5' : '#86efac')
         : row.key === 'progress' || row.key === 'response'
@@ -4366,7 +4410,7 @@ function drawFootprint(symbol = selectedSymbol) {
   const bottomPad = fpDeltaProgressMode === 'OFF'
     ? 140
     : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 214
+      ? 230
       : 196;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);

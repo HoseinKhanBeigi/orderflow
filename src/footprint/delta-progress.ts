@@ -83,6 +83,8 @@ export interface DeltaProgressConfig {
   highProgressAtr: number;
   /** Floor for |progress ATR| in Effort÷Response so tiny moves do not divide by zero. */
   effortResponseProgressFloor: number;
+  /** Floor for |delta| in Response÷Effort so flat delta does not divide by zero. */
+  responseEffortDeltaFloor: number;
   /** Effort÷Response percentile ≥ this → HIGH (inefficient). */
   effortResponseHighPercentile: number;
   /** Effort÷Response percentile < this → LOW (efficient). */
@@ -102,6 +104,7 @@ export const DEFAULT_DELTA_PROGRESS_CONFIG: DeltaProgressConfig = {
   lowProgressAtr: 0.1,
   highProgressAtr: 0.3,
   effortResponseProgressFloor: 0.01,
+  responseEffortDeltaFloor: 1,
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
@@ -126,6 +129,10 @@ export interface DeltaProgressResult {
   effortResponseRatio: number | null;
   effortResponsePercentile: number | null;
   effortResponseState: EffortResponseState;
+  /** |progress ATR| / max(|delta|, floor). High = efficient (inverse of E/R). */
+  responseEffortRatio: number | null;
+  responseEffortPercentile: number | null;
+  responseEffortState: EffortResponseState;
   dataQuality: DeltaProgressQuality;
   atr: number | null;
   displacementRaw: number | null;
@@ -133,7 +140,7 @@ export interface DeltaProgressResult {
 }
 
 export interface DeltaLabelRow {
-  key: 'strength' | 'ratio' | 'progress' | 'effort' | 'effortLevel' | 'response' | 'effortResponse';
+  key: 'strength' | 'ratio' | 'progress' | 'effort' | 'effortLevel' | 'response' | 'effortResponse' | 'responseEffort';
   text: string;
   /** Higher priority survives dense zoom. */
   priority: number;
@@ -244,6 +251,20 @@ export function effortResponseRatio(
   return Number.isFinite(ratio) ? ratio : null;
 }
 
+/** |progress ATR| / max(|delta|, floor). High = efficient (lots of move per unit effort). */
+export function responseEffortRatio(
+  absoluteDelta: number,
+  directionalProgressATR: number | null,
+  deltaFloor = DEFAULT_DELTA_PROGRESS_CONFIG.responseEffortDeltaFloor,
+): number | null {
+  if (!(absoluteDelta >= 0) || !Number.isFinite(absoluteDelta)) return null;
+  if (directionalProgressATR == null || !Number.isFinite(directionalProgressATR)) return null;
+  const floor = deltaFloor > 0 && Number.isFinite(deltaFloor) ? deltaFloor : 1;
+  const denom = Math.max(absoluteDelta, floor);
+  const ratio = Math.abs(directionalProgressATR) / denom;
+  return Number.isFinite(ratio) ? ratio : null;
+}
+
 function effortResponseStateOf(input: {
   against: boolean;
   percentile: number | null;
@@ -254,6 +275,19 @@ function effortResponseStateOf(input: {
   if (input.percentile >= input.config.effortResponseHighPercentile) return 'HIGH';
   if (input.percentile < input.config.effortResponseLowPercentile) return 'LOW';
   return 'NORMAL';
+}
+
+/** R/E reading is the inverse of E/R: HIGH = efficient, LOW = inefficient. */
+function responseEffortStateFrom(effortResponseState: EffortResponseState): EffortResponseState {
+  switch (effortResponseState) {
+    case 'HIGH': return 'LOW';
+    case 'LOW': return 'HIGH';
+    case 'NORMAL': return 'NORMAL';
+    case 'AGAINST': return 'AGAINST';
+    case 'INSUFFICIENT': return 'INSUFFICIENT';
+    case 'UNAVAILABLE': return 'UNAVAILABLE';
+    default: return 'UNAVAILABLE';
+  }
 }
 
 function flowBlocked(quality: FlowDataQuality): boolean {
@@ -337,6 +371,11 @@ export function annotateDeltaProgress(
       directionalProgressATR,
       config.effortResponseProgressFloor,
     );
+    const responseEffortRatioValue = responseEffortRatio(
+      absoluteDelta,
+      directionalProgressATR,
+      config.responseEffortDeltaFloor,
+    );
 
     const dataQuality: DeltaProgressQuality =
       deltaStrengthState === 'INSUFFICIENT_DATA' || priceProgressState === 'INSUFFICIENT_DATA'
@@ -360,6 +399,9 @@ export function annotateDeltaProgress(
       effortResponseRatio: effortResponseRatioValue,
       effortResponsePercentile: null,
       effortResponseState: effortResponseRatioValue == null ? 'UNAVAILABLE' : 'INSUFFICIENT',
+      responseEffortRatio: responseEffortRatioValue,
+      responseEffortPercentile: null,
+      responseEffortState: responseEffortRatioValue == null ? 'UNAVAILABLE' : 'INSUFFICIENT',
       dataQuality,
       atr,
       displacementRaw,
@@ -370,7 +412,12 @@ export function annotateDeltaProgress(
   const ratioHistory: Array<number | null> = drafts.map((d) => d.effortResponseRatio);
 
   return drafts.map((draft, index) => {
-    if (draft.effortResponseRatio == null) return draft;
+    if (draft.effortResponseRatio == null) {
+      return {
+        ...draft,
+        responseEffortState: draft.responseEffortRatio == null ? 'UNAVAILABLE' : draft.responseEffortState,
+      };
+    }
     const from = Math.max(0, index - config.deltaLookback);
     const prior: number[] = [];
     for (let j = from; j < index; j++) {
@@ -381,10 +428,14 @@ export function annotateDeltaProgress(
       ? percentileRank(draft.effortResponseRatio, prior)
       : null;
     const against = draft.priceProgressState === 'AGAINST_AGGRESSION';
+    const effortResponseState = effortResponseStateOf({ against, percentile: erPercentile, config });
+    const responseEffortPercentile = erPercentile == null ? null : 100 - erPercentile;
     return {
       ...draft,
       effortResponsePercentile: erPercentile,
-      effortResponseState: effortResponseStateOf({ against, percentile: erPercentile, config }),
+      effortResponseState,
+      responseEffortPercentile,
+      responseEffortState: responseEffortStateFrom(effortResponseState),
     };
   });
 }
@@ -405,6 +456,9 @@ function emptyResult(time: number, incomplete: boolean): DeltaProgressResult {
     effortResponseRatio: null,
     effortResponsePercentile: null,
     effortResponseState: 'UNAVAILABLE',
+    responseEffortRatio: null,
+    responseEffortPercentile: null,
+    responseEffortState: 'UNAVAILABLE',
     dataQuality: 'UNAVAILABLE',
     atr: null,
     displacementRaw: null,
@@ -476,6 +530,16 @@ export function effortResponseLabelText(state: EffortResponseState, dense = fals
   }
 }
 
+export function responseEffortLabelText(state: EffortResponseState, dense = false): string | null {
+  switch (state) {
+    case 'LOW': return dense ? 'RE L' : 'R/E LOW';
+    case 'NORMAL': return dense ? 'RE N' : 'R/E NORM';
+    case 'HIGH': return dense ? 'RE H' : 'R/E HIGH';
+    case 'AGAINST': return dense ? 'RE AGST' : 'R/E AGST';
+    default: return null;
+  }
+}
+
 export function deltaProgressTooltip(result: DeltaProgressResult, config: DeltaProgressConfig = DEFAULT_DELTA_PROGRESS_CONFIG): string {
   const lines = [
     'DELTA / PROGRESS',
@@ -488,13 +552,15 @@ export function deltaProgressTooltip(result: DeltaProgressResult, config: DeltaP
     `Progress state: ${result.priceProgressState}`,
     `Effort / result: ${result.effortResultState}`,
     `Effort÷Response: ${result.effortResponseState}${result.effortResponsePercentile == null ? '' : ` · ${result.effortResponsePercentile.toFixed(0)}th pct`}${result.effortResponseRatio == null ? '' : ` · raw ${result.effortResponseRatio.toFixed(1)}`}`,
+    `Response÷Effort: ${result.responseEffortState}${result.responseEffortPercentile == null ? '' : ` · ${result.responseEffortPercentile.toFixed(0)}th pct`}${result.responseEffortRatio == null ? '' : ` · raw ${result.responseEffortRatio.toExponential(2)}`}`,
     `Data: ${result.dataQuality}`,
     '',
     `Strong ≥ ${config.strongPercentile}th · extreme ≥ ${config.extremePercentile}th`,
     `Effort needs |ΔR| ≥ ${config.minEffortRatioPct}%`,
     `Low progress ≤ ${config.lowProgressAtr} ATR`,
-    `E/R = |Δ| / max(|progress ATR|, ${config.effortResponseProgressFloor})`,
-    'E/R LOW = efficient · E/R HIGH = inefficient / absorption · E/R AGST = price vs delta',
+    `E/R = |Δ| / max(|progress ATR|, ${config.effortResponseProgressFloor}) · HIGH = inefficient`,
+    `R/E = |progress ATR| / max(|Δ|, ${config.responseEffortDeltaFloor}) · HIGH = efficient`,
+    'AGST = price moved against delta',
     '',
     'No-progress is not a long or short, and not absorption by itself.',
   ];
@@ -521,9 +587,11 @@ export function deltaProgressLabelRows(
     const effortLevel = effortLevelLabelText(result, dense);
     const response = responseLabelText(result.priceProgressState, dense);
     const er = effortResponseLabelText(result.effortResponseState, dense);
+    const re = responseEffortLabelText(result.responseEffortState, dense);
     if (effortLevel) rows.push({ key: 'effortLevel', text: effortLevel, priority: 100, tip });
     if (response) rows.push({ key: 'response', text: response, priority: 90, tip });
     if (er) rows.push({ key: 'effortResponse', text: er, priority: 80, tip });
+    if (re) rows.push({ key: 'responseEffort', text: re, priority: 70, tip });
     return rows;
   }
 
@@ -557,6 +625,7 @@ export function deltaProgressLabelRows(
       effortLevel: 4,
       response: 5,
       effortResponse: 6,
+      responseEffort: 7,
     };
     return order[a.key] - order[b.key];
   });
