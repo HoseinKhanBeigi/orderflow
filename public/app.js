@@ -2288,16 +2288,14 @@ const BATTLE_OUTCOME_TEXT = {
 
 function battleVerdictLabel(v, dense) {
   if (v.stronger === 'EVEN') {
-    return { text: dense ? `= ${v.up.power}/${v.down.power}` : `EVEN ${v.up.power}/${v.down.power}`, color: '#94a3b8' };
+    return { text: dense ? `${v.up.power}/${v.down.power}` : `EVEN ${v.up.power}/${v.down.power}`, color: '#94a3b8' };
   }
   const side = v.stronger === 'UP' ? v.up : v.down;
   const out = BATTLE_OUTCOME_TEXT[side.outcome];
   const arrow = v.stronger === 'UP' ? '▲' : '▼';
-  const name = v.stronger === 'UP' ? 'UP' : 'DN';
-  return {
-    text: dense ? `${arrow}${side.power} ${out.short}` : `${name} ${side.power}% · ${out.full}`,
-    color: out.color,
-  };
+  if (dense) return { text: `${arrow} ${side.power}`, color: out.color };
+  const who = out.full === 'CONTESTED' ? 'TIED' : out.full.split(' ')[0];
+  return { text: `${arrow} ${side.power} ${who}`, color: out.color };
 }
 
 function battleVerdictTip(v) {
@@ -3576,43 +3574,65 @@ function drawCandleTopLabels(ctx, ann, cx, maxW, frEvents = [], frExtras = {}) {
   };
 }
 
+const BATTLE_CHIP_Y = 82;
+const BATTLE_ROWS_Y = 106;
+const BATTLE_ROW_H = 15;
+
+function battleRowLabel(row, narrow) {
+  const name = narrow
+    ? ({ resistance: 'res', 'buy absorbed': 'buy', 'sell absorbed': 'sell', support: 'sup' }[row.text] ?? row.text)
+    : row.text;
+  return `${name} ${row.pct}%`;
+}
+
 function drawBarBattlePercents(ctx, rows, cx, y0, maxW) {
   if (!rows?.length) return;
-  const lineH = 11;
+  const narrow = maxW < 78;
   ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx - maxW / 2, y0 - 9, maxW, BATTLE_ROW_H * rows.length + 4);
+  ctx.clip();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
   rows.forEach((row, i) => {
-    const y = y0 + i * lineH;
-    const label = `${row.text} ${row.pct}%`;
-    ctx.font = row.strong ? '700 9px Inter, system-ui, sans-serif' : '500 9px Inter, system-ui, sans-serif';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-    ctx.strokeText(label, cx, y, maxW);
-    ctx.globalAlpha = row.strong ? 1 : 0.5;
+    const y = y0 + i * BATTLE_ROW_H;
+    ctx.font = row.strong ? '700 10px Inter, system-ui, sans-serif' : '500 10px Inter, system-ui, sans-serif';
+    ctx.globalAlpha = row.strong ? 1 : 0.45;
     ctx.fillStyle = row.color;
-    ctx.fillText(label, cx, y, maxW);
-    ctx.globalAlpha = 1;
+    ctx.fillText(battleRowLabel(row, narrow), cx, y, maxW - 2);
   });
   ctx.restore();
 }
 
 function drawBarBattleVerdict(ctx, verdict, cx, y, maxW) {
   if (!verdict) return null;
-  const { text, color } = battleVerdictLabel(verdict, maxW < 70);
+  const dense = maxW < 78;
+  const { text, color } = battleVerdictLabel(verdict, dense);
   ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx - maxW / 2, y - 12, maxW, 24);
+  ctx.clip();
+  ctx.font = dense ? '700 10px JetBrains Mono, monospace' : '700 11px JetBrains Mono, monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.font = '800 11px JetBrains Mono, monospace';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-  ctx.strokeText(text, cx, y, maxW);
+  const h = 18;
+  const w = Math.max(8, Math.min(maxW - 2, ctx.measureText(text).width + 14));
+  const x = cx - w / 2;
+  const top = y - h / 2;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') ctx.roundRect(x, top, w, h, 9);
+  else ctx.rect(x, top, w, h);
+  ctx.fillStyle = '#0d1117';
+  ctx.fill();
+  ctx.fillStyle = `${color}33`;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = color;
+  ctx.stroke();
   ctx.fillStyle = color;
-  ctx.fillText(text, cx, y, maxW);
+  ctx.fillText(text, cx, y + 0.5, w - 8);
   ctx.restore();
-  return { x0: cx - maxW / 2, x1: cx + maxW / 2, y0: y - 7, y1: y + 7, tip: battleVerdictTip(verdict) };
+  return { x0: x, x1: x + w, y0: top, y1: top + h, tip: battleVerdictTip(verdict) };
 }
 
 function drawBarStrategyTitle(ctx, story, cx, maxW) {
@@ -4079,7 +4099,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = 126;
+const DELTA_LABEL_FIRST_OFFSET = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 6;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -4485,10 +4505,10 @@ function drawFootprint(symbol = selectedSymbol) {
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
   const bottomPad = fpDeltaProgressMode === 'OFF'
-    ? 154
+    ? 196
     : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 244
-      : 210;
+      ? 286
+      : 252;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -4789,10 +4809,10 @@ function drawFootprint(symbol = selectedSymbol) {
       ctx.globalAlpha = 1;
     }
 
-    const verdictHit = drawBarBattleVerdict(ctx, barBattleVerdict(bar), cx, footY + 68, barWidth - 2);
+    const verdictHit = drawBarBattleVerdict(ctx, barBattleVerdict(bar), cx, footY + BATTLE_CHIP_Y, barWidth - 6);
     if (verdictHit) view.microHits.push(verdictHit);
     const battle = barBattlePercents(bar);
-    drawBarBattlePercents(ctx, battle, cx, footY + 82, barWidth - 2);
+    drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
     if (deltaHit?.tip) view.microHits.push(deltaHit);
   }
