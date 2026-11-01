@@ -2288,19 +2288,20 @@ const BATTLE_OUTCOME_TEXT = {
 
 function battleVerdictLabel(v, dense) {
   if (v.stronger === 'EVEN') {
-    return { text: dense ? `${v.up.power}/${v.down.power}` : `EVEN ${v.up.power}/${v.down.power}`, color: '#94a3b8' };
+    const split = `${v.up.power}%/${v.down.power}%`;
+    return { text: dense ? split : `PAIR ${split}`, color: '#94a3b8' };
   }
   const side = v.stronger === 'UP' ? v.up : v.down;
   const out = BATTLE_OUTCOME_TEXT[side.outcome];
   const arrow = v.stronger === 'UP' ? '▲' : '▼';
-  if (dense) return { text: `${arrow} ${side.power}`, color: out.color };
+  if (dense) return { text: `${arrow} ${side.power}%`, color: out.color };
   const who = out.full === 'CONTESTED' ? 'TIED' : out.full.split(' ')[0];
-  return { text: `${arrow} ${side.power} ${who}`, color: out.color };
+  return { text: `${arrow} ${side.power}% ${who}`, color: out.color };
 }
 
 function battleVerdictTip(v) {
   const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
-  const stronger = v.stronger === 'EVEN' ? 'neither (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
+  const stronger = v.stronger === 'EVEN' ? 'pair (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
   return [
     `Stronger battle: ${stronger}`,
     `Upside (aggressive buys vs asks): ${v.up.power}% of volume · ${word(v.up.outcome)}`,
