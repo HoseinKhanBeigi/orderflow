@@ -2240,15 +2240,75 @@ function barBattlePercents(bar) {
   const buyShare = buy / vol;
   const sellShare = sell / vol;
   const rows = [
-    { text: 'resistance', color: '#22c55e', weight: buyShare * closePos },
-    { text: 'buy absorbed', color: '#fbbf24', weight: buyShare * (1 - closePos) },
-    { text: 'sell absorbed', color: '#60a5fa', weight: sellShare * closePos },
-    { text: 'support', color: '#ef4444', weight: sellShare * (1 - closePos) },
+    { key: 'ASKS_CONSUMED', text: 'resistance', color: '#22c55e', weight: buyShare * closePos },
+    { key: 'BUY_ABSORBED', text: 'buy absorbed', color: '#fbbf24', weight: buyShare * (1 - closePos) },
+    { key: 'SELL_ABSORBED', text: 'sell absorbed', color: '#60a5fa', weight: sellShare * closePos },
+    { key: 'BIDS_CONSUMED', text: 'support', color: '#ef4444', weight: sellShare * (1 - closePos) },
   ];
   const pcts = percentsSum100(rows.map((row) => row.weight));
   let best = 0;
   for (let i = 1; i < pcts.length; i++) if (pcts[i] > pcts[best]) best = i;
-  return rows.map((row, i) => ({ text: row.text, color: row.color, pct: pcts[i], strong: i === best && pcts[i] > 0 }));
+  return rows.map((row, i) => ({ key: row.key, text: row.text, color: row.color, pct: pcts[i], strong: i === best && pcts[i] > 0 }));
+}
+
+const BATTLE_EVEN_GAP_PCT = 6;
+const BATTLE_CLOSE_WIN = 0.55;
+
+/**
+ * Which battle dominated the candle, and who won it.
+ * Upside battle = aggressive buyers vs resting asks; its power is the aggressive buy share of volume.
+ * Downside battle = aggressive sellers vs resting bids; its power is the aggressive sell share.
+ * Close position in the range decides the winner: a high close means buyers beat the asks
+ * and bids held against sellers; a low close means the reverse.
+ */
+function barBattleVerdict(bar) {
+  const buy = Math.max(0, bar.totalBuy ?? 0);
+  const sell = Math.max(0, bar.totalSell ?? 0);
+  const vol = buy + sell;
+  if (vol <= 0) return null;
+  const range = bar.high - bar.low;
+  const closePos = range > 0 ? Math.min(1, Math.max(0, (bar.close - bar.low) / range)) : 0.5;
+  const upPower = Math.round((buy / vol) * 100);
+  const downPower = 100 - upPower;
+  const highClose = closePos >= BATTLE_CLOSE_WIN;
+  const lowClose = closePos <= 1 - BATTLE_CLOSE_WIN;
+  const up = { power: upPower, outcome: highClose ? 'BUYERS_WIN' : lowClose ? 'ASKS_HOLD' : 'CONTESTED' };
+  const down = { power: downPower, outcome: lowClose ? 'SELLERS_WIN' : highClose ? 'BIDS_HOLD' : 'CONTESTED' };
+  const stronger = Math.abs(upPower - downPower) < BATTLE_EVEN_GAP_PCT ? 'EVEN' : upPower > downPower ? 'UP' : 'DOWN';
+  return { stronger, up, down, closePos };
+}
+
+const BATTLE_OUTCOME_TEXT = {
+  BUYERS_WIN: { full: 'BUYERS WIN', short: 'BUY', color: '#22c55e' },
+  ASKS_HOLD: { full: 'ASKS HOLD', short: 'ASK', color: '#fbbf24' },
+  SELLERS_WIN: { full: 'SELLERS WIN', short: 'SELL', color: '#ef4444' },
+  BIDS_HOLD: { full: 'BIDS HOLD', short: 'BID', color: '#60a5fa' },
+  CONTESTED: { full: 'CONTESTED', short: '~', color: '#94a3b8' },
+};
+
+function battleVerdictLabel(v, dense) {
+  if (v.stronger === 'EVEN') {
+    return { text: dense ? `= ${v.up.power}/${v.down.power}` : `EVEN ${v.up.power}/${v.down.power}`, color: '#94a3b8' };
+  }
+  const side = v.stronger === 'UP' ? v.up : v.down;
+  const out = BATTLE_OUTCOME_TEXT[side.outcome];
+  const arrow = v.stronger === 'UP' ? '▲' : '▼';
+  const name = v.stronger === 'UP' ? 'UP' : 'DN';
+  return {
+    text: dense ? `${arrow}${side.power} ${out.short}` : `${name} ${side.power}% · ${out.full}`,
+    color: out.color,
+  };
+}
+
+function battleVerdictTip(v) {
+  const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
+  const stronger = v.stronger === 'EVEN' ? 'neither (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
+  return [
+    `Stronger battle: ${stronger}`,
+    `Upside (aggressive buys vs asks): ${v.up.power}% of volume · ${word(v.up.outcome)}`,
+    `Downside (aggressive sells vs bids): ${v.down.power}% of volume · ${word(v.down.outcome)}`,
+    `Close at ${Math.round(v.closePos * 100)}% of range decides the winner`,
+  ].join('\n');
 }
 
 /**
@@ -2482,8 +2542,8 @@ function strategyStoryForBar(allBars, idx) {
   let askConsume = 0;
   let bidConsume = 0;
   if (battle) {
-    const asks = battle.find((r) => r.text === 'Asks');
-    const bids = battle.find((r) => r.text === 'Bids');
+    const asks = battle.find((r) => r.key === 'ASKS_CONSUMED');
+    const bids = battle.find((r) => r.key === 'BIDS_CONSUMED');
     askConsume = asks?.pct ?? 0;
     bidConsume = bids?.pct ?? 0;
   }
@@ -3538,6 +3598,23 @@ function drawBarBattlePercents(ctx, rows, cx, y0, maxW) {
   ctx.restore();
 }
 
+function drawBarBattleVerdict(ctx, verdict, cx, y, maxW) {
+  if (!verdict) return null;
+  const { text, color } = battleVerdictLabel(verdict, maxW < 70);
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.font = '800 11px JetBrains Mono, monospace';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+  ctx.strokeText(text, cx, y, maxW);
+  ctx.fillStyle = color;
+  ctx.fillText(text, cx, y, maxW);
+  ctx.restore();
+  return { x0: cx - maxW / 2, x1: cx + maxW / 2, y0: y - 7, y1: y + 7, tip: battleVerdictTip(verdict) };
+}
+
 function drawBarStrategyTitle(ctx, story, cx, maxW) {
   if (!story) return;
   const title = story.line1 || '';
@@ -4002,7 +4079,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = 112;
+const DELTA_LABEL_FIRST_OFFSET = 126;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -4408,10 +4485,10 @@ function drawFootprint(symbol = selectedSymbol) {
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
   const bottomPad = fpDeltaProgressMode === 'OFF'
-    ? 140
+    ? 154
     : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 230
-      : 196;
+      ? 244
+      : 210;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -4712,8 +4789,10 @@ function drawFootprint(symbol = selectedSymbol) {
       ctx.globalAlpha = 1;
     }
 
+    const verdictHit = drawBarBattleVerdict(ctx, barBattleVerdict(bar), cx, footY + 68, barWidth - 2);
+    if (verdictHit) view.microHits.push(verdictHit);
     const battle = barBattlePercents(bar);
-    drawBarBattlePercents(ctx, battle, cx, footY + 66, barWidth - 2);
+    drawBarBattlePercents(ctx, battle, cx, footY + 82, barWidth - 2);
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
     if (deltaHit?.tip) view.microHits.push(deltaHit);
   }
