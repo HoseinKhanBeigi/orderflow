@@ -2310,6 +2310,90 @@ function battleVerdictTip(v) {
   ].join('\n');
 }
 
+/** Runs of upside vs downside while a candle was open on this chart. Last 5 candles per chart survive a reload. */
+const BATTLE_RUN_STORAGE_KEY = 'fpBattleRuns';
+const BATTLE_RUN_KEEP = 5;
+const battleRunStore = new Map();
+
+function battleRunPrefix(symbol, tf, exchange) {
+  return `${symbol}|${tf}|${exchange}`;
+}
+
+function battleRunKey(symbol, tf, exchange, time) {
+  return `${battleRunPrefix(symbol, tf, exchange)}|${time}`;
+}
+
+function loadBattleRuns() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BATTLE_RUN_STORAGE_KEY) || '{}');
+    for (const [prefix, rows] of Object.entries(raw)) {
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows.slice(-BATTLE_RUN_KEEP)) {
+        const time = Number(row?.time);
+        if (!Number.isFinite(time)) continue;
+        battleRunStore.set(`${prefix}|${time}`, {
+          up: Number(row.up) || 0,
+          down: Number(row.down) || 0,
+          side: row.side === 'UP' || row.side === 'DOWN' ? row.side : null,
+        });
+      }
+    }
+  } catch { /* ignore a broken or blocked store */ }
+}
+
+function saveBattleRuns(symbol, tf, exchange) {
+  const prefix = battleRunPrefix(symbol, tf, exchange);
+  const rows = [];
+  for (const [key, rec] of battleRunStore) {
+    if (!key.startsWith(`${prefix}|`)) continue;
+    const time = Number(key.slice(prefix.length + 1));
+    if (!Number.isFinite(time)) continue;
+    rows.push({ time, up: rec.up, down: rec.down, side: rec.side });
+  }
+  rows.sort((a, b) => a.time - b.time);
+  const kept = rows.slice(-BATTLE_RUN_KEEP);
+  const keepTimes = new Set(kept.map((row) => row.time));
+  for (const key of [...battleRunStore.keys()]) {
+    if (!key.startsWith(`${prefix}|`)) continue;
+    const time = Number(key.slice(prefix.length + 1));
+    if (!keepTimes.has(time)) battleRunStore.delete(key);
+  }
+  let all = {};
+  try {
+    all = JSON.parse(localStorage.getItem(BATTLE_RUN_STORAGE_KEY) || '{}');
+  } catch { all = {}; }
+  all[prefix] = kept;
+  try {
+    localStorage.setItem(BATTLE_RUN_STORAGE_KEY, JSON.stringify(all));
+  } catch { /* storage full or blocked */ }
+}
+
+loadBattleRuns();
+
+/**
+ * One battle is a stretch where that side is the stronger one.
+ * PAIR holds the previous side, so a dip through PAIR does not start a new battle.
+ * Candles that were already closed when first seen have no path, so they stay uncounted.
+ */
+function noteBattleRun(symbol, bar, tf, exchange, liveTime) {
+  const key = battleRunKey(symbol, tf, exchange, bar.time);
+  let rec = battleRunStore.get(key);
+  if (!rec && bar.time !== liveTime) return null;
+  const verdict = barBattleVerdict(bar);
+  const side = verdict && verdict.stronger !== 'EVEN' ? verdict.stronger : null;
+  if (!rec) {
+    rec = { up: 0, down: 0, side: null };
+    battleRunStore.set(key, rec);
+  }
+  if (side && side !== rec.side) {
+    if (side === 'UP') rec.up += 1;
+    else rec.down += 1;
+    rec.side = side;
+    saveBattleRuns(symbol, tf, exchange);
+  }
+  return rec.up + rec.down > 0 ? rec : null;
+}
+
 /**
  * Same split as barBattlePercents, but in absolute quote notional (not %).
  * Asks/Bids = consumption that moved price; Buy/Sell abs = aggression that stalled.
@@ -3576,7 +3660,8 @@ function drawCandleTopLabels(ctx, ann, cx, maxW, frEvents = [], frExtras = {}) {
 }
 
 const BATTLE_CHIP_Y = 82;
-const BATTLE_ROWS_Y = 106;
+const BATTLE_COUNT_Y = 100;
+const BATTLE_ROWS_Y = 118;
 const BATTLE_ROW_H = 15;
 
 function battleRowLabel(row, narrow) {
@@ -3634,6 +3719,38 @@ function drawBarBattleVerdict(ctx, verdict, cx, y, maxW) {
   ctx.fillText(text, cx, y + 0.5, w - 8);
   ctx.restore();
   return { x0: x, x1: x + w, y0: top, y1: top + h, tip: battleVerdictTip(verdict) };
+}
+
+function drawBattleRunCount(ctx, rec, cx, y, maxW) {
+  if (!rec) return null;
+  const parts = [
+    { text: `▲${rec.up}`, color: '#22c55e' },
+    { text: `▼${rec.down}`, color: '#ef4444' },
+  ];
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx - maxW / 2, y - 8, maxW, 16);
+  ctx.clip();
+  ctx.font = '700 10px JetBrains Mono, monospace';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  const gap = 6;
+  const widths = parts.map((part) => ctx.measureText(part.text).width);
+  const total = widths[0] + gap + widths[1];
+  let x = cx - Math.min(total, maxW) / 2;
+  parts.forEach((part, i) => {
+    ctx.fillStyle = part.color;
+    ctx.fillText(part.text, x, y);
+    x += widths[i] + gap;
+  });
+  ctx.restore();
+  return {
+    x0: cx - maxW / 2,
+    x1: cx + maxW / 2,
+    y0: y - 8,
+    y1: y + 8,
+    tip: `Upside battles ${rec.up}\nDownside battles ${rec.down}\nA battle starts each time the stronger side changes while this candle is open.`,
+  };
 }
 
 function drawBarStrategyTitle(ctx, story, cx, maxW) {
@@ -4506,10 +4623,10 @@ function drawFootprint(symbol = selectedSymbol) {
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
   const bottomPad = fpDeltaProgressMode === 'OFF'
-    ? 196
+    ? 208
     : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 286
-      : 252;
+      ? 298
+      : 264;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -4812,6 +4929,14 @@ function drawFootprint(symbol = selectedSymbol) {
 
     const verdictHit = drawBarBattleVerdict(ctx, barBattleVerdict(bar), cx, footY + BATTLE_CHIP_Y, barWidth - 6);
     if (verdictHit) view.microHits.push(verdictHit);
+    const runHit = drawBattleRunCount(
+      ctx,
+      noteBattleRun(symbol, bar, chartTfMinutes, selectedExchange, fpCandleTime(Date.now(), chartTfMinutes)),
+      cx,
+      footY + BATTLE_COUNT_Y,
+      barWidth - 6,
+    );
+    if (runHit) view.microHits.push(runHit);
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
