@@ -2303,13 +2303,18 @@ const TRIO_CANDLES = 3;
 
 /**
  * One decision per 3 candles, drawn on the third.
+ * The group is fixed by candle time, so a refresh or a new minute cannot move it.
  * Buyers can't: their attack was stronger across the three and the close did not rise.
  * Sellers can't: their attack was stronger across the three and the close did not fall.
  * A group that actually moved their way gets no label.
  */
 function trioCouldnt(bars, endIndex) {
-  if (endIndex < TRIO_CANDLES - 1 || (endIndex + 1) % TRIO_CANDLES !== 0) return null;
+  if (endIndex < TRIO_CANDLES - 1) return null;
   const group = bars.slice(endIndex - (TRIO_CANDLES - 1), endIndex + 1);
+  const step = group[2].time - group[1].time;
+  if (!(step > 0) || group[1].time - group[0].time !== step) return null;
+  const slot = Math.floor(group[2].time / step);
+  if (slot % TRIO_CANDLES !== TRIO_CANDLES - 1) return null;
   let buy = 0;
   let sell = 0;
   for (const bar of group) {
@@ -5011,7 +5016,7 @@ function drawFootprint(symbol = selectedSymbol) {
     if (runHit) view.microHits.push(runHit);
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
-    const couldnt = trioCouldnt(bars, startIdx + i);
+    const couldnt = isLiveBar ? null : trioCouldnt(bars, startIdx + i);
     if (couldnt) {
       const peak = Math.max(bars[startIdx + i - 2].high, bars[startIdx + i - 1].high, bar.high);
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(peak) - 14));
