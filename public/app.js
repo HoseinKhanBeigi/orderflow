@@ -2299,6 +2299,50 @@ function battleVerdictLabel(v, dense) {
   return { text: `${arrow} ${side.power}% ${who}`, color: out.color };
 }
 
+const TRIO_CANDLES = 3;
+
+/**
+ * One decision per 3 candles, drawn on the third.
+ * Buyers can't: their attack was stronger across the three and the close did not rise.
+ * Sellers can't: their attack was stronger across the three and the close did not fall.
+ * A group that actually moved their way gets no label.
+ */
+function trioCouldnt(bars, endIndex) {
+  if (endIndex < TRIO_CANDLES - 1 || (endIndex + 1) % TRIO_CANDLES !== 0) return null;
+  const group = bars.slice(endIndex - (TRIO_CANDLES - 1), endIndex + 1);
+  let buy = 0;
+  let sell = 0;
+  for (const bar of group) {
+    buy += Math.max(0, bar.totalBuy ?? 0);
+    sell += Math.max(0, bar.totalSell ?? 0);
+  }
+  const vol = buy + sell;
+  if (vol <= 0) return null;
+  const buyPct = Math.round((buy / vol) * 100);
+  const sellPct = 100 - buyPct;
+  if (Math.abs(buyPct - sellPct) < BATTLE_EVEN_GAP_PCT) return null;
+  const open = Number(group[0].open);
+  const close = Number(group[TRIO_CANDLES - 1].close);
+  if (!Number.isFinite(open) || !Number.isFinite(close)) return null;
+  if (buyPct > sellPct && close <= open) {
+    return {
+      text: "BUYERS CAN'T",
+      short: "BUY CAN'T",
+      color: '#fbbf24',
+      tip: `Buyers can't\nAggressive buys were ${buyPct}% of these 3 candles and the close did not rise.`,
+    };
+  }
+  if (sellPct > buyPct && close >= open) {
+    return {
+      text: "SELLERS CAN'T",
+      short: "SELL CAN'T",
+      color: '#60a5fa',
+      tip: `Sellers can't\nAggressive sells were ${sellPct}% of these 3 candles and the close did not fall.`,
+    };
+  }
+  return null;
+}
+
 function battleVerdictTip(v) {
   const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
   const stronger = v.stronger === 'EVEN' ? 'pair (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
@@ -3721,6 +3765,34 @@ function drawBarBattleVerdict(ctx, verdict, cx, y, maxW) {
   return { x0: x, x1: x + w, y0: top, y1: top + h, tip: battleVerdictTip(verdict) };
 }
 
+function drawCouldntLabel(ctx, label, cx, y, maxW) {
+  if (!label) return null;
+  const dense = maxW < 108;
+  const text = dense ? label.short : label.text;
+  ctx.save();
+  ctx.font = '800 11px JetBrains Mono, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const h = 16;
+  const w = Math.max(8, Math.min(maxW, ctx.measureText(text).width + 14));
+  const x = cx - w / 2;
+  const top = y - h / 2;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') ctx.roundRect(x, top, w, h, 8);
+  else ctx.rect(x, top, w, h);
+  ctx.fillStyle = '#0d1117';
+  ctx.fill();
+  ctx.fillStyle = `${label.color}33`;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = label.color;
+  ctx.stroke();
+  ctx.fillStyle = label.color;
+  ctx.fillText(text, cx, y + 0.5, Math.max(4, w - 8));
+  ctx.restore();
+  return { x0: x, x1: x + w, y0: top, y1: top + h, tip: label.tip };
+}
+
 function drawBattleRunCount(ctx, rec, cx, y, maxW) {
   if (!rec) return null;
   const parts = [
@@ -4939,6 +5011,14 @@ function drawFootprint(symbol = selectedSymbol) {
     if (runHit) view.microHits.push(runHit);
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
+    const couldnt = trioCouldnt(bars, startIdx + i);
+    if (couldnt) {
+      const peak = Math.max(bars[startIdx + i - 2].high, bars[startIdx + i - 1].high, bar.high);
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(peak) - 14));
+      const midCx = i >= 1 ? cx - stride : cx;
+      const couldntHit = drawCouldntLabel(ctx, couldnt, midCx, y, stride * 3 - 8);
+      if (couldntHit) view.microHits.push(couldntHit);
+    }
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
     if (deltaHit?.tip) view.microHits.push(deltaHit);
   }
