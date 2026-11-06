@@ -2302,7 +2302,7 @@ function battleVerdictLabel(v, dense) {
 const TRIO_CANDLES = 3;
 
 /**
- * One decision per 3 candles, drawn on the third.
+ * One decision per 3 candles, then the same label is drawn on each of those candles.
  * The group is fixed by candle time, so a refresh or a new minute cannot move it.
  * Buyers can't: their attack was stronger across the three and the close did not rise.
  * Sellers can't: their attack was stronger across the three and the close did not fall.
@@ -2346,6 +2346,18 @@ function trioCouldnt(bars, endIndex) {
     };
   }
   return null;
+}
+
+/** Closed groups only. Each of the 3 candles gets the group's label. */
+function trioCouldntMarks(bars, liveTime) {
+  const marks = new Map();
+  for (let i = TRIO_CANDLES - 1; i < bars.length; i++) {
+    if (bars[i].time === liveTime) continue;
+    const label = trioCouldnt(bars, i);
+    if (!label) continue;
+    for (let k = i - (TRIO_CANDLES - 1); k <= i; k++) marks.set(bars[k].time, label);
+  }
+  return marks;
 }
 
 function battleVerdictTip(v) {
@@ -4827,6 +4839,7 @@ function drawFootprint(symbol = selectedSymbol) {
     lastIsLive: lastIsLive && endIdx === bars.length,
   });
   const frByTime = buildFrByConfirmTime(lie);
+  const couldntByTime = trioCouldntMarks(bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -5016,12 +5029,10 @@ function drawFootprint(symbol = selectedSymbol) {
     if (runHit) view.microHits.push(runHit);
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
-    const couldnt = isLiveBar ? null : trioCouldnt(bars, startIdx + i);
+    const couldnt = couldntByTime.get(bar.time);
     if (couldnt) {
-      const peak = Math.max(bars[startIdx + i - 2].high, bars[startIdx + i - 1].high, bar.high);
-      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(peak) - 14));
-      const midCx = i >= 1 ? cx - stride : cx;
-      const couldntHit = drawCouldntLabel(ctx, couldnt, midCx, y, stride * 3 - 8);
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
+      const couldntHit = drawCouldntLabel(ctx, couldnt, cx, y, barWidth - 4);
       if (couldntHit) view.microHits.push(couldntHit);
     }
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
