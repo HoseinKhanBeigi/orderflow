@@ -2301,20 +2301,29 @@ function battleVerdictLabel(v, dense) {
 
 const TRIO_CANDLES = 3;
 
+function couldntLabel(side, pct, why) {
+  if (side === 'BUY') {
+    return {
+      text: "BUYERS CAN'T",
+      short: "BUY CAN'T",
+      color: '#fbbf24',
+      tip: `Buyers can't\n${why}\nAggressive buys were ${pct}% of these 3 candles.`,
+    };
+  }
+  return {
+    text: "SELLERS CAN'T",
+    short: "SELL CAN'T",
+    color: '#60a5fa',
+    tip: `Sellers can't\n${why}\nAggressive sells were ${pct}% of these 3 candles.`,
+  };
+}
+
 /**
- * One decision per 3 candles, then the same label is drawn on each of those candles.
- * The group is fixed by candle time, so a refresh or a new minute cannot move it.
- * Buyers can't: their attack was stronger across the three and the close did not rise.
- * Sellers can't: their attack was stronger across the three and the close did not fall.
- * A group that actually moved their way gets no label.
+ * Candles run 1 2 3, then 4 5 6, then 7 8 9.
+ * Candle 3, 6, 9, … always gets one label. 1–2, 4–5, 7–8 stay blank.
+ * Buyers can't when the close did not rise. Sellers can't when the close did not fall.
  */
-function trioCouldnt(bars, endIndex) {
-  if (endIndex < TRIO_CANDLES - 1) return null;
-  const group = bars.slice(endIndex - (TRIO_CANDLES - 1), endIndex + 1);
-  const step = group[2].time - group[1].time;
-  if (!(step > 0) || group[1].time - group[0].time !== step) return null;
-  const slot = Math.floor(group[2].time / step);
-  if (slot % TRIO_CANDLES !== TRIO_CANDLES - 1) return null;
+function trioCouldntLabel(group) {
   let buy = 0;
   let sell = 0;
   for (const bar of group) {
@@ -2322,40 +2331,22 @@ function trioCouldnt(bars, endIndex) {
     sell += Math.max(0, bar.totalSell ?? 0);
   }
   const vol = buy + sell;
-  if (vol <= 0) return null;
-  const buyPct = Math.round((buy / vol) * 100);
-  const sellPct = 100 - buyPct;
-  if (Math.abs(buyPct - sellPct) < BATTLE_EVEN_GAP_PCT) return null;
+  const buyPct = vol > 0 ? Math.round((buy / vol) * 100) : 50;
+  const sellPct = vol > 0 ? 100 - buyPct : 50;
   const open = Number(group[0].open);
-  const close = Number(group[TRIO_CANDLES - 1].close);
-  if (!Number.isFinite(open) || !Number.isFinite(close)) return null;
-  if (buyPct > sellPct && close <= open) {
-    return {
-      text: "BUYERS CAN'T",
-      short: "BUY CAN'T",
-      color: '#fbbf24',
-      tip: `Buyers can't\nAggressive buys were ${buyPct}% of these 3 candles and the close did not rise.`,
-    };
-  }
-  if (sellPct > buyPct && close >= open) {
-    return {
-      text: "SELLERS CAN'T",
-      short: "SELL CAN'T",
-      color: '#60a5fa',
-      tip: `Sellers can't\nAggressive sells were ${sellPct}% of these 3 candles and the close did not fall.`,
-    };
-  }
-  return null;
+  const close = Number(group[2].close);
+  const rose = Number.isFinite(open) && Number.isFinite(close) && close > open;
+  if (!rose) return couldntLabel('BUY', buyPct, 'The close did not rise.');
+  return couldntLabel('SELL', sellPct, 'The close did not fall.');
 }
 
-/** Closed groups only. Each of the 3 candles gets the group's label. */
+/** Closed candles only, in order. The label is on the 3rd, 6th, 9th, … */
 function trioCouldntMarks(bars, liveTime) {
   const marks = new Map();
-  for (let i = TRIO_CANDLES - 1; i < bars.length; i++) {
-    if (bars[i].time === liveTime) continue;
-    const label = trioCouldnt(bars, i);
-    if (!label) continue;
-    for (let k = i - (TRIO_CANDLES - 1); k <= i; k++) marks.set(bars[k].time, label);
+  const closed = bars.filter((bar) => bar.time !== liveTime);
+  for (let n = TRIO_CANDLES; n <= closed.length; n += TRIO_CANDLES) {
+    const group = closed.slice(n - TRIO_CANDLES, n);
+    marks.set(group[2].time, trioCouldntLabel(group));
   }
   return marks;
 }
