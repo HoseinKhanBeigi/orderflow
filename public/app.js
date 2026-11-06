@@ -2620,6 +2620,53 @@ function absorptionReversalKind(bar) {
 }
 
 /** Sweep of prior swing high/low (stop liquidity), then close back through the level. */
+/**
+ * Absorption at a level: aggressive flow is absorbed while price is at the prior swing.
+ * Trapped trader: price sweeps that swing and closes back through it.
+ * A trap replaces absorption on the same candle.
+ */
+function levelStoryLabel(bars, index) {
+  if (index < 1) return null;
+  const bar = bars[index];
+  const prior = bars.slice(Math.max(0, index - 16), index);
+  const hunt = stopHuntKind(bar, prior);
+  const absorbed = barAbsorbed(bar);
+  const location = barLocationFromPrior(bar, prior);
+  if (hunt === 'HIGH') {
+    return {
+      text: 'BUY TRAP',
+      short: 'B TRAP',
+      color: '#fb7185',
+      tip: 'Buyer trap\nPrice took the prior high and closed back below it. Buyers who chased that high are trapped.',
+    };
+  }
+  if (hunt === 'LOW') {
+    return {
+      text: 'SELL TRAP',
+      short: 'S TRAP',
+      color: '#38bdf8',
+      tip: 'Seller trap\nPrice took the prior low and closed back above it. Sellers who chased that low are trapped.',
+    };
+  }
+  if (absorbed === 'BUYERS' && location === 'AT_RESISTANCE') {
+    return {
+      text: 'ABSORB ASK',
+      short: 'ABS ASK',
+      color: '#fbbf24',
+      tip: 'Absorption at the ask\nAggressive buys hit this high and were absorbed. Price did not leave the level.',
+    };
+  }
+  if (absorbed === 'SELLERS' && location === 'AT_SUPPORT') {
+    return {
+      text: 'ABSORB BID',
+      short: 'ABS BID',
+      color: '#60a5fa',
+      tip: 'Absorption at the bid\nAggressive sells hit this low and were absorbed. Price did not leave the level.',
+    };
+  }
+  return null;
+}
+
 function stopHuntKind(bar, prior) {
   const { support, resistance } = priorSwingLevels(prior);
   if (support == null || resistance == null || resistance <= support) return null;
@@ -5035,6 +5082,12 @@ function drawFootprint(symbol = selectedSymbol) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
       const couldntHit = drawCouldntLabel(ctx, couldnt, cx, y, barWidth - 4);
       if (couldntHit) view.microHits.push(couldntHit);
+    }
+    const levelStory = levelStoryLabel(bars, startIdx + i);
+    if (levelStory) {
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.low) + 16));
+      const levelHit = drawCouldntLabel(ctx, levelStory, cx, y, barWidth - 4);
+      if (levelHit) view.microHits.push(levelHit);
     }
     const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
     if (deltaHit?.tip) view.microHits.push(deltaHit);
