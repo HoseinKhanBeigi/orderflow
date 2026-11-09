@@ -4866,9 +4866,10 @@ function drawFootprint(symbol = selectedSymbol) {
     resetMode: CVD_RESET_MODE,
   });
   const flowByTime = new Map(flowMetrics.map((m) => [m.time, m]));
-  const deltaByTime = new Map(annotateDeltaProgress(bars, {
+  const deltaProgress = annotateDeltaProgress(bars, {
     lastIsLive: lastIsLive && endIdx === bars.length,
-  }).map((row) => [row.time, row]));
+  });
+  const deltaByTime = new Map(deltaProgress.map((row) => [row.time, row]));
   const microByTime = annotateBarsPrimaryMicro(bars, flowByTime, {
     lastIsLive: lastIsLive && endIdx === bars.length,
   });
@@ -4877,6 +4878,7 @@ function drawFootprint(symbol = selectedSymbol) {
   });
   const frByTime = buildFrByConfirmTime(lie);
   const couldntByTime = trioCouldntMarks(bars, nowBucket);
+  const entryByTime = entryMarks(bars, nowBucket, deltaProgress);
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -5071,6 +5073,12 @@ function drawFootprint(symbol = selectedSymbol) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
       const couldntHit = drawCouldntLabel(ctx, couldnt, cx, y, barWidth - 4);
       if (couldntHit) view.microHits.push(couldntHit);
+    }
+    const entry = entryByTime.get(bar.time);
+    if (entry) {
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - (couldnt ? 34 : 16)));
+      const entryHit = drawCouldntLabel(ctx, entry, cx, y, barWidth - 4);
+      if (entryHit) view.microHits.push(entryHit);
     }
     const levelStory = levelStoryLabel(bars, startIdx + i);
     if (levelStory) {
@@ -5809,11 +5817,14 @@ function entryChip(verdict) {
 function barEntryRead(bars, index, progress) {
   const bar = bars[index];
   const row = progress[index] || {};
+  const verdict = barBattleVerdict(bar);
   const prog = Number(row.directionalProgressATR);
   const absProg = Number.isFinite(prog) ? Math.abs(prog) : null;
   const prior = bars.slice(Math.max(0, index - 16), index);
   return {
-    chip: entryChip(barBattleVerdict(bar)),
+    chip: entryChip(verdict),
+    upside: verdict?.up.outcome || 'NONE',
+    downside: verdict?.down.outcome || 'NONE',
     prog: Number.isFinite(prog) ? prog : null,
     absProg,
     strength: row.deltaStrengthState || 'UNAVAILABLE',
@@ -5854,7 +5865,7 @@ function otherSideFailed(prev, priors, failedChip, trapHunt) {
  * 3 the previous candle's effort was accepted, this candle flips the delta and price stops.
  * 4 the other side failed, then this candle responds on ordinary delta.
  */
-function decideEntry(cur, prev, priors) {
+function decideEntry(cur, prev, priors, prevSignal) {
   if (!cur) return null;
   const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
   const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
@@ -5866,9 +5877,10 @@ function decideEntry(cur, prev, priors) {
 
   if (cur.highDelta && real) {
     const chip = cur.deltaSide === 'BUY' ? 'BUYERS' : cur.deltaSide === 'SELL' ? 'SELLERS' : null;
-    const continued = prev && prev.chip === chip && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG;
+    const side = chip === 'BUYERS' ? 'buy' : 'sell';
+    const continued = chip && prevSignal && prevSignal.side === side;
     if (chip && cur.chip === chip && priorsOwn(priors, chip) && !continued) {
-      return { side: chip === 'BUYERS' ? 'buy' : 'sell', state: 2 };
+      return { side, state: 2 };
     }
   }
 
@@ -5880,12 +5892,55 @@ function decideEntry(cur, prev, priors) {
     return { side: 'sell', state: 4 };
   }
 
-  if (cur.highDelta && little) {
-    const sameFail = prev && prev.highDelta && prev.deltaSide === cur.deltaSide && prev.absProg != null && prev.absProg <= ENTRY_LITTLE_PROG;
-    if (!sameFail && cur.deltaSide === 'SELL' && cur.chip !== 'SELLERS') return { side: 'buy', state: 1 };
-    if (!sameFail && cur.deltaSide === 'BUY' && cur.chip !== 'BUYERS') return { side: 'sell', state: 1 };
-  }
+  const buyersLost = cur.highDelta && cur.deltaSide === 'BUY' && cur.upside === 'ASKS_HOLD';
+  const sellersLost = cur.highDelta && cur.deltaSide === 'SELL' && cur.downside === 'BIDS_HOLD';
+  const prevLostSame = prev && (
+    (buyersLost && prev.highDelta && prev.deltaSide === 'BUY' && prev.upside === 'ASKS_HOLD') ||
+    (sellersLost && prev.highDelta && prev.deltaSide === 'SELL' && prev.downside === 'BIDS_HOLD')
+  );
+  if (!prevLostSame && sellersLost) return { side: 'buy', state: 1 };
+  if (!prevLostSame && buyersLost) return { side: 'sell', state: 1 };
   return null;
+}
+
+/** Closed candles the entry script would have taken. The number is the state. */
+function entryMarks(bars, liveTime, progress) {
+  const marks = new Map();
+  if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
+  const lastIsLive = bars[bars.length - 1]?.time === liveTime;
+  const rows = progress || annotateDeltaProgress(bars, { lastIsLive });
+  const lastClosed = lastIsLive ? bars.length - 2 : bars.length - 1;
+  let openSide = null;
+  for (let index = ENTRY_PRIOR_BARS; index <= lastClosed; index++) {
+    const cur = barEntryRead(bars, index, rows);
+    const prev = barEntryRead(bars, index - 1, rows);
+    const priors = [];
+    for (let i = Math.max(0, index - ENTRY_PRIOR_BARS); i < index; i++) priors.push(barEntryRead(bars, i, rows));
+    const signal = decideEntry(cur, prev, priors, openSide ? { side: openSide } : null);
+    if (!signal) {
+      if ((openSide === 'sell' && cur.upside === 'BUYERS_WIN') || (openSide === 'buy' && cur.downside === 'SELLERS_WIN')) openSide = null;
+      continue;
+    }
+    const prevWonSame = prev && (
+      (signal.side === 'sell' && prev.downside === 'SELLERS_WIN') ||
+      (signal.side === 'buy' && prev.upside === 'BUYERS_WIN')
+    );
+    const place = prevWonSame ? index - 1 : index;
+    if (signal.side !== openSide && place < lastClosed && !marks.has(bars[place].time)) {
+      const buy = signal.side === 'buy';
+      const word = buy ? 'BUY' : 'SELL';
+      marks.set(bars[place].time, {
+        side: signal.side,
+        state: signal.state,
+        text: `${word} ${signal.state}`,
+        short: `${buy ? 'B' : 'S'}${signal.state}`,
+        color: buy ? '#22c55e' : '#ef4444',
+        tip: `${word} ${signal.state}\n${ENTRY_DETAIL[signal.state]}\nUpside ${cur.upside.replace('_', ' ').toLowerCase()} · downside ${cur.downside.replace('_', ' ').toLowerCase()}`,
+      });
+    }
+    openSide = signal.side;
+  }
+  return marks;
 }
 
 function entryAlreadySent(id) {
@@ -5917,15 +5972,11 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   const lastIsLive = bars[bars.length - 1]?.time === liveTime;
   const progress = annotateDeltaProgress(bars, { lastIsLive });
   const index = lastIsLive ? bars.length - 2 : bars.length - 1;
-  if (index < ENTRY_PRIOR_BARS) return;
-  const cur = barEntryRead(bars, index, progress);
-  const prev = barEntryRead(bars, index - 1, progress);
-  const priors = [];
-  for (let i = Math.max(0, index - ENTRY_PRIOR_BARS); i < index; i++) priors.push(barEntryRead(bars, i, progress));
-  const signal = decideEntry(cur, prev, priors);
+  if (index <= ENTRY_PRIOR_BARS) return;
+  const signal = entryMarks(bars, liveTime, progress).get(bars[index - 1].time);
   if (!signal) return;
 
-  const bar = bars[index];
+  const bar = bars[index - 1];
   const id = `${symbol}-${signal.side}-${tfMinutes}-${bar.time}`;
   if (entryAlreadySent(id) || !canFireAlert(id, 12 * 60 * 60 * 1000)) return;
   markEntrySent(id);
