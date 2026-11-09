@@ -4110,19 +4110,8 @@ function applyPatternSnapshot(ev) {
   scheduleDraw(ev.symbol);
 }
 
-function ingestPatternAlert(alert) {
-  if (!alert?.symbol) return;
-  const bearish = /BEARISH|BUYER_TRAP|FAILED_BULLISH/.test(alert.patternId || '');
-  if (!canFireAlert(`${alert.symbol}:${alert.patternId}:${alert.type}:${alert.timestamp}`, 60_000)) return;
-  pushFpAlert({
-    id: `pat-${alert.symbol}-${alert.patternId}-${alert.timestamp}`,
-    symbol: alert.symbol,
-    kind: (alert.type || 'pattern').replace('PATTERN_', '').toLowerCase(),
-    side: bearish ? 'sell' : 'buy',
-    title: alert.message || `${alert.patternId} ${alert.status}`,
-    detail: `${alert.patternId} · ${alert.status} · ${alert.timeframe}`,
-    at: alert.timestamp || Date.now(),
-  });
+function ingestPatternAlert(_alert) {
+  // Pattern labels stay on the chart. They do not push an entry.
 }
 
 const patternRefreshAt = {};
@@ -5644,7 +5633,7 @@ function applyFootprintTick(ev) {
 
 // ═══════ Footprint Alerts (session toasts, all coins) ═══════
 
-const ALERT_TF_MINUTES = [5, 15, 30, 60]; // stop-hunt (and other alert stories) on 5m, 15m, 30m and 1h
+const ALERT_TF_MINUTES = [15];
 const ALERT_KEEP_1M = 1440; // ~24h of 1m bars → enough prior for 5m / 15m / 30m / 1h vacuum context
 const ALERT_MAX_SESSION = 80;
 const ALERT_TOAST_MS = 7000;
@@ -5769,24 +5758,6 @@ function canFireAlert(key, cooldownMs = 90_000) {
   return true;
 }
 
-function barIsVolatile(bar, prior = []) {
-  if (!bar) return false;
-  const mid = bar.close || bar.open || 0;
-  if (!(mid > 0)) return false;
-  const range = Math.max(0, (bar.high ?? bar.close) - (bar.low ?? bar.close));
-  const body = Math.abs((bar.close ?? mid) - (bar.open ?? mid));
-  const rangePct = (range / mid) * 100;
-  const bodyPct = (body / mid) * 100;
-  if (bodyPct >= 0.35) return true;
-  if (rangePct >= 0.6) return true;
-  const sample = prior.slice(-14);
-  if (sample.length >= 5) {
-    const atr = sample.reduce((s, b) => s + Math.max(0, (b.high ?? b.close) - (b.low ?? b.close)), 0) / sample.length;
-    if (atr > 0 && range >= atr * 1.25) return true;
-  }
-  return false;
-}
-
 function pingVolatility(alert) {
   if (extensionBridgeReady) return;
   if (typeof Notification === 'undefined') return;
@@ -5813,46 +5784,159 @@ function pushFpAlert(alert) {
   publishFpAlert(alert);
 }
 
+const ENTRY_LITTLE_PROG = 0.25;
+const ENTRY_REAL_PROG = 0.5;
+const ENTRY_RESPONSE_PROG = 0.8;
+const ENTRY_PRIOR_BARS = 6;
+const ENTRY_SEEN_KEY = 'fpEntryAlerts';
+const ENTRY_DETAIL = {
+  1: 'high delta, low response',
+  2: 'high delta, high response',
+  3: 'effort flipped, price stopped',
+  4: 'failed side, price responded',
+};
+
+function entryChip(verdict) {
+  if (!verdict || verdict.stronger === 'EVEN') return 'PAIR';
+  const outcome = verdict.stronger === 'UP' ? verdict.up.outcome : verdict.down.outcome;
+  if (outcome === 'BUYERS_WIN') return 'BUYERS';
+  if (outcome === 'ASKS_HOLD') return 'ASKS';
+  if (outcome === 'SELLERS_WIN') return 'SELLERS';
+  if (outcome === 'BIDS_HOLD') return 'BIDS';
+  return 'PAIR';
+}
+
+function barEntryRead(bars, index, progress) {
+  const bar = bars[index];
+  const row = progress[index] || {};
+  const prog = Number(row.directionalProgressATR);
+  const absProg = Number.isFinite(prog) ? Math.abs(prog) : null;
+  const prior = bars.slice(Math.max(0, index - 16), index);
+  return {
+    chip: entryChip(barBattleVerdict(bar)),
+    prog: Number.isFinite(prog) ? prog : null,
+    absProg,
+    strength: row.deltaStrengthState || 'UNAVAILABLE',
+    deltaSide: row.deltaSide || 'NONE',
+    highDelta: row.deltaStrengthState === 'STRONG' || row.deltaStrengthState === 'EXTREME',
+    hunt: prior.length ? stopHuntKind(bar, prior) : null,
+  };
+}
+
+function priorsOwn(priors, chip) {
+  const recent = priors.slice(-ENTRY_PRIOR_BARS);
+  if (recent.length < 3) return false;
+  const other = chip === 'SELLERS' ? 'BUYERS' : 'SELLERS';
+  let mine = 0;
+  let theirs = 0;
+  for (const row of recent) {
+    if (row.chip === chip) mine += 1;
+    else if (row.chip === other) theirs += 1;
+  }
+  return mine >= 3 && mine > theirs;
+}
+
+function otherSideFailed(prev, priors, failedChip, trapHunt) {
+  if (!prev) return false;
+  if (prev.hunt === trapHunt) return true;
+  if (prev.chip !== 'PAIR' && prev.strength !== 'WEAK') return false;
+  let n = 0;
+  for (const row of priors.slice(0, -1).slice(-ENTRY_PRIOR_BARS)) {
+    if (row.chip === failedChip) n += 1;
+  }
+  return n >= 2;
+}
+
+/**
+ * One entry from the last closed candle.
+ * 1 high delta, low response, and that side did not win the close → fade it.
+ * 2 high delta and a real response, and the earlier candles already own that side.
+ * 3 the previous candle's effort was accepted, this candle flips the delta and price stops.
+ * 4 the other side failed, then this candle responds on ordinary delta.
+ */
+function decideEntry(cur, prev, priors) {
+  if (!cur) return null;
+  const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
+  const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
+
+  if (prev && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG && cur.highDelta && little) {
+    if (prev.deltaSide === 'SELL' && cur.deltaSide === 'BUY') return { side: 'buy', state: 3 };
+    if (prev.deltaSide === 'BUY' && cur.deltaSide === 'SELL') return { side: 'sell', state: 3 };
+  }
+
+  if (cur.highDelta && real) {
+    const chip = cur.deltaSide === 'BUY' ? 'BUYERS' : cur.deltaSide === 'SELL' ? 'SELLERS' : null;
+    const continued = prev && prev.chip === chip && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG;
+    if (chip && cur.chip === chip && priorsOwn(priors, chip) && !continued) {
+      return { side: chip === 'BUYERS' ? 'buy' : 'sell', state: 2 };
+    }
+  }
+
+  const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
+  if (responded && cur.chip === 'BUYERS' && cur.deltaSide === 'BUY' && otherSideFailed(prev, priors, 'SELLERS', 'LOW')) {
+    return { side: 'buy', state: 4 };
+  }
+  if (responded && cur.chip === 'SELLERS' && cur.deltaSide === 'SELL' && otherSideFailed(prev, priors, 'BUYERS', 'HIGH')) {
+    return { side: 'sell', state: 4 };
+  }
+
+  if (cur.highDelta && little) {
+    const sameFail = prev && prev.highDelta && prev.deltaSide === cur.deltaSide && prev.absProg != null && prev.absProg <= ENTRY_LITTLE_PROG;
+    if (!sameFail && cur.deltaSide === 'SELL' && cur.chip !== 'SELLERS') return { side: 'buy', state: 1 };
+    if (!sameFail && cur.deltaSide === 'BUY' && cur.chip !== 'BUYERS') return { side: 'sell', state: 1 };
+  }
+  return null;
+}
+
+function entryAlreadySent(id) {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(ENTRY_SEEN_KEY) || '[]');
+    return Array.isArray(raw) && raw.includes(id);
+  } catch {
+    return false;
+  }
+}
+
+function markEntrySent(id) {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(ENTRY_SEEN_KEY) || '[]');
+    const next = Array.isArray(raw) ? raw : [];
+    next.push(id);
+    sessionStorage.setItem(ENTRY_SEEN_KEY, JSON.stringify(next.slice(-200)));
+  } catch { /* ignore */ }
+}
+
 function evaluateSymbolAlerts(symbol) {
   for (const tf of ALERT_TF_MINUTES) evaluateSymbolAlertsOnTf(symbol, tf);
 }
 
 function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   const bars = alertBarsForSymbol(symbol, tfMinutes);
-  if (!bars.length) return;
-  const idx = bars.length - 1;
-  const bar = bars[idx];
-  if (!barIsVolatile(bar, bars.slice(0, idx))) return;
-  const story = strategyStoryForBar(bars, idx);
-  if (!story) return;
-  const kind =
-    story.line1 === 'Asks consumed' ? { key: 'consume-ask', side: 'buy' }
-      : story.line1 === 'Bids consumed' ? { key: 'consume-bid', side: 'sell' }
-        : story.line1 === 'Buyers absorbed' ? { key: 'absorb-buy', side: 'sell' }
-          : story.line1 === 'Sellers absorbed' ? { key: 'absorb-sell', side: 'buy' }
-            : story.line1 === 'Stop hunt low' || (story.line1 === 'Stop hunt' && story.line2?.includes('low'))
-              ? { key: 'hunt-low', side: 'buy' }
-              : story.line1 === 'Stop hunt high' || (story.line1 === 'Stop hunt' && story.line2?.includes('high'))
-                ? { key: 'hunt-high', side: 'sell' }
-                : story.line1 === 'Held support' ? { key: 'held-support', side: 'buy' }
-                  : story.line1 === 'Rejected resist' ? { key: 'reject-resist', side: 'sell' }
-                    : story.detail?.special === 'STOP_HUNT_LOW' ? { key: 'hunt-low', side: 'buy' }
-                      : story.detail?.special === 'STOP_HUNT_HIGH' ? { key: 'hunt-high', side: 'sell' }
-                        : null;
-  if (!kind) return;
+  if (bars.length < 8) return;
+  const liveTime = fpCandleTime(Date.now(), tfMinutes);
+  const lastIsLive = bars[bars.length - 1]?.time === liveTime;
+  const progress = annotateDeltaProgress(bars, { lastIsLive });
+  const index = lastIsLive ? bars.length - 2 : bars.length - 1;
+  if (index < ENTRY_PRIOR_BARS) return;
+  const cur = barEntryRead(bars, index, progress);
+  const prev = barEntryRead(bars, index - 1, progress);
+  const priors = [];
+  for (let i = Math.max(0, index - ENTRY_PRIOR_BARS); i < index; i++) priors.push(barEntryRead(bars, i, progress));
+  const signal = decideEntry(cur, prev, priors);
+  if (!signal) return;
 
-  const label = alertLabel(symbol);
-  const tf = tfShort(tfMinutes);
-  const barKey = bar.time;
-  if (!canFireAlert(`${symbol}:story:${kind.key}:${tf}:${barKey}`, 120_000)) return;
-
+  const bar = bars[index];
+  const id = `${symbol}-${signal.side}-${tfMinutes}-${bar.time}`;
+  if (entryAlreadySent(id) || !canFireAlert(id, 12 * 60 * 60 * 1000)) return;
+  markEntrySent(id);
+  const word = signal.side === 'buy' ? 'BUY' : 'SELL';
   pushFpAlert({
-    id: `${symbol}-${kind.key}-${tf}-${barKey}`,
+    id,
     symbol,
-    kind: kind.key,
-    side: kind.side,
-    title: `${label} · ${story.line1}`,
-    detail: `${story.line2 || 'setup'} · ${tf} · range expanding`,
+    kind: word,
+    side: signal.side,
+    title: `${alertLabel(symbol)} · ${word}`,
+    detail: `${tfShort(tfMinutes)} · ${ENTRY_DETAIL[signal.state]}`,
     at: Date.now(),
   });
 }
@@ -6121,7 +6205,7 @@ function renderAlertList() {
   if (count) count.textContent = String(sessionAlerts.length);
   if (!list) return;
   if (!sessionAlerts.length) {
-    list.innerHTML = '<div class="alert-empty">No alerts yet — ping when the 5m, 15m, 30m or 1h range is expanding</div>';
+    list.innerHTML = '<div class="alert-empty">No entries yet — a 15m close that is a buy or a sell shows up here</div>';
     return;
   }
   list.innerHTML = sessionAlerts.map((a) => `

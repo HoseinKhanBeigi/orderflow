@@ -16,7 +16,7 @@ function escapeHtml(s) {
 
 function render(alerts, origin) {
   if (!alerts?.length) {
-    list.innerHTML = '<div class="empty">No alerts yet — keep the Order Flow tab open (it can stay in the background).</div>';
+    list.innerHTML = '<div class="empty">No entries yet. Keep the Order Flow tab open.</div>';
     status.textContent = origin ? `Listening · ${origin.replace(/^https?:\/\//, '')}` : 'Waiting for dashboard…';
     return;
   }
