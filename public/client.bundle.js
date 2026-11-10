@@ -11385,12 +11385,15 @@ var process = globalThis.process || { env: {} };
     { symbol: "BTCUSDT", label: "BTC", minUsd: 1e4, venue: "crypto" },
     { symbol: "ETHUSDT", label: "ETH", minUsd: 5e3, venue: "crypto" },
     { symbol: "AVAXUSDT", label: "AVAX", minUsd: 1e3, venue: "crypto" },
+    { symbol: "AVAUSDT", label: "AVA", minUsd: 500, venue: "crypto" },
     { symbol: "NEARUSDT", label: "NEAR", minUsd: 1e3, venue: "crypto" },
     { symbol: "DOTUSDT", label: "DOT", minUsd: 1e3, venue: "crypto" },
     { symbol: "SOLUSDT", label: "SOL", minUsd: 3e3, venue: "crypto" },
     { symbol: "LINKUSDT", label: "LINK", minUsd: 1e3, venue: "crypto" },
     { symbol: "XRPUSDT", label: "XRP", minUsd: 1e3, venue: "crypto" },
     { symbol: "DOGEUSDT", label: "DOGE", minUsd: 1e3, venue: "crypto" },
+    { symbol: "SHIBUSDT", label: "SHIB", minUsd: 500, venue: "crypto" },
+    { symbol: "FILUSDT", label: "FIL", minUsd: 1e3, venue: "crypto" },
     { symbol: "SUIUSDT", label: "SUI", minUsd: 1e3, venue: "crypto" },
     { symbol: "PAXGUSDT", label: "PAXG", minUsd: 1e3, venue: "crypto" },
     { symbol: "HYPEUSDT", label: "HYPE", minUsd: 1e3, venue: "crypto" },
@@ -16539,6 +16542,206 @@ var process = globalThis.process || { env: {} };
     }
   };
 
+  // src/entry-signal/engine.ts
+  var ENTRY_LITTLE_PROG = 0.25;
+  var ENTRY_REAL_PROG = 0.5;
+  var ENTRY_RESPONSE_PROG = 0.8;
+  var ENTRY_PRIOR_BARS = 6;
+  var BATTLE_CLOSE_WIN = 0.55;
+  var BATTLE_EVEN_GAP_PCT = 6;
+  var ENTRY_DETAIL = {
+    1: "high delta, low response",
+    2: "high delta, high response",
+    3: "effort flipped, price stopped",
+    4: "failed side, price responded"
+  };
+  function barBattleVerdict(bar) {
+    const buy = Math.max(0, bar.totalBuy ?? 0);
+    const sell = Math.max(0, bar.totalSell ?? 0);
+    const vol = buy + sell;
+    if (vol <= 0) return null;
+    const range = bar.high - bar.low;
+    const closePos = range > 0 ? Math.min(1, Math.max(0, (bar.close - bar.low) / range)) : 0.5;
+    const upPower = Math.round(buy / vol * 100);
+    const downPower = 100 - upPower;
+    const highClose = closePos >= BATTLE_CLOSE_WIN;
+    const lowClose = closePos <= 1 - BATTLE_CLOSE_WIN;
+    return {
+      stronger: Math.abs(upPower - downPower) < BATTLE_EVEN_GAP_PCT ? "EVEN" : upPower > downPower ? "UP" : "DOWN",
+      up: { power: upPower, outcome: highClose ? "BUYERS_WIN" : lowClose ? "ASKS_HOLD" : "CONTESTED" },
+      down: { power: downPower, outcome: lowClose ? "SELLERS_WIN" : highClose ? "BIDS_HOLD" : "CONTESTED" },
+      closePos
+    };
+  }
+  function priorSwingLevels3(prior) {
+    if (!prior.length) return { support: null, resistance: null };
+    let resistance = -Infinity;
+    let support = Infinity;
+    for (const b of prior.slice(-16)) {
+      if (b.high > resistance) resistance = b.high;
+      if (b.low < support) support = b.low;
+    }
+    if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
+    return { support, resistance };
+  }
+  function recentBarAtr2(prior, bar) {
+    const fallback = Math.max(bar.high - bar.low, (bar.close || 1) * 2e-3);
+    const look = prior.slice(-8);
+    if (!look.length) return fallback;
+    let s = 0;
+    for (const b of look) s += Math.max(b.high - b.low, 0);
+    return s / look.length || fallback;
+  }
+  function stopHuntKind2(bar, prior) {
+    const { support, resistance } = priorSwingLevels3(prior);
+    if (support == null || resistance == null || resistance <= support) return null;
+    const atr = recentBarAtr2(prior, bar);
+    const range = bar.high - bar.low;
+    if (range <= 0) return null;
+    const closePos = (bar.close - bar.low) / range;
+    const band = Math.max((resistance - support) * 0.08, atr * 0.35);
+    if (bar.high >= resistance + band * 0.2 && bar.close < resistance && closePos <= 0.42) return "HIGH";
+    if (bar.low <= support - band * 0.2 && bar.close > support && closePos >= 0.58) return "LOW";
+    return null;
+  }
+  function entryChip(verdict) {
+    if (!verdict || verdict.stronger === "EVEN") return "PAIR";
+    const outcome = verdict.stronger === "UP" ? verdict.up.outcome : verdict.down.outcome;
+    if (outcome === "BUYERS_WIN") return "BUYERS";
+    if (outcome === "ASKS_HOLD") return "ASKS";
+    if (outcome === "SELLERS_WIN") return "SELLERS";
+    if (outcome === "BIDS_HOLD") return "BIDS";
+    return "PAIR";
+  }
+  function barEntryRead(bars, index, progress) {
+    const bar = bars[index];
+    const row = progress[index] ?? {};
+    const verdict = barBattleVerdict(bar);
+    const raw = Number(row.directionalProgressATR);
+    const prog = row.directionalProgressATR != null && Number.isFinite(raw) ? raw : null;
+    const prior = bars.slice(Math.max(0, index - 16), index);
+    const strength = row.deltaStrengthState ?? "UNAVAILABLE";
+    return {
+      chip: entryChip(verdict),
+      upside: verdict?.up.outcome ?? "NONE",
+      downside: verdict?.down.outcome ?? "NONE",
+      prog,
+      absProg: prog == null ? null : Math.abs(prog),
+      strength,
+      deltaSide: row.deltaSide ?? "NONE",
+      highDelta: strength === "STRONG" || strength === "EXTREME",
+      hunt: prior.length ? stopHuntKind2(bar, prior) : null
+    };
+  }
+  function priorsOwn(priors, chip) {
+    const recent = priors.slice(-ENTRY_PRIOR_BARS);
+    if (recent.length < 2) return false;
+    const other = chip === "SELLERS" ? "BUYERS" : "SELLERS";
+    let mine = 0;
+    let theirs = 0;
+    for (const row of recent) {
+      if (row.chip === chip) mine += 1;
+      else if (row.chip === other) theirs += 1;
+    }
+    return mine >= 2 && mine > theirs;
+  }
+  function otherSideFailed(prev, priors, failedChip, trapHunt) {
+    if (!prev) return false;
+    if (prev.hunt === trapHunt) return true;
+    if (prev.chip !== "PAIR" && prev.strength !== "WEAK") return false;
+    let n = 0;
+    for (const row of priors.slice(0, -1).slice(-ENTRY_PRIOR_BARS)) {
+      if (row.chip === failedChip) n += 1;
+    }
+    return n >= 2;
+  }
+  function decideEntry(cur, prev, priors, prevSignal) {
+    if (!cur) return null;
+    const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
+    const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
+    if (prev && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG && cur.highDelta && little) {
+      if (prev.deltaSide === "SELL" && cur.deltaSide === "BUY") return { side: "buy", state: 3 };
+      if (prev.deltaSide === "BUY" && cur.deltaSide === "SELL") return { side: "sell", state: 3 };
+    }
+    if (cur.highDelta && real) {
+      const chip = cur.deltaSide === "BUY" ? "BUYERS" : cur.deltaSide === "SELL" ? "SELLERS" : null;
+      const side2 = chip === "BUYERS" ? "buy" : "sell";
+      const continued = chip && prevSignal && prevSignal.side === side2;
+      if (chip && cur.chip === chip && priorsOwn(priors, chip) && !continued) {
+        return { side: side2, state: 2 };
+      }
+    }
+    const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
+    if (responded && cur.upside === "BUYERS_WIN" && cur.deltaSide === "BUY" && otherSideFailed(prev, priors, "SELLERS", "LOW")) {
+      return { side: "buy", state: 4 };
+    }
+    if (responded && cur.downside === "SELLERS_WIN" && cur.deltaSide === "SELL" && otherSideFailed(prev, priors, "BUYERS", "HIGH")) {
+      return { side: "sell", state: 4 };
+    }
+    const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== "WEAK";
+    if (battleWon && cur.upside === "BUYERS_WIN" && cur.deltaSide === "BUY" && prev && prev.downside === "SELLERS_WIN" && !(prevSignal && prevSignal.side === "buy")) {
+      return { side: "buy", state: 4 };
+    }
+    if (battleWon && cur.downside === "SELLERS_WIN" && cur.deltaSide === "SELL" && prev && prev.upside === "BUYERS_WIN" && !(prevSignal && prevSignal.side === "sell")) {
+      return { side: "sell", state: 4 };
+    }
+    if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG) {
+      const recent = priors.slice(-3);
+      if (cur.deltaSide === "SELL" && cur.downside === "SELLERS_WIN" && recent.some((row) => row.downside === "SELLERS_WIN") && !(prevSignal && prevSignal.side === "sell")) {
+        return { side: "sell", state: 2 };
+      }
+      if (cur.deltaSide === "BUY" && cur.upside === "BUYERS_WIN" && recent.some((row) => row.upside === "BUYERS_WIN") && !(prevSignal && prevSignal.side === "buy")) {
+        return { side: "buy", state: 2 };
+      }
+    }
+    const buyersLost = cur.highDelta && cur.deltaSide === "BUY" && cur.upside === "ASKS_HOLD";
+    const sellersLost = cur.highDelta && cur.deltaSide === "SELL" && cur.downside === "BIDS_HOLD";
+    const prevLostSame = prev && (buyersLost && prev.highDelta && prev.deltaSide === "BUY" && prev.upside === "ASKS_HOLD" || sellersLost && prev.highDelta && prev.deltaSide === "SELL" && prev.downside === "BIDS_HOLD");
+    if (!prevLostSame && sellersLost) return { side: "buy", state: 1 };
+    if (!prevLostSame && buyersLost) return { side: "sell", state: 1 };
+    return null;
+  }
+  function lower(s) {
+    return s.replaceAll("_", " ").toLowerCase();
+  }
+  function entryMarks(bars, liveTime, progress) {
+    const marks = /* @__PURE__ */ new Map();
+    if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
+    const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
+    const last = lastIsLive ? bars.length - 1 : bars.length;
+    const reads = [];
+    for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+    let openSide = null;
+    for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
+      const cur = reads[index];
+      const prev = reads[index - 1];
+      const priors = reads.slice(Math.max(0, index - ENTRY_PRIOR_BARS), index);
+      const signal = decideEntry(cur, prev, priors, openSide ? { side: openSide } : null);
+      const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG && (openSide === "sell" && cur.downside === "SELLERS_WIN" || openSide === "buy" && cur.upside === "BUYERS_WIN");
+      if (!signal) {
+        if (stalled || openSide === "sell" && cur.upside === "BUYERS_WIN" || openSide === "buy" && cur.downside === "SELLERS_WIN") openSide = null;
+        continue;
+      }
+      const time = bars[index].time;
+      if (signal.side !== openSide && !marks.has(time)) {
+        const buy = signal.side === "buy";
+        const word = buy ? "BUY" : "SELL";
+        marks.set(time, {
+          side: signal.side,
+          state: signal.state,
+          text: `${word} ${signal.state}`,
+          short: `${buy ? "B" : "S"}${signal.state}`,
+          color: buy ? "#22c55e" : "#ef4444",
+          tip: `${word} ${signal.state}
+${ENTRY_DETAIL[signal.state]}
+Upside ${lower(cur.upside)} \xB7 downside ${lower(cur.downside)}`
+        });
+      }
+      openSide = signal.side;
+    }
+    return marks;
+  }
+
   // src/client/browser-hub.ts
   var WATCHLIST_KEY = "orderflow.activeWatchlist";
   var FOOTPRINT_PUSH_MS = 250;
@@ -16899,7 +17102,10 @@ var process = globalThis.process || { env: {} };
     projectFailReclaimLabel,
     failReclaimLabelY,
     LEVEL_EVENT_SHORT,
-    catalog: FULL_WATCHLIST_CATALOG
+    catalog: FULL_WATCHLIST_CATALOG,
+    entryMarks,
+    ENTRY_DETAIL,
+    ENTRY_PRIOR_BARS
   };
 })();
 //# sourceMappingURL=client.bundle.js.map

@@ -5792,169 +5792,20 @@ function pushFpAlert(alert) {
   publishFpAlert(alert);
 }
 
-const ENTRY_LITTLE_PROG = 0.25;
-const ENTRY_REAL_PROG = 0.5;
-const ENTRY_RESPONSE_PROG = 0.8;
-const ENTRY_PRIOR_BARS = 6;
 const ENTRY_SEEN_KEY = 'fpEntryAlerts';
-const ENTRY_DETAIL = {
-  1: 'high delta, low response',
-  2: 'high delta, high response',
-  3: 'effort flipped, price stopped',
-  4: 'failed side, price responded',
-};
-
-function entryChip(verdict) {
-  if (!verdict || verdict.stronger === 'EVEN') return 'PAIR';
-  const outcome = verdict.stronger === 'UP' ? verdict.up.outcome : verdict.down.outcome;
-  if (outcome === 'BUYERS_WIN') return 'BUYERS';
-  if (outcome === 'ASKS_HOLD') return 'ASKS';
-  if (outcome === 'SELLERS_WIN') return 'SELLERS';
-  if (outcome === 'BIDS_HOLD') return 'BIDS';
-  return 'PAIR';
-}
-
-function barEntryRead(bars, index, progress) {
-  const bar = bars[index];
-  const row = progress[index] || {};
-  const verdict = barBattleVerdict(bar);
-  const prog = Number(row.directionalProgressATR);
-  const absProg = Number.isFinite(prog) ? Math.abs(prog) : null;
-  const prior = bars.slice(Math.max(0, index - 16), index);
-  return {
-    chip: entryChip(verdict),
-    upside: verdict?.up.outcome || 'NONE',
-    downside: verdict?.down.outcome || 'NONE',
-    prog: Number.isFinite(prog) ? prog : null,
-    absProg,
-    strength: row.deltaStrengthState || 'UNAVAILABLE',
-    deltaSide: row.deltaSide || 'NONE',
-    highDelta: row.deltaStrengthState === 'STRONG' || row.deltaStrengthState === 'EXTREME',
-    hunt: prior.length ? stopHuntKind(bar, prior) : null,
-  };
-}
-
-function priorsOwn(priors, chip) {
-  const recent = priors.slice(-ENTRY_PRIOR_BARS);
-  if (recent.length < 2) return false;
-  const other = chip === 'SELLERS' ? 'BUYERS' : 'SELLERS';
-  let mine = 0;
-  let theirs = 0;
-  for (const row of recent) {
-    if (row.chip === chip) mine += 1;
-    else if (row.chip === other) theirs += 1;
-  }
-  return mine >= 2 && mine > theirs;
-}
-
-function otherSideFailed(prev, priors, failedChip, trapHunt) {
-  if (!prev) return false;
-  if (prev.hunt === trapHunt) return true;
-  if (prev.chip !== 'PAIR' && prev.strength !== 'WEAK') return false;
-  let n = 0;
-  for (const row of priors.slice(0, -1).slice(-ENTRY_PRIOR_BARS)) {
-    if (row.chip === failedChip) n += 1;
-  }
-  return n >= 2;
-}
-
 /**
- * One entry from the last closed candle.
- * 1 high delta, low response, and that side did not win the close → fade it.
- * 2 high delta and a real response, and the earlier candles already own that side.
- * 3 the previous candle's effort was accepted, this candle flips the delta and price stops.
- * 4 the other side failed, then this candle responds on ordinary delta.
+ * BUY/SELL 1–4 entry rules live in src/entry-signal (bundled into client.bundle.js),
+ * so the chart, the alerts and scripts/backtest-entries.ts all run the same code.
  */
-function decideEntry(cur, prev, priors, prevSignal) {
-  if (!cur) return null;
-  const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
-  const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
-
-  if (prev && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG && cur.highDelta && little) {
-    if (prev.deltaSide === 'SELL' && cur.deltaSide === 'BUY') return { side: 'buy', state: 3 };
-    if (prev.deltaSide === 'BUY' && cur.deltaSide === 'SELL') return { side: 'sell', state: 3 };
-  }
-
-  if (cur.highDelta && real) {
-    const chip = cur.deltaSide === 'BUY' ? 'BUYERS' : cur.deltaSide === 'SELL' ? 'SELLERS' : null;
-    const side = chip === 'BUYERS' ? 'buy' : 'sell';
-    const continued = chip && prevSignal && prevSignal.side === side;
-    if (chip && cur.chip === chip && priorsOwn(priors, chip) && !continued) {
-      return { side, state: 2 };
-    }
-  }
-
-  const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
-  if (responded && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && otherSideFailed(prev, priors, 'SELLERS', 'LOW')) {
-    return { side: 'buy', state: 4 };
-  }
-  if (responded && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && otherSideFailed(prev, priors, 'BUYERS', 'HIGH')) {
-    return { side: 'sell', state: 4 };
-  }
-
-  const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== 'WEAK';
-  if (battleWon && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && prev && prev.downside === 'SELLERS_WIN' && !(prevSignal && prevSignal.side === 'buy')) {
-    return { side: 'buy', state: 4 };
-  }
-  if (battleWon && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && prev && prev.upside === 'BUYERS_WIN' && !(prevSignal && prevSignal.side === 'sell')) {
-    return { side: 'sell', state: 4 };
-  }
-  if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG) {
-    const recent = priors.slice(-3);
-    if (cur.downside === 'SELLERS_WIN' && recent.some((row) => row.downside === 'SELLERS_WIN') && !(prevSignal && prevSignal.side === 'sell')) {
-      return { side: 'sell', state: 2 };
-    }
-    if (cur.upside === 'BUYERS_WIN' && recent.some((row) => row.upside === 'BUYERS_WIN') && !(prevSignal && prevSignal.side === 'buy')) {
-      return { side: 'buy', state: 2 };
-    }
-  }
-
-  const buyersLost = cur.highDelta && cur.deltaSide === 'BUY' && cur.upside === 'ASKS_HOLD';
-  const sellersLost = cur.highDelta && cur.deltaSide === 'SELL' && cur.downside === 'BIDS_HOLD';
-  const prevLostSame = prev && (
-    (buyersLost && prev.highDelta && prev.deltaSide === 'BUY' && prev.upside === 'ASKS_HOLD') ||
-    (sellersLost && prev.highDelta && prev.deltaSide === 'SELL' && prev.downside === 'BIDS_HOLD')
-  );
-  if (!prevLostSame && sellersLost) return { side: 'buy', state: 1 };
-  if (!prevLostSame && buyersLost) return { side: 'sell', state: 1 };
-  return null;
-}
+const ENTRY_PRIOR_BARS = window.OrderFlowClient?.ENTRY_PRIOR_BARS ?? 6;
+const ENTRY_DETAIL = window.OrderFlowClient?.ENTRY_DETAIL ?? {};
 
 /** Closed candles the entry script would have taken. The number is the state. */
 function entryMarks(bars, liveTime, progress) {
-  const marks = new Map();
-  if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
-  const lastIsLive = bars[bars.length - 1]?.time === liveTime;
-  const rows = progress || annotateDeltaProgress(bars, { lastIsLive });
-  const last = lastIsLive ? bars.length - 1 : bars.length;
-  let openSide = null;
-  for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
-    const cur = barEntryRead(bars, index, rows);
-    const prev = barEntryRead(bars, index - 1, rows);
-    const priors = [];
-    for (let i = Math.max(0, index - ENTRY_PRIOR_BARS); i < index; i++) priors.push(barEntryRead(bars, i, rows));
-    const signal = decideEntry(cur, prev, priors, openSide ? { side: openSide } : null);
-    const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG
-      && ((openSide === 'sell' && cur.downside === 'SELLERS_WIN') || (openSide === 'buy' && cur.upside === 'BUYERS_WIN'));
-    if (!signal) {
-      if (stalled || (openSide === 'sell' && cur.upside === 'BUYERS_WIN') || (openSide === 'buy' && cur.downside === 'SELLERS_WIN')) openSide = null;
-      continue;
-    }
-    if (signal.side !== openSide && !marks.has(bars[index].time)) {
-      const buy = signal.side === 'buy';
-      const word = buy ? 'BUY' : 'SELL';
-      marks.set(bars[index].time, {
-        side: signal.side,
-        state: signal.state,
-        text: `${word} ${signal.state}`,
-        short: `${buy ? 'B' : 'S'}${signal.state}`,
-        color: buy ? '#22c55e' : '#ef4444',
-        tip: `${word} ${signal.state}\n${ENTRY_DETAIL[signal.state]}\nUpside ${cur.upside.replaceAll('_', ' ').toLowerCase()} · downside ${cur.downside.replaceAll('_', ' ').toLowerCase()}`,
-      });
-    }
-    openSide = signal.side;
-  }
-  return marks;
+  const impl = window.OrderFlowClient?.entryMarks;
+  if (!impl || !bars?.length) return new Map();
+  const rows = progress || annotateDeltaProgress(bars, { lastIsLive: bars[bars.length - 1]?.time === liveTime });
+  return impl(bars, liveTime, rows);
 }
 
 function entryAlreadySent(id) {

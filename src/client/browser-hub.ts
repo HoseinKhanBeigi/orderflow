@@ -32,6 +32,7 @@ import {
   failReclaimLabelY,
 } from '../level-interaction/index.js';
 import { DEFAULT_IMBALANCE_RATIO, SpotFlowEngine } from '../spot/index.js';
+import { ENTRY_DETAIL, ENTRY_PRIOR_BARS, entryMarks } from '../entry-signal/index.js';
 
 const WATCHLIST_KEY = 'orderflow.activeWatchlist';
 const FOOTPRINT_PUSH_MS = 250;
@@ -460,6 +461,9 @@ declare global {
       failReclaimLabelY: typeof failReclaimLabelY;
       LEVEL_EVENT_SHORT: typeof LEVEL_EVENT_SHORT;
       catalog: typeof FULL_WATCHLIST_CATALOG;
+      entryMarks: typeof entryMarks;
+      ENTRY_DETAIL: typeof ENTRY_DETAIL;
+      ENTRY_PRIOR_BARS: typeof ENTRY_PRIOR_BARS;
     };
   }
 }
@@ -479,4 +483,7 @@ globalThis.window.OrderFlowClient = {
   failReclaimLabelY,
   LEVEL_EVENT_SHORT,
   catalog: FULL_WATCHLIST_CATALOG,
+  entryMarks,
+  ENTRY_DETAIL,
+  ENTRY_PRIOR_BARS,
 };
