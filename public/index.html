@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-fuel-gauge-v2" />
+  <link rel="stylesheet" href="/styles.css?v=next-candle-v1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -31,6 +31,7 @@
           <span class="fuel-gauge-track" aria-hidden="true"><span data-fuel-needle></span></span>
           <span data-fuel-num>—</span>
         </div>
+        <div id="next-candle" class="next-candle quiet" title="Chance the open 1-minute candle closes up or down. Quiet until this setup has a record.">Next —</div>
         <div id="trade-decision" class="trade-decision wait" title="Simple attack + defense + price confirm">WAIT</div>
       </div>
     </div>
@@ -177,6 +178,6 @@
   </footer>
 
   <script src="/client.bundle.js?v=entry-before-move-v1"></script>
-  <script src="/app.js?v=fp-fuel-gauge-v1" type="module"></script>
+  <script src="/app.js?v=next-candle-v1" type="module"></script>
 </body>
 </html>

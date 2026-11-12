@@ -208,6 +208,30 @@ body {
 .trade-decision.wait {
   color: #cbd5e1;
 }
+
+.next-candle {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.28rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.next-candle.up {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.12);
+}
+.next-candle.down {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.12);
+}
 .hidden { display: none !important; }
 
 .coin-bar {

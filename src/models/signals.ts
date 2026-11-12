@@ -7,6 +7,7 @@ import type { NetAggressionSnapshot } from './net-aggression.js';
 import type { MarketBattleSnapshot } from './market-battle.js';
 import type { MarketFuelSnapshot } from './market-fuel.js';
 import type { TradeDecisionSnapshot } from './trade-decision.js';
+import type { NextCandleCall } from '../next-candle/types.js';
 
 export interface AbsorptionResult {
   detected: boolean;
@@ -92,6 +93,8 @@ export interface WindowSnapshot {
   marketFuel: MarketFuelSnapshot;
   /** Simple LONG / SHORT / WAIT decision from attack + defense + price confirm. */
   tradeDecision: TradeDecisionSnapshot;
+  /** Chance the open 1-minute candle closes up or down. Quiet until the setup has a record. */
+  nextCandle: NextCandleCall;
 }
 
 export interface MultiWindowSnapshot {

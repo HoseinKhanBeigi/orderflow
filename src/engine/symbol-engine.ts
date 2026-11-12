@@ -29,6 +29,7 @@ import {
   evaluateTradeDecision,
   emptyTradeDecisionWait,
 } from '../trade-decision/index.js';
+import { featuresFromSnapshot, NextCandleModel, NEXT_CANDLE_QUIET } from '../next-candle/index.js';
 import { AggressiveFlowEngine } from '../aggressive-flow/engine.js';
 import { emptyPassiveMetrics } from '../models/passive.js';
 import { LiquidityResponseEngine } from '../liquidity-response/engine.js';
@@ -97,6 +98,7 @@ export class SymbolEngine {
   readonly marketBattle: MarketBattleEngine;
   readonly marketFuel: MarketFuelEngine;
   readonly aggressiveFlow: AggressiveFlowEngine;
+  private readonly nextCandleModel = new NextCandleModel();
 
   private readonly listeners = new Set<EngineListener>();
   /**
@@ -616,6 +618,7 @@ export class SymbolEngine {
       marketBattle,
       marketFuel,
       tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
+      nextCandle: NEXT_CANDLE_QUIET,
       movePotential: this.movePotential.evaluate({
         symbol: this.symbol,
         book: this.book,
@@ -630,6 +633,9 @@ export class SymbolEngine {
     };
 
     snap.tradeDecision = evaluateTradeDecision(snap, this.config.tradeDecision, { now });
+    if (window === '1m') {
+      snap.nextCandle = this.nextCandleModel.observe(featuresFromSnapshot(snap), snap.price, now);
+    }
 
     const alerts = buildAlerts(snap, this.config.alerts, now);
     const volatile = alerts.length > 0;

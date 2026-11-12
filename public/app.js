@@ -587,6 +587,7 @@ function updateUi() {
   if (!lastSummary || lastSummary.symbol !== selectedSymbol) return;
   const w = windowData(lastSummary, selectedTf);
   renderMarketFuel(lastSummary);
+  renderNextCandle(lastSummary);
   renderTradeDecision(lastSummary);
   if (!w) return;
 
@@ -715,6 +716,24 @@ function renderMarketFuel(summary) {
     `Forced buy ${forcedUp} · forced sell ${forcedDown}`,
     'Left is sell fuel. Right is buy fuel. The number is buy minus sell.',
   ].join('\n');
+}
+
+function renderNextCandle(summary) {
+  const el = document.getElementById('next-candle');
+  if (!el) return;
+  const call = summary?.windows?.['1m']?.nextCandle ?? null;
+  const direction = call?.direction;
+  const probability = Number(call?.probability);
+  if (!call?.shown || (direction !== 'UP' && direction !== 'DOWN') || !Number.isFinite(probability)) {
+    el.className = 'next-candle quiet';
+    el.textContent = 'Next —';
+    el.title = call?.note || 'Next 1-minute candle stays quiet until this setup has happened enough times and the recent candles agreed.';
+    return;
+  }
+  const up = direction === 'UP';
+  el.className = `next-candle ${up ? 'up' : 'down'}`;
+  el.textContent = `Next ${up ? 'up' : 'down'} ${Math.round(probability)}%`;
+  el.title = call.note || 'Chance the open 1-minute candle closes this way.';
 }
 
 function renderTradeDecision(summary) {
