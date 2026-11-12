@@ -3967,6 +3967,8 @@ function barReplenishment(bar) {
   const ask = buy * (1 - closePos);
   const bid = sell * closePos;
   return {
+    buy,
+    sell,
     ask,
     bid,
     askPct: buy > 0 ? Math.round((ask / buy) * 100) : 0,
@@ -3976,14 +3978,14 @@ function barReplenishment(bar) {
 
 function drawBarReplenishment(ctx, repl, cx, y0, maxW) {
   if (!repl) return null;
-  const narrow = maxW < 92;
+  const narrow = maxW < 108;
   const rows = [
     {
-      text: narrow ? `A repl ${fmtVolShort(repl.ask)}` : `asks repl ${fmtVolShort(repl.ask)}`,
+      text: narrow ? `A ${repl.askPct}% ${fmtVolShort(repl.ask)}` : `asks ${repl.askPct}% ${fmtVolShort(repl.ask)}`,
       color: '#fbbf24',
     },
     {
-      text: narrow ? `B repl ${fmtVolShort(repl.bid)}` : `bids repl ${fmtVolShort(repl.bid)}`,
+      text: narrow ? `B ${repl.bidPct}% ${fmtVolShort(repl.bid)}` : `bids ${repl.bidPct}% ${fmtVolShort(repl.bid)}`,
       color: '#60a5fa',
     },
   ];
@@ -4004,11 +4006,11 @@ function drawBarReplenishment(ctx, repl, cx, y0, maxW) {
     x0: cx - maxW / 2,
     x1: cx + maxW / 2,
     y0: y0 - 8,
-    y1: y0 + BATTLE_ROW_H + 8,
+    y1: y0 + BATTLE_ROW_H * 2 - 4,
     tip: [
-      'Liquidity replenishment',
-      `Asks replenished ${fmtVolShort(repl.ask)} · ${repl.askPct}% of aggressive buys did not lift the close`,
-      `Bids replenished ${fmtVolShort(repl.bid)} · ${repl.bidPct}% of aggressive sells did not push the close down`,
+      'Aggressive volume against replenishment',
+      `Buys ${fmtVolShort(repl.buy)} · asks replenished ${fmtVolShort(repl.ask)} · ${repl.askPct}% of the buy volume`,
+      `Sells ${fmtVolShort(repl.sell)} · bids replenished ${fmtVolShort(repl.bid)} · ${repl.bidPct}% of the sell volume`,
     ].join('\n'),
   };
 }
