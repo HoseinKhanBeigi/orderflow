@@ -5153,7 +5153,7 @@ function drawFootprint(symbol = selectedSymbol) {
   });
   const frByTime = buildFrByConfirmTime(lie);
   const couldntByTime = trioCouldntMarks(bars, nowBucket);
-  const entryByTime = entryMarks(bars, nowBucket, deltaProgress);
+  const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -6069,6 +6069,28 @@ function entryMarks(bars, liveTime, progress) {
   return impl(bars, liveTime, rows);
 }
 
+/** Live fuel lead, for the newest state only. Older candles never stored this. */
+function fuelImbalanceLine(symbol) {
+  const summary = summaries[symbol];
+  const fuel = summary?.windows?.['1m']?.marketFuel ?? summary?.windows?.['10s']?.marketFuel ?? null;
+  if (!fuel || !Number.isFinite(fuel.fuelImbalance)) return '';
+  const imb = Math.round(fuel.fuelImbalance);
+  const dir = imb >= 8 ? 'BUY' : imb <= -8 ? 'SELL' : 'BALANCED';
+  return `Fuel now ${imb > 0 ? '+' : ''}${imb} ${dir}`;
+}
+
+function attachLiveFuelContext(symbol, marks, bars, liveTime) {
+  const line = fuelImbalanceLine(symbol);
+  if (!line || !marks?.size || !bars?.length) return marks;
+  let index = bars.length - 1;
+  if (liveTime != null && bars[index]?.time === liveTime) index -= 1;
+  if (index < 0) return marks;
+  const mark = marks.get(bars[index].time);
+  if (!mark) return marks;
+  marks.set(bars[index].time, { ...mark, tip: `${mark.tip}\n${line}` });
+  return marks;
+}
+
 function entryAlreadySent(id) {
   try {
     const raw = JSON.parse(sessionStorage.getItem(ENTRY_SEEN_KEY) || '[]');
@@ -6107,13 +6129,14 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   if (entryAlreadySent(id) || !canFireAlert(id, 12 * 60 * 60 * 1000)) return;
   markEntrySent(id);
   const word = signal.side === 'buy' ? 'BUY' : 'SELL';
+  const fuel = fuelImbalanceLine(symbol);
   pushFpAlert({
     id,
     symbol,
     kind: word,
     side: signal.side,
     title: `${alertLabel(symbol)} · ${word}`,
-    detail: `${tfShort(tfMinutes)} · ${ENTRY_DETAIL[signal.state]}`,
+    detail: `${tfShort(tfMinutes)} · ${ENTRY_DETAIL[signal.state]}${fuel ? ` · ${fuel}` : ''}`,
     at: Date.now(),
   });
 }
