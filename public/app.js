@@ -1533,16 +1533,40 @@ function snapChartToLive() {
   scheduleDraw();
 }
 
+function fpBottomPad(mode = fpDeltaProgressMode) {
+  if (mode === 'OFF') return 276;
+  if (mode === 'EFFORT_RESPONSE') return 366;
+  return 332;
+}
+
+function mountCanvas(canvas, cssW, cssH) {
+  const w = Math.max(1, cssW);
+  const h = Math.max(1, cssH);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  const bw = Math.max(1, Math.round(w * devicePixelRatio));
+  const bh = Math.max(1, Math.round(h * devicePixelRatio));
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  return ctx;
+}
+
 function resizeFpView(symbol) {
   const view = fpViews.get(symbol);
-  if (!view?.canvas?.parentElement) return;
-  const rect = view.canvas.parentElement.getBoundingClientRect();
-  const w = Math.max(1, Math.floor(rect.width));
-  const h = Math.max(1, Math.floor(rect.height));
-  view.canvas.width = w * devicePixelRatio;
-  view.canvas.height = h * devicePixelRatio;
-  view.ctx = view.canvas.getContext('2d');
-  view.ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  const host = view?.canvas?.parentElement;
+  if (!host) return;
+  const w = Math.max(1, Math.floor(host.clientWidth));
+  const h = Math.max(1, Math.floor(host.clientHeight));
+  view.ctx = mountCanvas(view.canvas, w, h);
+  const foot = view.footCanvas;
+  const footHost = foot?.parentElement;
+  if (foot && footHost?.classList.contains('is-open')) {
+    view.footCtx = mountCanvas(foot, w, fpBottomPad() + 12);
+  }
 }
 
 function fpGridScrollable() {
@@ -1565,9 +1589,11 @@ function resizeAllFpViews() {
   scheduleDraw();
 }
 
-function bindFpCanvas(symbol, canvas) {
+function bindFpCanvas(symbol, canvas, { pan = true, scrollHost = null } = {}) {
   canvas.addEventListener('wheel', (e) => {
-    if (fpGridScrollable() && !e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) return;
+    const vertical = !e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX);
+    const hostScrolls = scrollHost && scrollHost.scrollHeight > scrollHost.clientHeight + 1;
+    if (vertical && (hostScrolls || fpGridScrollable())) return;
     e.preventDefault();
     e.stopPropagation();
     const view = fpViews.get(symbol);
@@ -1580,33 +1606,35 @@ function bindFpCanvas(symbol, canvas) {
     scheduleDraw(symbol);
   }, { passive: false });
 
-  canvas.addEventListener('pointerdown', (e) => {
-    const view = fpViews.get(symbol);
-    if (!view) return;
-    view.dragging = true;
-    view.dragX = e.clientX;
-    canvas.setPointerCapture(e.pointerId);
-    canvas.style.cursor = 'grabbing';
-  });
-  canvas.addEventListener('pointermove', (e) => {
-    const view = fpViews.get(symbol);
-    if (!view?.dragging) return;
-    const W = cssChartWidth(view);
-    const bars = footprintBars(symbol);
-    const { stride } = fpLayout(W);
-    view.panBars += (e.clientX - view.dragX) / stride;
-    view.dragX = e.clientX;
-    clampFpPan(view, bars.length, W);
-    scheduleDraw(symbol);
-  });
-  const endDrag = () => {
-    const view = fpViews.get(symbol);
-    if (!view) return;
-    view.dragging = false;
-    canvas.style.cursor = 'grab';
-  };
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
+  if (pan) {
+    canvas.addEventListener('pointerdown', (e) => {
+      const view = fpViews.get(symbol);
+      if (!view) return;
+      view.dragging = true;
+      view.dragX = e.clientX;
+      canvas.setPointerCapture(e.pointerId);
+      canvas.style.cursor = 'grabbing';
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const view = fpViews.get(symbol);
+      if (!view?.dragging) return;
+      const W = cssChartWidth(view);
+      const bars = footprintBars(symbol);
+      const { stride } = fpLayout(W);
+      view.panBars += (e.clientX - view.dragX) / stride;
+      view.dragX = e.clientX;
+      clampFpPan(view, bars.length, W);
+      scheduleDraw(symbol);
+    });
+    const endDrag = () => {
+      const view = fpViews.get(symbol);
+      if (!view) return;
+      view.dragging = false;
+      canvas.style.cursor = 'grab';
+    };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+  }
   canvas.addEventListener('pointermove', (e) => {
     const view = fpViews.get(symbol);
     if (!view || view.dragging) return;
@@ -1634,15 +1662,22 @@ function buildFpGrid() {
       </header>
       <div class="fp-card-flow8" data-fp-flow8 title="">Last ${fpFlowLookback} · —</div>
       <div class="fp-card-canvas"></div>
+      <div class="fp-card-foot" data-fp-foot></div>
       <div class="fp-pattern-tip hidden" data-fp-pattern-tip></div>
     `;
     const host = card.querySelector('.fp-card-canvas');
     const canvas = document.createElement('canvas');
     host.appendChild(canvas);
+    const footHost = card.querySelector('[data-fp-foot]');
+    const footCanvas = document.createElement('canvas');
+    footHost.appendChild(footCanvas);
     grid.appendChild(card);
     fpViews.set(coin.symbol, {
       canvas,
       ctx: canvas.getContext('2d'),
+      footCanvas,
+      footCtx: footCanvas.getContext('2d'),
+      footHits: [],
       panBars: 0,
       livePrice: 0,
       liveAt: 0,
@@ -1654,6 +1689,7 @@ function buildFpGrid() {
       levelEventHits: [],
     });
     bindFpCanvas(coin.symbol, canvas);
+    bindFpCanvas(coin.symbol, footCanvas, { pan: false, scrollHost: footHost });
     card.addEventListener('pointerdown', () => focusFootprintSymbol(coin.symbol));
   }
   syncFootprintSymbolPicker();
@@ -4212,36 +4248,45 @@ function drawPatternBadge(ctx, marker, cx, y) {
   return { x, y: y - h / 2, w, h };
 }
 
+function placePatternTip(tip, event) {
+  tip.style.position = 'fixed';
+  const maxX = window.innerWidth - 250;
+  const maxY = window.innerHeight - 36;
+  tip.style.left = `${Math.max(8, Math.min(event.clientX + 14, maxX))}px`;
+  tip.style.top = `${Math.max(8, Math.min(event.clientY + 16, maxY))}px`;
+}
+
 function showPatternTip(symbol, event) {
   const view = fpViews.get(symbol);
   const tip = view?.card?.querySelector('[data-fp-pattern-tip]');
   if (!view || !tip) return;
-  const rect = view.canvas.getBoundingClientRect();
+  const canvas = event.currentTarget || view.canvas;
+  const onFoot = canvas === view.footCanvas;
+  const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
 
-  const frHit = (view.levelEventHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  const frHit = onFoot ? null : (view.levelEventHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
   if (frHit?.tip) {
     tip.classList.remove('hidden');
     tip.innerHTML = `<pre style="margin:0;white-space:pre-wrap;font:11px JetBrains Mono,monospace">${escapeHtml(frHit.tip)}</pre>`;
-    const host = view.card?.querySelector('.fp-card-canvas');
-    const maxX = (host?.clientWidth ?? 200) - 240;
-    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
-    tip.style.top = `${Math.max(8, y + 14)}px`;
+    placePatternTip(tip, event);
     return;
   }
 
-  const microHit = (view.microHits ?? []).find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+  const microList = onFoot ? (view.footHits ?? []) : (view.microHits ?? []);
+  const microHit = microList.find((h) => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
   if (microHit?.tip) {
     tip.classList.remove('hidden');
     tip.innerHTML = `<pre style="margin:0;white-space:pre-wrap;font:11px JetBrains Mono,monospace">${escapeHtml(microHit.tip)}</pre>`;
-    const host = view.card?.querySelector('.fp-card-canvas');
-    const maxX = (host?.clientWidth ?? 200) - 240;
-    tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
-    tip.style.top = `${Math.max(8, y + 14)}px`;
+    placePatternTip(tip, event);
     return;
   }
 
+  if (onFoot) {
+    tip.classList.add('hidden');
+    return;
+  }
   const hit = (view.patternHits ?? []).find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
   if (!hit?.marker) {
     tip.classList.add('hidden');
@@ -4257,10 +4302,7 @@ function showPatternTip(symbol, event) {
     <span>Pattern confidence: ${Math.round(m.confidence ?? 0)}%</span>
     <span>Sequence: ${escapeHtml(seq)}</span>
     <span>Bars: ${m.barsUsed ?? '—'} · ${m.stage ?? '?'}/${m.totalStages ?? '?'}</span>`;
-  const host = view.card?.querySelector('.fp-card-canvas');
-  const maxX = (host?.clientWidth ?? 200) - 220;
-  tip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
-  tip.style.top = `${Math.max(8, y + 14)}px`;
+  placePatternTip(tip, event);
 }
 
 function hidePatternTip(symbol) {
@@ -4542,7 +4584,7 @@ function applyDeltaProgressMode(mode = fpDeltaProgressMode) {
   localStorage.setItem(FP_DELTA_PROGRESS_KEY, fpDeltaProgressMode);
   const select = document.getElementById('fp-delta-progress-select');
   if (select && select.value !== fpDeltaProgressMode) select.value = fpDeltaProgressMode;
-  for (const sym of fpViews.keys()) drawFootprint(sym);
+  resizeAllFpViews();
 }
 
 function priorAtrJs(bars, index, lookback, minBars) {
@@ -4904,9 +4946,19 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
   };
 }
 
+function syncFootPane(view, open) {
+  const pane = view?.footCanvas?.parentElement;
+  if (!pane || pane.classList.contains('is-open') === open) return false;
+  pane.classList.toggle('is-open', open);
+  return true;
+}
+
 function drawFootprint(symbol = selectedSymbol) {
   const view = fpViews.get(symbol);
   if (!view?.ctx || !view.canvas) return;
+  const liveBtn = document.getElementById('chart-live-btn');
+  const bars = footprintBars(symbol);
+  if (syncFootPane(view, bars.length > 0)) resizeFpView(symbol);
   const W = view.canvas.width / devicePixelRatio;
   const H = view.canvas.height / devicePixelRatio;
   const ctx = view.ctx;
@@ -4914,8 +4966,6 @@ function drawFootprint(symbol = selectedSymbol) {
   ctx.fillStyle = '#0d1117';
   ctx.fillRect(0, 0, W, H);
 
-  const liveBtn = document.getElementById('chart-live-btn');
-  const bars = footprintBars(symbol);
   if (bars.length === 0) {
     liveBtn?.classList.add('hidden');
     ctx.fillStyle = '#8b949e';
@@ -4929,12 +4979,8 @@ function drawFootprint(symbol = selectedSymbol) {
 
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
-  const bottomPad = fpDeltaProgressMode === 'OFF'
-    ? 276
-    : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 366
-      : 332;
-  const chartH = H - topPad - bottomPad;
+  const plotBottom = 8;
+  const chartH = Math.max(48, H - topPad - plotBottom);
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
 
@@ -5036,7 +5082,17 @@ function drawFootprint(symbol = selectedSymbol) {
 
   view.patternHits = [];
   view.microHits = [];
+  view.footHits = [];
   view.levelEventHits = [];
+  const footCtx = view.footCtx;
+  const footY = 12;
+  if (footCtx && view.footCanvas) {
+    const fW = view.footCanvas.width / devicePixelRatio;
+    const fH = view.footCanvas.height / devicePixelRatio;
+    footCtx.clearRect(0, 0, fW, fH);
+    footCtx.fillStyle = '#0d1117';
+    footCtx.fillRect(0, 0, fW, fH);
+  }
   const patternByTime = new Map();
   for (const marker of patternMarkersFor(symbol)) {
     if (marker?.t != null) patternByTime.set(marker.t, marker);
@@ -5186,73 +5242,74 @@ function drawFootprint(symbol = selectedSymbol) {
       drawLiveLiquidityMarks(ctx, { cellX, cellW, yForPrice, rh, topPad, chartH });
     }
 
-    ctx.font = 'bold 10px JetBrains Mono, monospace';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#c6cdd8';
-    // Daily: date only. All other TFs: date + time under each candle.
-    const timeLabel = fmtFpCandleLabel(bar.time, chartTfMinutes);
-    ctx.fillText(timeLabel, cx, topPad + chartH + 14, barWidth - 2);
+    if (footCtx) {
+      footCtx.font = 'bold 10px JetBrains Mono, monospace';
+      footCtx.textAlign = 'center';
+      footCtx.fillStyle = '#c6cdd8';
+      footCtx.textBaseline = 'middle';
+      // Daily: date only. All other TFs: date + time under each candle.
+      const timeLabel = fmtFpCandleLabel(bar.time, chartTfMinutes);
+      footCtx.fillText(timeLabel, cx, footY + 14, barWidth - 2);
 
-    const footY = topPad + chartH;
-    const metrics = flowByTime.get(bar.time);
-    if (metrics) {
-      // Compact under each candle: Displacement · Delta · CVD
-      ctx.textAlign = 'center';
-      ctx.globalAlpha = metrics.incomplete ? 0.65 : 0.92;
+      const metrics = flowByTime.get(bar.time);
+      if (metrics) {
+        footCtx.textAlign = 'center';
+        footCtx.globalAlpha = metrics.incomplete ? 0.65 : 0.92;
 
-      const dispColor =
-        metrics.displacementBps > 0 ? '#86efac'
-          : metrics.displacementBps < 0 ? '#fca5a5'
-            : '#94a3b8';
-      ctx.font = '600 10px JetBrains Mono, monospace';
-      ctx.fillStyle = dispColor;
-      const dispLabel = metrics.incomplete
-        ? `${formatDispBp(metrics.displacementBps)} · LIVE`
-        : formatDispBp(metrics.displacementBps);
-      ctx.fillText(dispLabel, cx, footY + 28, barWidth - 2);
+        const dispColor =
+          metrics.displacementBps > 0 ? '#86efac'
+            : metrics.displacementBps < 0 ? '#fca5a5'
+              : '#94a3b8';
+        footCtx.font = '600 10px JetBrains Mono, monospace';
+        footCtx.fillStyle = dispColor;
+        const dispLabel = metrics.incomplete
+          ? `${formatDispBp(metrics.displacementBps)} · LIVE`
+          : formatDispBp(metrics.displacementBps);
+        footCtx.fillText(dispLabel, cx, footY + 28, barWidth - 2);
 
-      const hasFlow = metrics.dataQuality !== 'UNAVAILABLE';
-      if (hasFlow) {
-        // Δ — larger / heavier so aggression size reads first
-        ctx.font = '800 16px JetBrains Mono, monospace';
-        ctx.fillStyle = metrics.delta >= 0 ? '#86efac' : '#fca5a5';
-        const dSign = metrics.delta >= 0 ? '+' : '−';
-        ctx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 44, barWidth - 2);
-        ctx.font = '600 10px JetBrains Mono, monospace';
-        ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
-        ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
-      } else {
-        const seriesHasFlow = flowMetrics.some((m) => m.dataQuality !== 'UNAVAILABLE');
-        ctx.font = '800 16px JetBrains Mono, monospace';
-        ctx.fillStyle = '#64748b';
-        ctx.fillText('Δ —', cx, footY + 44, barWidth - 2);
-        ctx.font = '600 10px JetBrains Mono, monospace';
-        if (seriesHasFlow) {
-          ctx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
-          ctx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
+        const hasFlow = metrics.dataQuality !== 'UNAVAILABLE';
+        if (hasFlow) {
+          footCtx.font = '800 16px JetBrains Mono, monospace';
+          footCtx.fillStyle = metrics.delta >= 0 ? '#86efac' : '#fca5a5';
+          const dSign = metrics.delta >= 0 ? '+' : '−';
+          footCtx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 44, barWidth - 2);
+          footCtx.font = '600 10px JetBrains Mono, monospace';
+          footCtx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
+          footCtx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
         } else {
-          ctx.fillText('CVD —', cx, footY + 60, barWidth - 2);
+          const seriesHasFlow = flowMetrics.some((m) => m.dataQuality !== 'UNAVAILABLE');
+          footCtx.font = '800 16px JetBrains Mono, monospace';
+          footCtx.fillStyle = '#64748b';
+          footCtx.fillText('Δ —', cx, footY + 44, barWidth - 2);
+          footCtx.font = '600 10px JetBrains Mono, monospace';
+          if (seriesHasFlow) {
+            footCtx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
+            footCtx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
+          } else {
+            footCtx.fillText('CVD —', cx, footY + 60, barWidth - 2);
+          }
         }
+        footCtx.globalAlpha = 1;
       }
-      ctx.globalAlpha = 1;
-    }
 
-    const verdictHit = drawBarBattleVerdict(ctx, barBattleVerdict(bar), cx, footY + BATTLE_CHIP_Y, barWidth - 6);
-    if (verdictHit) view.microHits.push(verdictHit);
-    const runHit = drawBattleRunCount(
-      ctx,
-      noteBattleRun(symbol, bar, chartTfMinutes, selectedExchange, fpCandleTime(Date.now(), chartTfMinutes)),
-      cx,
-      footY + BATTLE_COUNT_Y,
-      barWidth - 6,
-    );
-    if (runHit) view.microHits.push(runHit);
-    const battle = barBattlePercents(bar);
-    drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
-    const replenishHit = drawBarReplenishment(ctx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
-    if (replenishHit) view.microHits.push(replenishHit);
-    const imbalanceHit = drawBarLiquidityImbalance(ctx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4);
-    if (imbalanceHit) view.microHits.push(imbalanceHit);
+      const verdictHit = drawBarBattleVerdict(footCtx, barBattleVerdict(bar), cx, footY + BATTLE_CHIP_Y, barWidth - 6);
+      if (verdictHit) view.footHits.push(verdictHit);
+      const runHit = drawBattleRunCount(
+        footCtx,
+        noteBattleRun(symbol, bar, chartTfMinutes, selectedExchange, fpCandleTime(Date.now(), chartTfMinutes)),
+        cx,
+        footY + BATTLE_COUNT_Y,
+        barWidth - 6,
+      );
+      if (runHit) view.footHits.push(runHit);
+      drawBarBattlePercents(footCtx, barBattlePercents(bar), cx, footY + BATTLE_ROWS_Y, barWidth - 6);
+      const replenishHit = drawBarReplenishment(footCtx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
+      if (replenishHit) view.footHits.push(replenishHit);
+      const imbalanceHit = drawBarLiquidityImbalance(footCtx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4);
+      if (imbalanceHit) view.footHits.push(imbalanceHit);
+      const deltaHit = drawDeltaProgressLabels(footCtx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
+      if (deltaHit?.tip) view.footHits.push(deltaHit);
+    }
     const couldnt = couldntByTime.get(bar.time);
     if (couldnt) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
@@ -5271,8 +5328,6 @@ function drawFootprint(symbol = selectedSymbol) {
       const levelHit = drawCouldntLabel(ctx, levelStory, cx, y, barWidth - 4);
       if (levelHit) view.microHits.push(levelHit);
     }
-    const deltaHit = drawDeltaProgressLabels(ctx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
-    if (deltaHit?.tip) view.microHits.push(deltaHit);
   }
 
   drawLevelEventLines(ctx, lie, visible, {
