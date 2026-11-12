@@ -49,9 +49,10 @@ body {
 
 .header-meta {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.28rem;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.7rem;
   width: 100%;
   min-width: 0;
 }
@@ -64,8 +65,16 @@ body {
   align-items: center;
   justify-content: flex-end;
   gap: 0.45rem 0.7rem;
-  width: 100%;
+  width: auto;
   min-width: 0;
+}
+
+.header-tools {
+  flex: 1 1 auto;
+}
+
+.header-readout {
+  flex: 0 1 auto;
 }
 
 .header-tools > * {
@@ -91,9 +100,12 @@ body {
   font-family: var(--mono);
 }
 .fuel-gauge [data-fuel-label] {
+  flex: 0 0 6.6rem;
+  width: 6.6rem;
   font-size: 0.72rem;
   font-weight: 700;
   color: var(--muted);
+  text-align: right;
   white-space: nowrap;
 }
 .fuel-gauge.fuel-buy [data-fuel-label] { color: #86efac; }
