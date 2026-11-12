@@ -158,6 +158,29 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, pushed, priors, null)?.state).not.toBe(5);
   });
 
+  it('6: the buy stops progressing, so the sell is open before the down candles', () => {
+    const movedSell = read({ deltaSide: 'SELL', prog: 0.99, strength: 'STRONG', ...closedLow });
+    const prev = read({ deltaSide: 'BUY', prog: 0.87, strength: 'STRONG', agg: 0.18, pas: 0.85, chip: 'BUYERS', ...closedHigh });
+    const cur = read({ deltaSide: 'BUY', prog: -0.14, strength: 'NORMAL', agg: 0.18, pas: -0.09 });
+    const priors = [movedSell, movedSell, read(), read(), read(), prev];
+    expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'sell', state: 6 });
+  });
+
+  it('6: the sell stops progressing, so the buy is open before the next candles', () => {
+    const movedBuy = read({ deltaSide: 'BUY', prog: 0.87, strength: 'STRONG', ...closedHigh });
+    const prev = read({ deltaSide: 'SELL', prog: 0.96, strength: 'STRONG', agg: -0.27, pas: -0.88, chip: 'SELLERS', ...closedLow });
+    const cur = read({ deltaSide: 'SELL', prog: 0.24, strength: 'NORMAL', agg: -0.05, pas: -0.29 });
+    const priors = [movedBuy, read(), read(), read(), read(), prev];
+    expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 6 });
+  });
+
+  it('6: a side that is still progressing is left alone', () => {
+    const prev = read({ deltaSide: 'SELL', prog: 0.96, strength: 'STRONG', agg: -0.27, pas: -0.5, ...closedLow });
+    const cur = read({ deltaSide: 'SELL', prog: 0.76, strength: 'NORMAL', agg: -0.15, pas: -0.4, ...closedLow });
+    const priors = [read({ deltaSide: 'BUY', prog: 0.8, ...closedHigh }), read(), read(), read(), read(), prev];
+    expect(decideEntry(cur, prev, priors, null)?.state).not.toBe(6);
+  });
+
   it('4: the low was hunted, then price responded on ordinary delta', () => {
     const prev = read({ hunt: 'LOW' });
     const cur = read({ strength: 'NORMAL', deltaSide: 'BUY', prog: 0.9, ...closedHigh });
@@ -274,7 +297,7 @@ describe('entryMarks', () => {
   it('produces marks on synthetic data', () => {
     expect(full.size).toBeGreaterThan(5);
     for (const mark of full.values()) {
-      expect(mark.short).toMatch(/^[BS][1-5]$/);
+      expect(mark.short).toMatch(/^[BS][1-6]$/);
     }
   });
 

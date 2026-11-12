@@ -1,5 +1,5 @@
 /**
- * Candle entry script: marks closed candles as BUY/SELL 1–5.
+ * Candle entry script: marks closed candles as BUY/SELL 1–6.
  *
  * Ported from public/app.js so the browser chart, the alerts and the backtest
  * all run the same rules. Inputs are closed footprint bars (quote notional
@@ -23,7 +23,7 @@ export const BATTLE_CLOSE_WIN = 0.55;
 /** Buy/sell power split closer than this = PAIR. */
 export const BATTLE_EVEN_GAP_PCT = 6;
 
-export type EntryState = 1 | 2 | 3 | 4 | 5;
+export type EntryState = 1 | 2 | 3 | 4 | 5 | 6;
 export type EntrySide = 'buy' | 'sell';
 
 export const ENTRY_DETAIL: Record<EntryState, string> = {
@@ -32,6 +32,7 @@ export const ENTRY_DETAIL: Record<EntryState, string> = {
   3: 'effort flipped, book refilled, price stopped',
   4: 'failed side, response held',
   5: 'side tried, book held, other side took it',
+  6: 'effort stopped, open before the move',
 };
 
 export interface EntryBar {
@@ -325,6 +326,7 @@ function triedButCouldnt(priors: EntryRead[], side: 'SELL' | 'BUY'): boolean {
  * 3 that side's effort was accepted in the setup, this candle flips and the book refills.
  * 4 that side already failed in the setup, then this candle's response holds.
  * 5 that side tried across the setup and the book held, then the other side takes it.
+ * 6 that side's effort just stopped progressing, so the other side is opened before its candles start.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -401,6 +403,17 @@ export function decideEntry(
   );
   if (!prevLostSame && sellersLost && countDelta(recent, 'SELL') >= 3) return { side: 'buy', state: 1 };
   if (!prevLostSame && buyersLost && countDelta(recent, 'BUY') >= 3) return { side: 'sell', state: 1 };
+
+  // The side that just moved does not progress on this candle. Open the other side
+  // here, before that side's move candles start. The other side must already have
+  // moved once inside the setup.
+  if (prev && prevSide && cur.deltaSide === prevSide && cur.prog != null && cur.prog <= ENTRY_LITTLE_PROG) {
+    const stalledSide = prevSide;
+    const joining = stalledSide === 'BUY' ? 'SELL' : 'BUY';
+    const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
+    const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
+    if (prevMoved && otherAlreadyMoved) return { side: joining === 'BUY' ? 'buy' : 'sell', state: 6 };
+  }
   return null;
 }
 

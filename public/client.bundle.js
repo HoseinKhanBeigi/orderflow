@@ -16557,7 +16557,8 @@ var process = globalThis.process || { env: {} };
     2: "high effort accepted, book did not refill",
     3: "effort flipped, book refilled, price stopped",
     4: "failed side, response held",
-    5: "side tried, book held, other side took it"
+    5: "side tried, book held, other side took it",
+    6: "effort stopped, open before the move"
   };
   function barBattleVerdict(bar) {
     const buy = Math.max(0, bar.totalBuy ?? 0);
@@ -16793,6 +16794,13 @@ var process = globalThis.process || { env: {} };
     const prevLostSame = prev && (buyersLost && prev.highDelta && prev.deltaSide === "BUY" && prev.upside === "ASKS_HOLD" || sellersLost && prev.highDelta && prev.deltaSide === "SELL" && prev.downside === "BIDS_HOLD");
     if (!prevLostSame && sellersLost && countDelta(recent, "SELL") >= 3) return { side: "buy", state: 1 };
     if (!prevLostSame && buyersLost && countDelta(recent, "BUY") >= 3) return { side: "sell", state: 1 };
+    if (prev && prevSide && cur.deltaSide === prevSide && cur.prog != null && cur.prog <= ENTRY_LITTLE_PROG) {
+      const stalledSide = prevSide;
+      const joining = stalledSide === "BUY" ? "SELL" : "BUY";
+      const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
+      const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
+      if (prevMoved && otherAlreadyMoved) return { side: joining === "BUY" ? "buy" : "sell", state: 6 };
+    }
     return null;
   }
   function lower(s) {
