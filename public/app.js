@@ -1279,6 +1279,7 @@ const fpKlineSeed = {};
 let fpKlineReq = 0;
 let fpHistoryReq = 0;
 let fpHistoryEnabled = false;
+const fpHistoryLiveFrom = {};
 let fpRetentionDays = 30;
 /** Closed candles to keep on screen. A little past 10 days so the oldest bar is still inside the window. */
 const CANDLE_HISTORY_DAYS = 11;
@@ -1803,6 +1804,9 @@ function cloneFpBar(bar) {
     sellTrades: bar.sellTrades ?? 0,
     largestBuy: bar.largestBuy ?? 0,
     largestSell: bar.largestSell ?? 0,
+    hasFootprint: bar.hasFootprint,
+    flowQuality: bar.flowQuality,
+    flowSource: bar.flowSource,
     levels,
   };
 }
@@ -1885,7 +1889,9 @@ async function loadFootprintHistory() {
       enabled = true;
       const map = new Map();
       for (const w of data.bars ?? []) map.set(w.t, wireBarToFp(w));
-      fpHistoryStore[historyKey(coin.symbol, tf, exchange)] = map;
+      const hKey = historyKey(coin.symbol, tf, exchange);
+      fpHistoryStore[hKey] = map;
+      if (Number.isFinite(data.liveFrom)) fpHistoryLiveFrom[hKey] = data.liveFrom;
       fpPatternStore[historyKey(coin.symbol, tf, exchange)] = {
         currentLabel: data.patterns?.currentLabel ?? null,
         primary: data.patterns?.primary ?? null,
@@ -2111,12 +2117,13 @@ function mergeFootprintBar(target, src) {
   }
 }
 
-function aggregateFrom1m(symbol, tfMinutes) {
+function aggregateFrom1m(symbol, tfMinutes, minTime = 0) {
   const venues = selectedExchange === 'all' ? activeExchanges() : [selectedExchange];
   const out = new Map();
   const bucket = tfMinutes * 60;
   for (const ex of venues) {
     for (const bar of getFootprintStore(symbol, 1, ex).values()) {
+      if (bar.time < minTime) continue;
       const t = bar.time - (bar.time % bucket);
       if (!out.has(t)) {
         out.set(t, {
@@ -2163,7 +2170,21 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
   const liveOpenT = fpCandleTime(Date.now(), tf);
   const out = new Map();
   for (const bar of hist.values()) out.set(bar.time, cloneFpBar(bar));
+  // History already rolled up every closed minute. Only minutes at or after
+  // its cutoff are still ours to add, so the open candle keeps stacking
+  // without counting those minutes twice.
+  const hKey = historyKey(symbol, tf, selectedExchange);
+  const addFrom = fpHistoryEnabled && Number.isFinite(fpHistoryLiveFrom[hKey]) ? fpHistoryLiveFrom[hKey] : 0;
+  const liveAdd = tf === 1
+    ? [...live.values()].filter((bar) => bar.time >= addFrom)
+    : [...aggregateFrom1m(symbol, tf, addFrom).values()];
   for (const bar of live.values()) {
+    if (bar.time === liveOpenT) continue;
+    if (!out.has(bar.time)) out.set(bar.time, cloneFpBar(bar));
+  }
+  for (const bar of liveAdd) {
+    if (bar.time !== liveOpenT) continue;
+    if ((bar.totalBuy + bar.totalSell) <= 0) continue;
     if (!out.has(bar.time)) out.set(bar.time, cloneFpBar(bar));
     else mergeFootprintBar(out.get(bar.time), bar);
   }
@@ -2197,6 +2218,23 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     }
   }
   return [...out.values()].sort((a, b) => a.time - b.time);
+}
+
+/** Keep the open candle and the one before it, so the stack survives each minute. */
+function liveRetainFrom(newestSec, tf = chartTfMinutes) {
+  const span = Math.max(60, tf * 60);
+  const openT = newestSec - (newestSec % span);
+  return openT - span;
+}
+
+function rememberLiveMinute(symbol, exchange, wireBar) {
+  if (!wireBar || wireBar.t == null) return;
+  const store = getFootprintStore(symbol, 1, exchange);
+  const keepFrom = liveRetainFrom(wireBar.t);
+  for (const key of [...store.keys()]) {
+    if (key < keepFrom) store.delete(key);
+  }
+  store.set(wireBar.t, wireBarToFp(wireBar));
 }
 
 function fpCandleTime(ts, tf = chartTfMinutes) {
@@ -5822,9 +5860,9 @@ function escapeHtml(s) {
 }
 
 /**
- * Applies the server's in-progress 1m bar. Only the current minute is kept:
- * once it closes it belongs to persisted history, so we refetch instead of
- * holding it locally and counting it twice.
+ * Applies the server's in-progress 1m bar and keeps every minute of the
+ * candle that is still open, so aggressive volume stays stacked on that
+ * candle instead of resetting until the candle closes.
  */
 function applyLiveFootprint(ev) {
   if (!ev?.symbol || !fpViews.has(ev.symbol)) return;
@@ -5832,19 +5870,10 @@ function applyLiveFootprint(ev) {
   const bars = ev.bars ?? [];
   if (!bars.length) return;
 
-  const minute = bars[0].bar.t;
-  if (minute !== fpLastLiveMinuteBySymbol[ev.symbol]) {
-    fpLastLiveMinuteBySymbol[ev.symbol] = minute;
-    const prefix = `${footprintMarket()}_${ev.symbol}_`;
-    for (const key of Object.keys(footprintStore)) {
-      if (key.startsWith(prefix) && key.endsWith('_1')) delete footprintStore[key];
-    }
-  }
+  fpLastLiveMinuteBySymbol[ev.symbol] = bars[0].bar.t;
 
   for (const { exchange, bar } of bars) {
-    const store = getFootprintStore(ev.symbol, 1, exchange);
-    store.clear();
-    store.set(bar.t, wireBarToFp(bar));
+    rememberLiveMinute(ev.symbol, exchange, bar);
     ingestAlertBar(ev.symbol, exchange, bar);
     noteLivePrice(ev.symbol, bar.c);
   }
@@ -5860,15 +5889,7 @@ function applyFootprintTick(ev) {
   const touched = new Set();
   for (const row of rows) {
     if (!row?.symbol || !row?.bar || !row?.exchange) continue;
-    const store = getFootprintStore(row.symbol, 1, row.exchange);
-    const t = row.bar.t;
-    // Keep only the live minute in the in-progress store.
-    if (!store.has(t) || store.size > 1) {
-      for (const key of [...store.keys()]) {
-        if (key !== t) store.delete(key);
-      }
-    }
-    store.set(t, wireBarToFp(row.bar));
+    rememberLiveMinute(row.symbol, row.exchange, row.bar);
     ingestAlertBar(row.symbol, row.exchange, row.bar);
     noteLivePrice(row.symbol, row.bar.c);
     touched.add(row.symbol);
