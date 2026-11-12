@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-fuel-pos-v1" />
+  <link rel="stylesheet" href="/styles.css?v=fp-fuel-gauge-v1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
@@ -26,7 +26,11 @@
         </button>
       </div>
       <div class="header-readout">
-        <div id="market-fuel" class="symbol-label" title="Active executable pressure. Not a price forecast.">Fuel —</div>
+        <div id="market-fuel" class="fuel-gauge" title="Active executable pressure. Not a price forecast.">
+          <span data-fuel-label>Fuel</span>
+          <span class="fuel-gauge-track" aria-hidden="true"><span data-fuel-needle></span></span>
+          <span data-fuel-num>—</span>
+        </div>
         <div id="trade-decision" class="trade-decision wait" title="Simple attack + defense + price confirm">WAIT</div>
       </div>
     </div>
@@ -173,6 +177,6 @@
   </footer>
 
   <script src="/client.bundle.js?v=entry-before-move-v1"></script>
-  <script src="/app.js?v=fp-fuel-context-v1" type="module"></script>
+  <script src="/app.js?v=fp-fuel-gauge-v1" type="module"></script>
 </body>
 </html>

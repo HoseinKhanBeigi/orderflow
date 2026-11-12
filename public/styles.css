@@ -81,8 +81,50 @@ body {
 
 #market-fuel {
   flex: 0 0 auto;
+}
+
+.fuel-gauge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.fuel-gauge [data-fuel-label] {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted);
   white-space: nowrap;
+}
+.fuel-gauge.fuel-buy [data-fuel-label] { color: #86efac; }
+.fuel-gauge.fuel-sell [data-fuel-label] { color: #fca5a5; }
+.fuel-gauge.fuel-both [data-fuel-label] { color: #fbbf24; }
+.fuel-gauge-track {
+  position: relative;
+  width: 7.5rem;
+  height: 8px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #ef4444 0%, #3a2428 42%, #2a3140 50%, #1a3328 58%, #22c55e 100%);
+  flex: 0 0 auto;
+}
+.fuel-gauge-track [data-fuel-needle] {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 3px;
+  height: 14px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: #eef0f3;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  transition: left 0.7s ease;
+}
+.fuel-gauge [data-fuel-num] {
+  font-size: 0.68rem;
+  color: var(--muted);
+  min-width: 2.2rem;
   text-align: right;
+  white-space: nowrap;
 }
 
 .page-foot {

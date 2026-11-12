@@ -655,23 +655,66 @@ function updateUi() {
   renderLiquidityResponse();
 }
 
+const FUEL_STATE_LABEL = {
+  LOW_FUEL: 'Low fuel',
+  BALANCED_FUEL: 'Balanced',
+  UPSIDE_FUEL_BUILDING: 'Buy building',
+  DOWNSIDE_FUEL_BUILDING: 'Sell building',
+  STRONG_UPSIDE_FUEL: 'Strong buy',
+  STRONG_DOWNSIDE_FUEL: 'Strong sell',
+  TWO_SIDED_HIGH_FUEL: 'Both sides',
+  FORCED_BUY_FUEL: 'Forced buy',
+  FORCED_SELL_FUEL: 'Forced sell',
+};
+
+let fuelGauge = { symbol: '', value: null };
+
 function renderMarketFuel(summary) {
   const el = document.getElementById('market-fuel');
   if (!el) return;
+  const label = el.querySelector('[data-fuel-label]');
+  const needle = el.querySelector('[data-fuel-needle]');
+  const num = el.querySelector('[data-fuel-num]');
+  if (!label || !needle || !num) return;
   const fuel = summary?.windows?.['1m']?.marketFuel ?? summary?.windows?.['10s']?.marketFuel ?? null;
-  if (!fuel || fuel.dataStatus === 'NO_DATA' || fuel.upsideFuel == null) {
-    el.textContent = 'Fuel —';
+  if (!fuel || fuel.dataStatus === 'NO_DATA' || fuel.upsideFuel == null || fuel.fuelImbalance == null) {
+    fuelGauge = { symbol: summary?.symbol ?? '', value: null };
+    el.className = 'fuel-gauge';
+    label.textContent = 'Fuel';
+    needle.style.left = '50%';
+    num.textContent = '—';
+    el.title = 'Fuel waiting for trades';
     return;
   }
+  if (fuelGauge.symbol !== summary.symbol) fuelGauge = { symbol: summary.symbol, value: null };
+  const target = Math.max(-100, Math.min(100, fuel.fuelImbalance));
+  fuelGauge.value = fuelGauge.value == null ? target : fuelGauge.value + (target - fuelGauge.value) * 0.16;
+  const shown = fuelGauge.value;
+  const side = fuel.state === 'FORCED_BUY_FUEL' || fuel.state === 'STRONG_UPSIDE_FUEL' || fuel.state === 'UPSIDE_FUEL_BUILDING'
+    ? 'fuel-buy'
+    : fuel.state === 'FORCED_SELL_FUEL' || fuel.state === 'STRONG_DOWNSIDE_FUEL' || fuel.state === 'DOWNSIDE_FUEL_BUILDING'
+      ? 'fuel-sell'
+      : fuel.state === 'TWO_SIDED_HIGH_FUEL'
+        ? 'fuel-both'
+        : '';
+  el.className = `fuel-gauge ${side}`.trim();
+  label.textContent = FUEL_STATE_LABEL[fuel.state] || 'Balanced';
+  needle.style.left = `${((shown + 100) / 200) * 100}%`;
+  const rounded = Math.round(shown);
+  num.textContent = `${rounded > 0 ? '+' : ''}${rounded}`;
   const up = Math.round(fuel.upsideFuel);
   const down = Math.round(fuel.downsideFuel ?? 0);
-  const imb = Math.round(fuel.fuelImbalance ?? up - down);
-  const dir = imb >= 8 ? 'BUY' : imb <= -8 ? 'SELL' : 'BALANCED';
-  const upArrow = (fuel.upsideFuelVelocity ?? 0) > 1 ? '↑' : (fuel.upsideFuelVelocity ?? 0) < -1 ? '↓' : '·';
-  const downArrow = (fuel.downsideFuelVelocity ?? 0) > 1 ? '↑' : (fuel.downsideFuelVelocity ?? 0) < -1 ? '↓' : '·';
-  const organic = fuel.organicUpsideFuel == null ? '' : ` · organic ${Math.round(fuel.organicUpsideFuel)}`;
-  const forced = fuel.forcedUpsideFuel == null ? '' : ` · forced ${Math.round(fuel.forcedUpsideFuel)}`;
-  el.textContent = `Fuel UP ${up} ${upArrow}  DOWN ${down} ${downArrow}  ${imb >= 0 ? '+' : ''}${imb} ${dir}${organic}${forced}`;
+  const orgUp = fuel.organicUpsideFuel == null ? '—' : Math.round(fuel.organicUpsideFuel);
+  const orgDown = fuel.organicDownsideFuel == null ? '—' : Math.round(fuel.organicDownsideFuel);
+  const forcedUp = fuel.forcedUpsideFuel == null ? '—' : Math.round(fuel.forcedUpsideFuel);
+  const forcedDown = fuel.forcedDownsideFuel == null ? '—' : Math.round(fuel.forcedDownsideFuel);
+  el.title = [
+    'Fuel for the last minute. The bar eases so it does not jump every trade.',
+    `Buy fuel ${up} · sell fuel ${down}`,
+    `Organic buy ${orgUp} · organic sell ${orgDown}`,
+    `Forced buy ${forcedUp} · forced sell ${forcedDown}`,
+    'Left is sell fuel. Right is buy fuel. The number is buy minus sell.',
+  ].join('\n');
 }
 
 function renderTradeDecision(summary) {
