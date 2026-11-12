@@ -3772,6 +3772,67 @@ const BATTLE_CHIP_Y = 82;
 const BATTLE_COUNT_Y = 100;
 const BATTLE_ROWS_Y = 118;
 const BATTLE_ROW_H = 15;
+const REPLENISH_ROWS_Y = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 8;
+
+/**
+ * Resting liquidity that had to come back during the candle.
+ * Asks replenished = aggressive buys that did not lift the close.
+ * Bids replenished = aggressive sells that did not push the close down.
+ */
+function barReplenishment(bar) {
+  const buy = Math.max(0, bar.totalBuy ?? 0);
+  const sell = Math.max(0, bar.totalSell ?? 0);
+  if (buy + sell <= 0) return null;
+  const range = bar.high - bar.low;
+  const closePos = range > 0 ? Math.min(1, Math.max(0, (bar.close - bar.low) / range)) : 0.5;
+  const ask = buy * (1 - closePos);
+  const bid = sell * closePos;
+  return {
+    ask,
+    bid,
+    askPct: buy > 0 ? Math.round((ask / buy) * 100) : 0,
+    bidPct: sell > 0 ? Math.round((bid / sell) * 100) : 0,
+  };
+}
+
+function drawBarReplenishment(ctx, repl, cx, y0, maxW) {
+  if (!repl) return null;
+  const narrow = maxW < 92;
+  const rows = [
+    {
+      text: narrow ? `A repl ${fmtVolShort(repl.ask)}` : `asks repl ${fmtVolShort(repl.ask)}`,
+      color: '#fbbf24',
+    },
+    {
+      text: narrow ? `B repl ${fmtVolShort(repl.bid)}` : `bids repl ${fmtVolShort(repl.bid)}`,
+      color: '#60a5fa',
+    },
+  ];
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 10px JetBrains Mono, monospace';
+  rows.forEach((row, i) => {
+    const y = y0 + i * BATTLE_ROW_H;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.strokeText(row.text, cx, y, maxW - 2);
+    ctx.fillStyle = row.color;
+    ctx.fillText(row.text, cx, y, maxW - 2);
+  });
+  ctx.restore();
+  return {
+    x0: cx - maxW / 2,
+    x1: cx + maxW / 2,
+    y0: y0 - 8,
+    y1: y0 + BATTLE_ROW_H + 8,
+    tip: [
+      'Liquidity replenishment',
+      `Asks replenished ${fmtVolShort(repl.ask)} · ${repl.askPct}% of aggressive buys did not lift the close`,
+      `Bids replenished ${fmtVolShort(repl.bid)} · ${repl.bidPct}% of aggressive sells did not push the close down`,
+    ].join('\n'),
+  };
+}
 
 function battleRowLabel(row, narrow) {
   const name = narrow
@@ -4343,7 +4404,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 6;
+const DELTA_LABEL_FIRST_OFFSET = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -4749,10 +4810,10 @@ function drawFootprint(symbol = selectedSymbol) {
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
   const bottomPad = fpDeltaProgressMode === 'OFF'
-    ? 208
+    ? 240
     : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 298
-      : 264;
+      ? 330
+      : 296;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -5068,6 +5129,8 @@ function drawFootprint(symbol = selectedSymbol) {
     if (runHit) view.microHits.push(runHit);
     const battle = barBattlePercents(bar);
     drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
+    const replenishHit = drawBarReplenishment(ctx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
+    if (replenishHit) view.microHits.push(replenishHit);
     const couldnt = couldntByTime.get(bar.time);
     if (couldnt) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
