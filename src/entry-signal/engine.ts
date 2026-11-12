@@ -11,6 +11,12 @@ export const ENTRY_LITTLE_PROG = 0.25;
 export const ENTRY_REAL_PROG = 0.5;
 export const ENTRY_RESPONSE_PROG = 0.8;
 export const ENTRY_PRIOR_BARS = 6;
+/** A state needs at least this many of those candles before the signal candle counts. */
+export const ENTRY_CONTEXT_MIN = 5;
+/** Aggressive imbalance has to lean at least this far, or the tape is still two-sided. */
+export const ENTRY_AGG_LEAN = 0.08;
+/** A response can carry a little refill against it. Past this, the book absorbed the move. */
+export const ENTRY_PAS_GIVE = 0.2;
 
 /** Close position in range at or above this = buyers won the close. */
 export const BATTLE_CLOSE_WIN = 0.55;
@@ -21,11 +27,11 @@ export type EntryState = 1 | 2 | 3 | 4 | 5;
 export type EntrySide = 'buy' | 'sell';
 
 export const ENTRY_DETAIL: Record<EntryState, string> = {
-  1: 'high delta, low response',
-  2: 'high delta, high response',
-  3: 'effort flipped, price stopped',
-  4: 'failed side, price responded',
-  5: 'side tried, could not push',
+  1: 'high effort absorbed, book refilled',
+  2: 'high effort accepted, book did not refill',
+  3: 'effort flipped, book refilled, price stopped',
+  4: 'failed side, response held',
+  5: 'side tried, book held, other side took it',
 };
 
 export interface EntryBar {
@@ -68,6 +74,14 @@ export interface EntryRead {
   deltaSide: string;
   highDelta: boolean;
   hunt: 'HIGH' | 'LOW' | null;
+  /** (buy − sell) / (buy + sell). Positive means aggressive buyers. Null when volume is missing. */
+  agg: number | null;
+  /** (bids replenished − asks replenished) / both. Positive means resting bids are heavier. */
+  pas: number | null;
+  /** Aggressive buys that did not lift the close. */
+  askRepl: number | null;
+  /** Aggressive sells that did not push the close down. */
+  bidRepl: number | null;
 }
 
 export interface EntrySignal {
@@ -146,6 +160,25 @@ function entryChip(verdict: BattleVerdict | null): EntryChip {
   return 'PAIR';
 }
 
+/** Aggressive imbalance and the bid/ask replenishment behind passive imbalance. */
+export function barPressure(bar: EntryBar): Pick<EntryRead, 'agg' | 'pas' | 'askRepl' | 'bidRepl'> {
+  const buy = Math.max(0, bar.totalBuy ?? 0);
+  const sell = Math.max(0, bar.totalSell ?? 0);
+  const vol = buy + sell;
+  if (vol <= 0) return { agg: null, pas: null, askRepl: null, bidRepl: null };
+  const range = bar.high - bar.low;
+  const closePos = range > 0 ? Math.min(1, Math.max(0, (bar.close - bar.low) / range)) : 0.5;
+  const askRepl = buy * (1 - closePos);
+  const bidRepl = sell * closePos;
+  const repl = askRepl + bidRepl;
+  return {
+    agg: (buy - sell) / vol,
+    pas: repl > 0 ? (bidRepl - askRepl) / repl : 0,
+    askRepl,
+    bidRepl,
+  };
+}
+
 export function barEntryRead(bars: EntryBar[], index: number, progress: EntryProgressRow[]): EntryRead {
   const bar = bars[index]!;
   const row = progress[index] ?? {};
@@ -164,12 +197,89 @@ export function barEntryRead(bars: EntryBar[], index: number, progress: EntryPro
     deltaSide: row.deltaSide ?? 'NONE',
     highDelta: strength === 'STRONG' || strength === 'EXTREME',
     hunt: prior.length ? stopHuntKind(bar, prior) : null,
+    ...barPressure(bar),
   };
+}
+
+type EffortSide = 'BUY' | 'SELL';
+
+function known(n: number | null | undefined): n is number {
+  return n != null && Number.isFinite(n);
+}
+
+/** The tape actually belongs to that side, not a large delta with both sides active. */
+function aggLeans(row: EntryRead, side: EffortSide): boolean {
+  if (!known(row.agg)) return true;
+  return side === 'BUY' ? row.agg >= ENTRY_AGG_LEAN : row.agg <= -ENTRY_AGG_LEAN;
+}
+
+/** Resting liquidity did not refill against this side. Bids heavier agrees with a buy. */
+function passiveAgrees(row: EntryRead, side: EffortSide): boolean {
+  if (!known(row.pas)) return true;
+  return side === 'BUY' ? row.pas >= 0 : row.pas <= 0;
+}
+
+/**
+ * The response can stand a little refill against it.
+ * A buy still holds when asks are not more than ENTRY_PAS_GIVE heavier than bids.
+ */
+function responseHeld(row: EntryRead, side: EffortSide): boolean {
+  if (!known(row.pas)) return true;
+  return side === 'BUY' ? row.pas >= -ENTRY_PAS_GIVE : row.pas <= ENTRY_PAS_GIVE;
+}
+
+/** The other book refilled against this side's aggression. */
+function passiveAbsorbs(row: EntryRead, side: EffortSide): boolean {
+  if (known(row.pas)) return side === 'BUY' ? row.pas < 0 : row.pas > 0;
+  return side === 'BUY' ? row.upside === 'ASKS_HOLD' : row.downside === 'BIDS_HOLD';
+}
+
+/** The setup is the last 6 candles. Fewer than 5 means the state has no context yet. */
+function setupContext(priors: EntryRead[]): EntryRead[] | null {
+  const recent = priors.slice(-ENTRY_PRIOR_BARS);
+  return recent.length >= ENTRY_CONTEXT_MIN ? recent : null;
+}
+
+function countDelta(recent: EntryRead[], side: EffortSide): number {
+  let n = 0;
+  for (const row of recent) if (row.deltaSide === side) n += 1;
+  return n;
+}
+
+function countWins(recent: EntryRead[], outcome: 'BUYERS_WIN' | 'SELLERS_WIN'): number {
+  let n = 0;
+  for (const row of recent) {
+    if (outcome === 'BUYERS_WIN' ? row.upside === 'BUYERS_WIN' : row.downside === 'SELLERS_WIN') n += 1;
+  }
+  return n;
+}
+
+/**
+ * The other side already failed inside the 6-candle setup.
+ * One trap or one winning candle is not enough; the window has to show it twice,
+ * and the candle just before the signal still belongs to that failure.
+ */
+function failedSideShown(recent: EntryRead[], chip: 'SELLERS' | 'BUYERS', trap: 'HIGH' | 'LOW'): boolean {
+  let n = 0;
+  for (const row of recent) {
+    const hunted = row.hunt === trap;
+    const owned = chip === 'SELLERS'
+      ? row.chip === 'SELLERS' || row.downside === 'SELLERS_WIN'
+      : row.chip === 'BUYERS' || row.upside === 'BUYERS_WIN';
+    if (hunted || owned) n += 1;
+  }
+  if (n < 2) return false;
+  const prev = recent[recent.length - 1];
+  if (!prev) return false;
+  if (prev.hunt === trap) return true;
+  return chip === 'SELLERS'
+    ? prev.chip === 'SELLERS' || prev.downside === 'SELLERS_WIN' || prev.chip === 'PAIR'
+    : prev.chip === 'BUYERS' || prev.upside === 'BUYERS_WIN' || prev.chip === 'PAIR';
 }
 
 function priorsOwn(priors: EntryRead[], chip: 'BUYERS' | 'SELLERS'): boolean {
   const recent = priors.slice(-ENTRY_PRIOR_BARS);
-  if (recent.length < 2) return false;
+  if (recent.length < ENTRY_CONTEXT_MIN) return false;
   const other = chip === 'SELLERS' ? 'BUYERS' : 'SELLERS';
   let mine = 0;
   let theirs = 0;
@@ -180,30 +290,14 @@ function priorsOwn(priors: EntryRead[], chip: 'BUYERS' | 'SELLERS'): boolean {
   return mine >= 2 && mine > theirs;
 }
 
-function otherSideFailed(
-  prev: EntryRead | null,
-  priors: EntryRead[],
-  failedChip: EntryChip,
-  trapHunt: 'HIGH' | 'LOW',
-): boolean {
-  if (!prev) return false;
-  if (prev.hunt === trapHunt) return true;
-  if (prev.chip !== 'PAIR' && prev.strength !== 'WEAK') return false;
-  let n = 0;
-  for (const row of priors.slice(0, -1).slice(-ENTRY_PRIOR_BARS)) {
-    if (row.chip === failedChip) n += 1;
-  }
-  return n >= 2;
-}
-
 /**
- * A side tried on the recent candles and did not keep extending.
- * At least 3 of the last 4 candles are that delta, at least 2 of those failed
- * to both move price and win the close, and the candle just before this one
- * is still that failed attempt.
+ * A side tried across the 6-candle setup and the book refilled against them.
+ * At least 3 of those candles are that delta, at least 2 failed to extend
+ * or got absorbed, and the candle just before this one still shows that absorption.
  */
 function triedButCouldnt(priors: EntryRead[], side: 'SELL' | 'BUY'): boolean {
-  const recent = priors.slice(-4);
+  const recent = priors.slice(-ENTRY_PRIOR_BARS);
+  if (recent.length < ENTRY_CONTEXT_MIN) return false;
   let tries = 0;
   let failed = 0;
   for (const row of recent) {
@@ -211,23 +305,26 @@ function triedButCouldnt(priors: EntryRead[], side: 'SELL' | 'BUY'): boolean {
     tries += 1;
     const extended = row.prog != null && row.prog >= ENTRY_REAL_PROG;
     const won = side === 'SELL' ? row.downside === 'SELLERS_WIN' : row.upside === 'BUYERS_WIN';
-    if (!extended || !won) failed += 1;
+    const refilled = known(row.pas) && passiveAbsorbs(row, side);
+    if (!extended || !won || refilled) failed += 1;
   }
   if (tries < 3 || failed < 2) return false;
   const prev = priors[priors.length - 1];
   if (!prev || prev.deltaSide !== side) return false;
+  if (known(prev.pas)) return passiveAbsorbs(prev, side);
   const prevExtended = prev.prog != null && prev.prog >= ENTRY_REAL_PROG;
   const prevWon = side === 'SELL' ? prev.downside === 'SELLERS_WIN' : prev.upside === 'BUYERS_WIN';
   return !prevExtended || !prevWon;
 }
 
 /**
- * One entry from the last closed candle.
- * 1 high delta, low response, and that side did not win the close → fade it.
- * 2 high delta and a real response, and the earlier candles already own that side.
- * 3 the previous candle's effort was accepted, this candle flips the delta and price stops.
- * 4 the other side failed, then this candle responds on ordinary delta.
- * 5 a side tried across the recent candles and could not keep pushing, then this candle takes the other side.
+ * One entry from the last closed candle. The 6 candles before it are read first.
+ * Effort is the aggressive imbalance. The book is passive imbalance and A/B replenishment.
+ * 1 that side was already pushing, then this candle's effort is absorbed.
+ * 2 that side already owns the setup, then this candle's effort is accepted.
+ * 3 that side's effort was accepted in the setup, this candle flips and the book refills.
+ * 4 that side already failed in the setup, then this candle's response holds.
+ * 5 that side tried across the setup and the book held, then the other side takes it.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -235,71 +332,95 @@ export function decideEntry(
   priors: EntryRead[],
   prevSignal: { side: EntrySide } | null,
 ): EntrySignal | null {
-  if (!cur) return null;
+  const recent = cur ? setupContext(priors) : null;
+  if (!cur || !recent) return null;
   const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
   const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
+  const prevSide = prev?.deltaSide === 'BUY' || prev?.deltaSide === 'SELL' ? prev.deltaSide : null;
+  const prevAccepted = !!prev && !!prevSide && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG
+    && aggLeans(prev, prevSide) && passiveAgrees(prev, prevSide)
+    && countDelta(recent, prevSide) >= 2;
 
-  if (prev && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG && cur.highDelta && little) {
-    if (prev.deltaSide === 'SELL' && cur.deltaSide === 'BUY') return { side: 'buy', state: 3 };
-    if (prev.deltaSide === 'BUY' && cur.deltaSide === 'SELL') return { side: 'sell', state: 3 };
+  if (prevAccepted && cur.highDelta && little) {
+    if (prevSide === 'SELL' && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && passiveAbsorbs(cur, 'BUY')) {
+      return { side: 'buy', state: 3 };
+    }
+    if (prevSide === 'BUY' && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && passiveAbsorbs(cur, 'SELL')) {
+      return { side: 'sell', state: 3 };
+    }
   }
 
   if (cur.highDelta && real) {
-    const chip = cur.deltaSide === 'BUY' ? 'BUYERS' : cur.deltaSide === 'SELL' ? 'SELLERS' : null;
+    const effort = cur.deltaSide === 'BUY' ? 'BUY' : cur.deltaSide === 'SELL' ? 'SELL' : null;
+    const chip = effort === 'BUY' ? 'BUYERS' : effort === 'SELL' ? 'SELLERS' : null;
     const side: EntrySide = chip === 'BUYERS' ? 'buy' : 'sell';
     const continued = chip && prevSignal && prevSignal.side === side;
-    if (chip && cur.chip === chip && priorsOwn(priors, chip) && !continued) {
+    if (chip && effort && cur.chip === chip && priorsOwn(recent, chip) && !continued && aggLeans(cur, effort) && passiveAgrees(cur, effort)) {
       return { side, state: 2 };
     }
   }
 
   const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
-  if (responded && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && otherSideFailed(prev, priors, 'SELLERS', 'LOW')) {
+  if (responded && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && responseHeld(cur, 'BUY') && failedSideShown(recent, 'SELLERS', 'LOW')) {
     return { side: 'buy', state: 4 };
   }
-  if (responded && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && otherSideFailed(prev, priors, 'BUYERS', 'HIGH')) {
+  if (responded && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && responseHeld(cur, 'SELL') && failedSideShown(recent, 'BUYERS', 'HIGH')) {
     return { side: 'sell', state: 4 };
   }
 
   const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== 'WEAK';
-  if (battleWon && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && prev && prev.downside === 'SELLERS_WIN' && !(prevSignal && prevSignal.side === 'buy')) {
+  if (battleWon && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && responseHeld(cur, 'BUY') && failedSideShown(recent, 'SELLERS', 'LOW') && !(prevSignal && prevSignal.side === 'buy')) {
     return { side: 'buy', state: 4 };
   }
-  if (battleWon && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && prev && prev.upside === 'BUYERS_WIN' && !(prevSignal && prevSignal.side === 'sell')) {
+  if (battleWon && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && responseHeld(cur, 'SELL') && failedSideShown(recent, 'BUYERS', 'HIGH') && !(prevSignal && prevSignal.side === 'sell')) {
     return { side: 'sell', state: 4 };
   }
-  // State 2 needs the delta on the same side as the trade. Without this check a
-  // heavy SELL candle that closed high was marked BUY 2 "high delta, high response".
-  if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG) {
-    const recent = priors.slice(-3);
-    if (cur.deltaSide === 'SELL' && cur.downside === 'SELLERS_WIN' && recent.some((row) => row.downside === 'SELLERS_WIN') && !(prevSignal && prevSignal.side === 'sell')) {
+  // State 2 needs the delta on the same side as the trade, and at least two of the
+  // setup candles already won that battle. A heavy SELL candle that closed high stays a fade.
+  if (cur.highDelta && real) {
+    if (cur.deltaSide === 'SELL' && cur.downside === 'SELLERS_WIN' && aggLeans(cur, 'SELL') && passiveAgrees(cur, 'SELL') && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
       return { side: 'sell', state: 2 };
     }
-    if (cur.deltaSide === 'BUY' && cur.upside === 'BUYERS_WIN' && recent.some((row) => row.upside === 'BUYERS_WIN') && !(prevSignal && prevSignal.side === 'buy')) {
+    if (cur.deltaSide === 'BUY' && cur.upside === 'BUYERS_WIN' && aggLeans(cur, 'BUY') && passiveAgrees(cur, 'BUY') && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
       return { side: 'buy', state: 2 };
     }
   }
 
-  if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.deltaSide === 'BUY' && triedButCouldnt(priors, 'SELL')) {
+  if (cur.highDelta && real && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && triedButCouldnt(recent, 'SELL')) {
     return { side: 'buy', state: 5 };
   }
-  if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.deltaSide === 'SELL' && triedButCouldnt(priors, 'BUY')) {
+  if (cur.highDelta && real && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && triedButCouldnt(recent, 'BUY')) {
     return { side: 'sell', state: 5 };
   }
 
-  const buyersLost = cur.highDelta && cur.deltaSide === 'BUY' && cur.upside === 'ASKS_HOLD';
-  const sellersLost = cur.highDelta && cur.deltaSide === 'SELL' && cur.downside === 'BIDS_HOLD';
+  const buyersLost = cur.highDelta && cur.deltaSide === 'BUY' && cur.upside === 'ASKS_HOLD' && aggLeans(cur, 'BUY') && passiveAbsorbs(cur, 'BUY');
+  const sellersLost = cur.highDelta && cur.deltaSide === 'SELL' && cur.downside === 'BIDS_HOLD' && aggLeans(cur, 'SELL') && passiveAbsorbs(cur, 'SELL');
   const prevLostSame = prev && (
     (buyersLost && prev.highDelta && prev.deltaSide === 'BUY' && prev.upside === 'ASKS_HOLD') ||
     (sellersLost && prev.highDelta && prev.deltaSide === 'SELL' && prev.downside === 'BIDS_HOLD')
   );
-  if (!prevLostSame && sellersLost) return { side: 'buy', state: 1 };
-  if (!prevLostSame && buyersLost) return { side: 'sell', state: 1 };
+  if (!prevLostSame && sellersLost && countDelta(recent, 'SELL') >= 3) return { side: 'buy', state: 1 };
+  if (!prevLostSame && buyersLost && countDelta(recent, 'BUY') >= 3) return { side: 'sell', state: 1 };
   return null;
 }
 
 function lower(s: string): string {
   return s.replaceAll('_', ' ').toLowerCase();
+}
+
+function fmtSignedPct(n: number | null): string {
+  if (!known(n)) return '—';
+  const pct = Math.round(n * 100);
+  if (pct === 0) return '0%';
+  return `${pct > 0 ? '+' : '−'}${Math.abs(pct)}%`;
+}
+
+function fmtNotional(n: number | null): string {
+  if (!known(n)) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000) return `${Math.round(abs / 1_000)}K`;
+  return `${Math.round(abs)}`;
 }
 
 /**
@@ -345,7 +466,13 @@ export function entryMarks(
         text: `${word} ${signal.state}`,
         short: `${buy ? 'B' : 'S'}${signal.state}`,
         color: buy ? '#22c55e' : '#ef4444',
-        tip: `${word} ${signal.state}\n${ENTRY_DETAIL[signal.state]}\nUpside ${lower(cur.upside)} · downside ${lower(cur.downside)}`,
+        tip: [
+          `${word} ${signal.state}`,
+          ENTRY_DETAIL[signal.state],
+          `Agg ${fmtSignedPct(cur.agg)} · Pas ${fmtSignedPct(cur.pas)}`,
+          `A repl ${fmtNotional(cur.askRepl)} · B repl ${fmtNotional(cur.bidRepl)}`,
+          `Upside ${lower(cur.upside)} · downside ${lower(cur.downside)}`,
+        ].join('\n'),
       });
     }
     openSide = signal.side;

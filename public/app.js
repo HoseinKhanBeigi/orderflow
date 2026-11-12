@@ -1280,6 +1280,25 @@ let fpKlineReq = 0;
 let fpHistoryReq = 0;
 let fpHistoryEnabled = false;
 let fpRetentionDays = 30;
+/** Closed candles to keep on screen. A little past 10 days so the oldest bar is still inside the window. */
+const CANDLE_HISTORY_DAYS = 11;
+
+function candleCountForDays(tfMinutes, days = CANDLE_HISTORY_DAYS) {
+  const tf = Math.max(1, Number(tfMinutes) || 1);
+  return Math.ceil((days * 24 * 60) / tf) + 2;
+}
+
+function historySpanDays(hist) {
+  if (!hist || hist.size < 2) return 0;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const t of hist.keys()) {
+    if (t < min) min = t;
+    if (t > max) max = t;
+  }
+  if (!Number.isFinite(min) || max <= min) return 0;
+  return (max - min) / 86400;
+}
 let fpLiveSocket = null;
 let fpLastLiveMinuteBySymbol = {};
 /** @type {Map<string, { canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, panBars: number, livePrice: number, liveAt: number, dragging: boolean, dragX: number, card: HTMLElement }>} */
@@ -1817,8 +1836,8 @@ async function loadFootprintHistory() {
         symbol: coin.symbol,
         exchange,
         tf: String(tf),
-        limit: '600',
-        days: String(Math.min(fpRetentionDays, 14)),
+        limit: String(Math.min(5000, candleCountForDays(tf, Math.min(fpRetentionDays || CANDLE_HISTORY_DAYS, CANDLE_HISTORY_DAYS)))),
+        days: String(Math.min(fpRetentionDays || CANDLE_HISTORY_DAYS, CANDLE_HISTORY_DAYS)),
         market,
       });
       const data = await fetch(`/api/footprint?${params}`).then((r) => r.json());
@@ -1866,10 +1885,10 @@ async function seedFromKlines() {
     return;
   }
   const req = ++fpKlineReq;
-  // Prefer Postgres history when present — only backfill empty/thin charts with klines.
+  // Postgres history wins when it already covers the window. Otherwise klines fill at least 10 days.
   const coins = selectedFootprintCoins().filter((coin) => {
     const hist = getFpHistory(coin.symbol, tf, selectedExchange);
-    return hist.size < 24;
+    return historySpanDays(hist) < 10;
   });
   if (!coins.length) {
     scheduleDraw();
@@ -1879,8 +1898,10 @@ async function seedFromKlines() {
   await mapPool(coins, 3, async (coin) => {
     if (req !== fpKlineReq || tf !== chartTfMinutes || klineExchange() !== exchange) return;
     try {
+      const sourceTf = tf === 45 ? 15 : tf;
+      const limit = Math.min(8000, candleCountForDays(sourceTf));
       const res = await fetch(
-        `/api/klines?symbol=${encodeURIComponent(coin.symbol)}&interval=${fpKlineInterval(tf)}&exchange=${encodeURIComponent(exchange)}&market=${encodeURIComponent(market)}&limit=300`,
+        `/api/klines?symbol=${encodeURIComponent(coin.symbol)}&interval=${fpKlineInterval(tf)}&exchange=${encodeURIComponent(exchange)}&market=${encodeURIComponent(market)}&limit=${limit}`,
       );
       if (!res.ok) {
         console.warn('[backfill] /api/klines', res.status, coin.symbol);
@@ -1928,6 +1949,27 @@ async function seedFromKlines() {
       console.warn('[backfill] failed', coin.symbol, err);
     }
   });
+}
+
+function aggregateToMinutes(candles, minutes) {
+  const bucket = minutes * 60;
+  const out = new Map();
+  for (const c of candles) {
+    const t = c.time - (c.time % bucket);
+    let row = out.get(t);
+    if (!row) {
+      out.set(t, { ...c, time: t });
+      continue;
+    }
+    row.high = Math.max(row.high, c.high);
+    row.low = Math.min(row.low, c.low);
+    row.close = c.close;
+    row.volume = (row.volume || 0) + (c.volume || 0);
+    row.quote = (row.quote || 0) + (c.quote || 0);
+    if (Number.isFinite(row.takerBuy) && Number.isFinite(c.takerBuy)) row.takerBuy += c.takerBuy;
+    else row.takerBuy = NaN;
+  }
+  return [...out.values()].sort((a, b) => a.time - b.time);
 }
 
 function klineQuoteUsd(volume, quote, high, low, close) {
@@ -3773,6 +3815,7 @@ const BATTLE_COUNT_Y = 100;
 const BATTLE_ROWS_Y = 118;
 const BATTLE_ROW_H = 15;
 const REPLENISH_ROWS_Y = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 8;
+const IMBALANCE_ROWS_Y = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 
 /**
  * Resting liquidity that had to come back during the candle.
@@ -3830,6 +3873,83 @@ function drawBarReplenishment(ctx, repl, cx, y0, maxW) {
       'Liquidity replenishment',
       `Asks replenished ${fmtVolShort(repl.ask)} · ${repl.askPct}% of aggressive buys did not lift the close`,
       `Bids replenished ${fmtVolShort(repl.bid)} · ${repl.bidPct}% of aggressive sells did not push the close down`,
+    ].join('\n'),
+  };
+}
+
+function formatImbalancePct(imbalance) {
+  const pct = Math.round(imbalance * 100);
+  if (pct === 0) return '0%';
+  const sign = pct > 0 ? '+' : '−';
+  return `${sign}${Math.abs(pct)}%`;
+}
+
+/**
+ * Two imbalances on the candle itself.
+ * Aggressive: market buy orders vs market sell orders, (buy − sell) / (buy + sell).
+ * Passive: resting bids that held vs resting asks that held.
+ * Bids held = aggressive sells that did not push the close down.
+ * Asks held = aggressive buys that did not lift the close.
+ * Positive passive = bids heavier. Positive aggressive = buyers heavier.
+ */
+function barLiquidityImbalance(bar) {
+  const buy = Math.max(0, bar.totalBuy ?? 0);
+  const sell = Math.max(0, bar.totalSell ?? 0);
+  const vol = buy + sell;
+  if (vol <= 0) return null;
+  const range = bar.high - bar.low;
+  const closePos = range > 0 ? Math.min(1, Math.max(0, (bar.close - bar.low) / range)) : 0.5;
+  const passiveBids = sell * closePos;
+  const passiveAsks = buy * (1 - closePos);
+  const passiveTotal = passiveBids + passiveAsks;
+  return {
+    buy,
+    sell,
+    passiveBids,
+    passiveAsks,
+    passive: passiveTotal > 0 ? (passiveBids - passiveAsks) / passiveTotal : 0,
+    aggressive: (buy - sell) / vol,
+  };
+}
+
+function drawBarLiquidityImbalance(ctx, imb, cx, y0, maxW) {
+  if (!imb) return null;
+  const narrow = maxW < 92;
+  const passiveSide = imb.passive >= 0 ? 'bids' : 'asks';
+  const aggressiveSide = imb.aggressive >= 0 ? 'buys' : 'sells';
+  const rows = [
+    {
+      text: narrow ? `Pas ${formatImbalancePct(imb.passive)}` : `passive ${formatImbalancePct(imb.passive)}`,
+      color: Math.abs(imb.passive) < 0.05 ? '#94a3b8' : imb.passive > 0 ? '#60a5fa' : '#fbbf24',
+    },
+    {
+      text: narrow ? `Agg ${formatImbalancePct(imb.aggressive)}` : `aggressive ${formatImbalancePct(imb.aggressive)}`,
+      color: Math.abs(imb.aggressive) < 0.05 ? '#94a3b8' : imb.aggressive > 0 ? '#86efac' : '#fca5a5',
+    },
+  ];
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 10px JetBrains Mono, monospace';
+  rows.forEach((row, i) => {
+    const y = y0 + i * BATTLE_ROW_H;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.strokeText(row.text, cx, y, maxW - 2);
+    ctx.fillStyle = row.color;
+    ctx.fillText(row.text, cx, y, maxW - 2);
+  });
+  ctx.restore();
+  return {
+    x0: cx - maxW / 2,
+    x1: cx + maxW / 2,
+    y0: y0 - 8,
+    y1: y0 + BATTLE_ROW_H * 2 - 4,
+    tip: [
+      `Passive liquidity imbalance ${formatImbalancePct(imb.passive)} · ${passiveSide} heavier`,
+      `Bids held ${fmtVolShort(imb.passiveBids)} · asks held ${fmtVolShort(imb.passiveAsks)}`,
+      `Aggressive order imbalance ${formatImbalancePct(imb.aggressive)} · ${aggressiveSide} heavier`,
+      `Aggressive buys ${fmtVolShort(imb.buy)} · aggressive sells ${fmtVolShort(imb.sell)}`,
     ].join('\n'),
   };
 }
@@ -4404,7 +4524,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
+const DELTA_LABEL_FIRST_OFFSET = IMBALANCE_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -4810,10 +4930,10 @@ function drawFootprint(symbol = selectedSymbol) {
   const { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, stride, visibleBars } = fpLayout(W);
   const topPad = 100;
   const bottomPad = fpDeltaProgressMode === 'OFF'
-    ? 240
+    ? 276
     : fpDeltaProgressMode === 'EFFORT_RESPONSE'
-      ? 330
-      : 296;
+      ? 366
+      : 332;
   const chartH = H - topPad - bottomPad;
   clampFpPan(view, bars.length, W);
   liveBtn?.classList.toggle('hidden', [...fpViews.values()].every((v) => v.panBars < 0.15));
@@ -5131,6 +5251,8 @@ function drawFootprint(symbol = selectedSymbol) {
     drawBarBattlePercents(ctx, battle, cx, footY + BATTLE_ROWS_Y, barWidth - 6);
     const replenishHit = drawBarReplenishment(ctx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
     if (replenishHit) view.microHits.push(replenishHit);
+    const imbalanceHit = drawBarLiquidityImbalance(ctx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4);
+    if (imbalanceHit) view.microHits.push(imbalanceHit);
     const couldnt = couldntByTime.get(bar.time);
     if (couldnt) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
