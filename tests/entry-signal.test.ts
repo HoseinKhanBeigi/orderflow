@@ -23,6 +23,7 @@ function read(over: Partial<EntryRead> = {}): EntryRead {
     pas: null,
     askRepl: null,
     bidRepl: null,
+    delta: null,
   };
   const out = { ...base, ...over };
   if (over.prog !== undefined && over.absProg === undefined) out.absProg = over.prog == null ? null : Math.abs(over.prog);
@@ -174,6 +175,27 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 6 });
   });
 
+  it('7: same buy effort, response fades, sell is marked on that candle', () => {
+    const prev = read({ deltaSide: 'BUY', delta: 497_000, prog: 0.9, strength: 'STRONG' });
+    const cur = read({ deltaSide: 'BUY', delta: 410_000, prog: 0.3, strength: 'STRONG' });
+    const priors = [...sideTries('BUY', 5, { prog: 0.4 }), prev];
+    expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'sell', state: 7 });
+  });
+
+  it('7: effort and response both still growing is not a fade', () => {
+    const prev = read({ deltaSide: 'BUY', delta: 300_000, prog: 0.6, strength: 'NORMAL' });
+    const cur = read({ deltaSide: 'BUY', delta: 500_000, prog: 0.95, strength: 'STRONG' });
+    const priors = [...sideTries('BUY', 5), prev];
+    expect(decideEntry(cur, prev, priors, null)).not.toEqual({ side: 'sell', state: 7 });
+  });
+
+  it('7: same sell effort, response fades, buy is marked on that candle', () => {
+    const prev = read({ deltaSide: 'SELL', delta: -800_000, prog: 0.96, strength: 'STRONG' });
+    const cur = read({ deltaSide: 'SELL', delta: -700_000, prog: 0.3, strength: 'STRONG' });
+    const priors = [...sideTries('SELL', 5, { prog: 0.4 }), prev];
+    expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 7 });
+  });
+
   it('6: a side that is still progressing is left alone', () => {
     const prev = read({ deltaSide: 'SELL', prog: 0.96, strength: 'STRONG', agg: -0.27, pas: -0.5, ...closedLow });
     const cur = read({ deltaSide: 'SELL', prog: 0.76, strength: 'NORMAL', agg: -0.15, pas: -0.4, ...closedLow });
@@ -297,7 +319,7 @@ describe('entryMarks', () => {
   it('produces marks on synthetic data', () => {
     expect(full.size).toBeGreaterThan(5);
     for (const mark of full.values()) {
-      expect(mark.short).toMatch(/^[BS][1-6]$/);
+      expect(mark.short).toMatch(/^[BS][1-7]$/);
     }
   });
 

@@ -890,12 +890,12 @@ var process = globalThis.process || { env: {} };
   var EPSILON = 1e-9;
   function side(executed, tradeCount, largeVolume, windowMs, percentile) {
     const seconds = Math.max(windowMs / 1e3, EPSILON);
-    const count = Math.max(0, tradeCount);
+    const count2 = Math.max(0, tradeCount);
     return {
       executed: Math.max(0, executed),
-      tradeCount: count,
+      tradeCount: count2,
       velocityPerSec: Math.max(0, executed) / seconds,
-      averageTradeSize: count > 0 ? Math.max(0, executed) / count : 0,
+      averageTradeSize: count2 > 0 ? Math.max(0, executed) / count2 : 0,
       largeVolume: Math.max(0, largeVolume),
       percentile: clampPct(percentile)
     };
@@ -4969,6 +4969,184 @@ var process = globalThis.process || { env: {} };
     };
   }
 
+  // src/next-candle/features.ts
+  function intensity(label) {
+    if (label === "EXTREME") return 90;
+    if (label === "HIGH") return 75;
+    if (label === "NORMAL") return 45;
+    if (label === "LOW") return 25;
+    return 0;
+  }
+  function featuresFromSnapshot(snap) {
+    const fuel = snap.marketFuel;
+    if (!fuel || fuel.dataStatus === "NO_DATA" || fuel.dataStatus === "STALE_DATA" || fuel.upsideFuel == null) {
+      return { ok: false, score: 0, book: 0 };
+    }
+    const edge = clamp(
+      fuel.fuelImbalance ?? fuel.upsideFuel - (fuel.downsideFuel ?? 0),
+      -100,
+      100
+    );
+    const buy = snap.marketBattle?.upside.aggressive.power ?? 0;
+    const sell = snap.marketBattle?.downside.aggressive.power ?? 0;
+    const control = clamp((buy - sell) / 100, -1, 1);
+    const lr = snap.liquidityResponse;
+    const askGave = intensity(lr?.askConsumption) - intensity(lr?.askReplenishment);
+    const bidGave = intensity(lr?.bidConsumption) - intensity(lr?.bidReplenishment);
+    const book = clamp((askGave - bidGave) / 90, -1, 1);
+    const pct = snap.priceChangePercent;
+    const follow = (pct > 0.02 ? 1 : 0) - (pct < -0.02 ? 1 : 0);
+    const buyerAbsorbed = snap.absorption?.detected === true && snap.absorption.type === "BUYER_ABSORPTION" || lr?.absorption?.kind === "BUY_ABSORPTION" || lr?.effort === "BUY_ABSORPTION";
+    const sellerAbsorbed = snap.absorption?.detected === true && snap.absorption.type === "SELLER_ABSORPTION" || lr?.absorption?.kind === "SELL_ABSORPTION" || lr?.effort === "SELL_ABSORPTION";
+    const absorb = (sellerAbsorbed ? 1 : 0) - (buyerAbsorbed ? 1 : 0);
+    const score = 0.045 * edge + 1.1 * control + 0.8 * book + 0.7 * follow + 0.6 * absorb;
+    return { ok: true, score, book };
+  }
+
+  // src/next-candle/types.ts
+  var NEXT_CANDLE_QUIET = {
+    shown: false,
+    direction: null,
+    probability: null,
+    samples: 0,
+    note: "Waiting for the next 1-minute candle."
+  };
+
+  // src/next-candle/model.ts
+  var FLAT_RETURN = 15e-5;
+  var SCORE_LEAN = 0.35;
+  var MIN_SAMPLES = 12;
+  var MIN_HIT_RATE = 0.58;
+  var MIN_MARGIN = 0.12;
+  var HISTORY_CAP = 40;
+  var GRADE_MIN = 8;
+  var GRADE_CAP = 12;
+  var GRADE_FLOOR = 0.5;
+  var NextCandleModel = class {
+    lastMinute = null;
+    boundaryPrice = null;
+    pendingBucket = null;
+    pendingShown = null;
+    history = /* @__PURE__ */ new Map();
+    grades = /* @__PURE__ */ new Map();
+    call = NEXT_CANDLE_QUIET;
+    current() {
+      return this.call;
+    }
+    observe(features, price, now) {
+      const minute = Math.floor(now / 6e4);
+      if (this.lastMinute == null) {
+        this.lastMinute = minute;
+        this.boundaryPrice = price > 0 ? price : null;
+        this.call = NEXT_CANDLE_QUIET;
+        return this.call;
+      }
+      if (minute === this.lastMinute) return this.call;
+      if (minute < this.lastMinute) return this.call;
+      const actual = this.boundaryPrice != null && price > 0 ? directionOf(this.boundaryPrice, price) : null;
+      if (actual && this.pendingBucket) {
+        pushCapped(this.history, this.pendingBucket, actual, HISTORY_CAP);
+      }
+      if (actual && this.pendingShown) {
+        const hit = actual === this.pendingShown.direction;
+        pushCapped(this.grades, this.pendingShown.bucket, hit, GRADE_CAP);
+      }
+      this.lastMinute = minute;
+      this.boundaryPrice = price > 0 ? price : null;
+      this.pendingBucket = null;
+      this.pendingShown = null;
+      if (!features.ok) {
+        this.call = {
+          shown: false,
+          direction: null,
+          probability: null,
+          samples: 0,
+          note: "Waiting for trades."
+        };
+        return this.call;
+      }
+      const bucket2 = bucketOf(features);
+      this.pendingBucket = bucket2;
+      const outcomes = this.history.get(bucket2) ?? [];
+      this.call = decide(features, bucket2, outcomes, this.grades.get(bucket2) ?? []);
+      if (this.call.shown && this.call.direction) {
+        this.pendingShown = { bucket: bucket2, direction: this.call.direction };
+      }
+      return this.call;
+    }
+  };
+  function bucketOf(features) {
+    if (Math.abs(features.score) < SCORE_LEAN) return "EVEN";
+    const up = features.score > 0;
+    const agrees = Math.abs(features.book) < 0.15 || features.book > 0 === up;
+    return `${up ? "UP" : "DOWN"}|${agrees ? "WITH" : "AGAINST"}`;
+  }
+  function decide(features, bucket2, outcomes, grades) {
+    const samples = outcomes.length;
+    if (bucket2 === "EVEN") {
+      return {
+        shown: false,
+        direction: null,
+        probability: null,
+        samples,
+        note: "Fuel and the book do not lean, so the next candle stays quiet."
+      };
+    }
+    const direction = features.score > 0 ? "UP" : "DOWN";
+    const quiet = (note) => ({
+      shown: false,
+      direction: null,
+      probability: null,
+      samples,
+      note
+    });
+    if (samples < MIN_SAMPLES) {
+      return quiet(`This setup has happened ${samples} times. It shows after ${MIN_SAMPLES}.`);
+    }
+    const share = count(outcomes, direction) / samples;
+    const others = ["UP", "DOWN", "FLAT"].filter((d) => d !== direction);
+    const second = Math.max(...others.map((d) => count(outcomes, d) / samples));
+    const word = direction === "UP" ? "up" : "down";
+    const hits = Math.round(share * samples);
+    if (grades.length >= GRADE_MIN) {
+      const right = grades.filter(Boolean).length;
+      if (right / grades.length < GRADE_FLOOR) {
+        return quiet(
+          `Recent calls for this setup were right ${right} of ${grades.length} times, so it stays quiet.`
+        );
+      }
+    }
+    if (share < MIN_HIT_RATE) {
+      return quiet(`This setup was ${word} only ${hits} of ${samples} times, so it stays quiet.`);
+    }
+    if (share - second < MIN_MARGIN) {
+      return quiet("This setup does not lead by enough, so it stays quiet.");
+    }
+    return {
+      shown: true,
+      direction,
+      probability: Math.round(share * 100),
+      samples,
+      note: `Next 1-minute candle. This setup was followed by an ${word} candle ${hits} of ${samples} times.`
+    };
+  }
+  function directionOf(start, end) {
+    const ret = (end - start) / start;
+    if (Math.abs(ret) < FLAT_RETURN) return "FLAT";
+    return end > start ? "UP" : "DOWN";
+  }
+  function count(outcomes, direction) {
+    let n = 0;
+    for (const item of outcomes) if (item === direction) n += 1;
+    return n;
+  }
+  function pushCapped(map, key3, value, cap) {
+    const list = map.get(key3) ?? [];
+    list.push(value);
+    if (list.length > cap) list.shift();
+    map.set(key3, list);
+  }
+
   // src/models/aggressive-flow.ts
   function emptyAggressiveSideFlow() {
     return {
@@ -6025,9 +6203,9 @@ var process = globalThis.process || { env: {} };
   }
   function quietBook(i) {
     const n = (x) => x === "NORMAL" || x === "LOW";
-    return n(intensity(i.askConsPct)) && n(intensity(i.askReplPct)) && n(intensity(i.askPullPct)) && n(intensity(i.bidConsPct)) && n(intensity(i.bidReplPct)) && n(intensity(i.bidPullPct));
+    return n(intensity2(i.askConsPct)) && n(intensity2(i.askReplPct)) && n(intensity2(i.askPullPct)) && n(intensity2(i.bidConsPct)) && n(intensity2(i.bidReplPct)) && n(intensity2(i.bidPullPct));
   }
-  function intensity(p) {
+  function intensity2(p) {
     if (p >= 92) return "EXTREME";
     if (p >= 75) return "HIGH";
     if (p <= 25) return "LOW";
@@ -7567,7 +7745,7 @@ var process = globalThis.process || { env: {} };
   }
 
   // src/passive-liquidity/normalize.ts
-  var MIN_SAMPLES = 8;
+  var MIN_SAMPLES2 = 8;
   var PassiveMetricNormalizer = class {
     constructor(sampleSize) {
       this.sampleSize = sampleSize;
@@ -7579,7 +7757,7 @@ var process = globalThis.process || { env: {} };
     }
     percentile(key3, value) {
       const dist = this.dist(key3);
-      if (dist.size < MIN_SAMPLES || !Number.isFinite(value)) return 50;
+      if (dist.size < MIN_SAMPLES2 || !Number.isFinite(value)) return 50;
       return dist.midRank(value);
     }
     samples(key3) {
@@ -7587,7 +7765,7 @@ var process = globalThis.process || { env: {} };
     }
     measure(key3, value, context) {
       const dist = this.dist(key3);
-      const warm = dist.size >= MIN_SAMPLES;
+      const warm = dist.size >= MIN_SAMPLES2;
       return {
         raw: value,
         percentile: warm ? dist.midRank(value) : 50,
@@ -10251,13 +10429,13 @@ var process = globalThis.process || { env: {} };
       let persistenceWeighted = 0;
       let withdrawalWeighted = 0;
       let weight = 0;
-      let count = 0;
+      let count2 = 0;
       for (const level2 of levels2) {
         if (level2.side !== side2 || level2.outOfView || level2.quantity <= 0) continue;
         persistenceWeighted += level2.persistenceScore * level2.notionalValue;
         withdrawalWeighted += level2.withdrawalScore * level2.notionalValue;
         weight += level2.notionalValue;
-        count += 1;
+        count2 += 1;
       }
       const ratio = metricFlow.consumedNotional > 0 ? metricFlow.replenishedNotional / metricFlow.consumedNotional : metricFlow.replenishedNotional > 0 ? 1 : 0;
       return {
@@ -10273,7 +10451,7 @@ var process = globalThis.process || { env: {} };
         replenishmentRatio: ratio,
         persistenceScore: weight > 0 ? persistenceWeighted / weight : 0,
         withdrawalScore: weight > 0 ? withdrawalWeighted / weight : 0,
-        levelCount: count,
+        levelCount: count2,
         velocity: this.velocity.velocity(side2, this.lastBookAt, this.config.metricWindowMs),
         consumedPercentile: this.normalizer.percentile(
           isBid ? "bidConsumed" : "askConsumed",
@@ -10472,6 +10650,7 @@ var process = globalThis.process || { env: {} };
     marketBattle;
     marketFuel;
     aggressiveFlow;
+    nextCandleModel = new NextCandleModel();
     listeners = /* @__PURE__ */ new Set();
     /**
      * The passive liquidity snapshot is window-independent, so it is computed once
@@ -10904,6 +11083,7 @@ var process = globalThis.process || { env: {} };
         marketBattle,
         marketFuel,
         tradeDecision: emptyTradeDecisionWait(this.symbol, window, now),
+        nextCandle: NEXT_CANDLE_QUIET,
         movePotential: this.movePotential.evaluate({
           symbol: this.symbol,
           book: this.book,
@@ -10917,6 +11097,9 @@ var process = globalThis.process || { env: {} };
         })
       };
       snap.tradeDecision = evaluateTradeDecision(snap, this.config.tradeDecision, { now });
+      if (window === "1m") {
+        snap.nextCandle = this.nextCandleModel.observe(featuresFromSnapshot(snap), snap.price, now);
+      }
       const alerts = buildAlerts(snap, this.config.alerts, now);
       const volatile = alerts.length > 0;
       const wasVolatile = this.lastVolatile.get(window) ?? false;
@@ -15029,16 +15212,16 @@ var process = globalThis.process || { env: {} };
   function imbalanceBeyond(bar, boundary, side2, ratio) {
     const levels2 = bar.levels ?? [];
     if (!levels2.length) return null;
-    let count = 0;
+    let count2 = 0;
     for (const lv of levels2) {
       const onFar = side2 === "HIGH" ? lv.price > boundary : lv.price < boundary;
       if (!onFar) continue;
       const buy = lv.buy || 0;
       const sell = lv.sell || 0;
-      if (buy >= sell * ratio && buy > 0) count += 1;
-      else if (sell >= buy * ratio && sell > 0) count += 1;
+      if (buy >= sell * ratio && buy > 0) count2 += 1;
+      else if (sell >= buy * ratio && sell > 0) count2 += 1;
     }
-    return count;
+    return count2;
   }
   function aggressiveVolumes2(bar) {
     const buy = Number(bar.aggressiveBuy ?? bar.totalBuy ?? 0);
@@ -16550,6 +16733,9 @@ var process = globalThis.process || { env: {} };
   var ENTRY_CONTEXT_MIN = 5;
   var ENTRY_AGG_LEAN = 0.08;
   var ENTRY_PAS_GIVE = 0.2;
+  var ENTRY_EFFORT_SAME_MIN = 0.7;
+  var ENTRY_EFFORT_SAME_MAX = 1.15;
+  var ENTRY_RESPONSE_FADE = 0.5;
   var BATTLE_CLOSE_WIN = 0.55;
   var BATTLE_EVEN_GAP_PCT = 6;
   var ENTRY_DETAIL = {
@@ -16558,7 +16744,8 @@ var process = globalThis.process || { env: {} };
     3: "effort flipped, book refilled, price stopped",
     4: "failed side, response held",
     5: "side tried, book held, other side took it",
-    6: "effort stopped, open before the move"
+    6: "effort stopped, open before the move",
+    7: "same effort, response faded"
   };
   function barBattleVerdict(bar) {
     const buy = Math.max(0, bar.totalBuy ?? 0);
@@ -16653,7 +16840,8 @@ var process = globalThis.process || { env: {} };
       deltaSide: row.deltaSide ?? "NONE",
       highDelta: strength === "STRONG" || strength === "EXTREME",
       hunt: prior.length ? stopHuntKind2(bar, prior) : null,
-      ...barPressure(bar)
+      ...barPressure(bar),
+      delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null
     };
   }
   function known(n) {
@@ -16800,6 +16988,16 @@ var process = globalThis.process || { env: {} };
       const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
       const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
       if (prevMoved && otherAlreadyMoved) return { side: joining === "BUY" ? "buy" : "sell", state: 6 };
+    }
+    if (prev && prevSide && cur.deltaSide === prevSide && known(prev.delta) && known(cur.delta) && known(prev.prog) && known(cur.prog)) {
+      const prevEffort = Math.abs(prev.delta);
+      const effortRatio = prevEffort > 0 ? Math.abs(cur.delta) / prevEffort : 0;
+      const sameEffort = effortRatio >= ENTRY_EFFORT_SAME_MIN && effortRatio <= ENTRY_EFFORT_SAME_MAX;
+      const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
+      const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
+      if (sameEffort && responseOkBefore && responseFaded) {
+        return { side: prevSide === "BUY" ? "sell" : "buy", state: 7 };
+      }
     }
     return null;
   }

@@ -1,5 +1,5 @@
 /**
- * Candle entry script: marks closed candles as BUY/SELL 1–6.
+ * Candle entry script: marks closed candles as BUY/SELL 1–7.
  *
  * Ported from public/app.js so the browser chart, the alerts and the backtest
  * all run the same rules. Inputs are closed footprint bars (quote notional
@@ -17,13 +17,18 @@ export const ENTRY_CONTEXT_MIN = 5;
 export const ENTRY_AGG_LEAN = 0.08;
 /** A response can carry a little refill against it. Past this, the book absorbed the move. */
 export const ENTRY_PAS_GIVE = 0.2;
+/** Current |delta| inside this band of the previous candle counts as the same effort. */
+export const ENTRY_EFFORT_SAME_MIN = 0.7;
+export const ENTRY_EFFORT_SAME_MAX = 1.15;
+/** Response has faded when it is under half the previous candle's progress. */
+export const ENTRY_RESPONSE_FADE = 0.5;
 
 /** Close position in range at or above this = buyers won the close. */
 export const BATTLE_CLOSE_WIN = 0.55;
 /** Buy/sell power split closer than this = PAIR. */
 export const BATTLE_EVEN_GAP_PCT = 6;
 
-export type EntryState = 1 | 2 | 3 | 4 | 5 | 6;
+export type EntryState = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export type EntrySide = 'buy' | 'sell';
 
 export const ENTRY_DETAIL: Record<EntryState, string> = {
@@ -33,6 +38,7 @@ export const ENTRY_DETAIL: Record<EntryState, string> = {
   4: 'failed side, response held',
   5: 'side tried, book held, other side took it',
   6: 'effort stopped, open before the move',
+  7: 'same effort, response faded',
 };
 
 export interface EntryBar {
@@ -83,6 +89,8 @@ export interface EntryRead {
   askRepl: number | null;
   /** Aggressive sells that did not push the close down. */
   bidRepl: number | null;
+  /** Buy notional minus sell notional. Null when the candle has no volume. */
+  delta: number | null;
 }
 
 export interface EntrySignal {
@@ -199,6 +207,7 @@ export function barEntryRead(bars: EntryBar[], index: number, progress: EntryPro
     highDelta: strength === 'STRONG' || strength === 'EXTREME',
     hunt: prior.length ? stopHuntKind(bar, prior) : null,
     ...barPressure(bar),
+    delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null,
   };
 }
 
@@ -327,6 +336,7 @@ function triedButCouldnt(priors: EntryRead[], side: 'SELL' | 'BUY'): boolean {
  * 4 that side already failed in the setup, then this candle's response holds.
  * 5 that side tried across the setup and the book held, then the other side takes it.
  * 6 that side's effort just stopped progressing, so the other side is opened before its candles start.
+ * 7 effort stays about the same as the previous candle and the response fades, so the other side is opened on this candle.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -413,6 +423,19 @@ export function decideEntry(
     const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
     const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
     if (prevMoved && otherAlreadyMoved) return { side: joining === 'BUY' ? 'buy' : 'sell', state: 6 };
+  }
+
+  // Same side, almost the same delta, and the response fell to under half.
+  // The fade is this candle, before the next candle spends the move.
+  if (prev && prevSide && cur.deltaSide === prevSide && known(prev.delta) && known(cur.delta) && known(prev.prog) && known(cur.prog)) {
+    const prevEffort = Math.abs(prev.delta);
+    const effortRatio = prevEffort > 0 ? Math.abs(cur.delta) / prevEffort : 0;
+    const sameEffort = effortRatio >= ENTRY_EFFORT_SAME_MIN && effortRatio <= ENTRY_EFFORT_SAME_MAX;
+    const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
+    const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
+    if (sameEffort && responseOkBefore && responseFaded) {
+      return { side: prevSide === 'BUY' ? 'sell' : 'buy', state: 7 };
+    }
   }
   return null;
 }
