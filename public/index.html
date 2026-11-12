@@ -4,27 +4,31 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Order Flow — Footprint</title>
-  <link rel="stylesheet" href="/styles.css?v=fp-foot-scroll-v1" />
+  <link rel="stylesheet" href="/styles.css?v=fp-fuel-pos-v1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
 <body>
   <header class="header">
     <div class="header-meta">
-      <div class="data-mode-tabs" id="data-mode-tabs">
-        <button class="data-mode-tab active" data-mode="perp" type="button">FUTURES</button>
-        <button class="data-mode-tab" data-mode="spot" type="button">SPOT</button>
+      <div class="header-tools">
+        <div class="data-mode-tabs" id="data-mode-tabs">
+          <button class="data-mode-tab active" data-mode="perp" type="button">FUTURES</button>
+          <button class="data-mode-tab" data-mode="spot" type="button">SPOT</button>
+        </div>
+        <div id="status" class="status connecting">Connecting…</div>
+        <div id="symbol-label" class="symbol-label">—</div>
+        <button type="button" class="alert-bell" id="watchlist-btn" title="Choose watchlist coins">
+          Watchlist
+        </button>
+        <button type="button" class="alert-bell" id="alert-bell" title="Footprint alerts">
+          Alerts <span class="alert-bell-count" id="alert-count">0</span>
+        </button>
       </div>
-      <div id="status" class="status connecting">Connecting…</div>
-      <div id="symbol-label" class="symbol-label">—</div>
-      <div id="market-fuel" class="symbol-label" title="Active executable pressure. Not a price forecast.">Fuel —</div>
-      <div id="trade-decision" class="trade-decision wait" title="Simple attack + defense + price confirm">WAIT</div>
-      <button type="button" class="alert-bell" id="watchlist-btn" title="Choose watchlist coins">
-        Watchlist
-      </button>
-      <button type="button" class="alert-bell" id="alert-bell" title="Footprint alerts">
-        Alerts <span class="alert-bell-count" id="alert-count">0</span>
-      </button>
+      <div class="header-readout">
+        <div id="market-fuel" class="symbol-label" title="Active executable pressure. Not a price forecast.">Fuel —</div>
+        <div id="trade-decision" class="trade-decision wait" title="Simple attack + defense + price confirm">WAIT</div>
+      </div>
     </div>
   </header>
 

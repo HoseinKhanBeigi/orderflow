@@ -48,14 +48,41 @@ body {
 .subtitle { font-size: 0.72rem; color: var(--muted); margin-top: 0.1rem; }
 
 .header-meta {
-  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.28rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.header-tools,
+.header-readout {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
   gap: 0.45rem 0.7rem;
   width: 100%;
+  min-width: 0;
+}
+
+.header-tools > * {
+  flex: 0 0 auto;
+}
+
+#symbol-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#market-fuel {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .page-foot {
@@ -107,7 +134,9 @@ body {
   border: 1px solid rgba(255,255,255,0.08);
   background: rgba(255,255,255,0.04);
   color: var(--muted);
-  max-width: 42rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 36rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
