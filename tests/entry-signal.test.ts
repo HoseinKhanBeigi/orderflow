@@ -77,6 +77,21 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, [prev], null)).toEqual({ side: 'buy', state: 3 });
   });
 
+  it('5: sellers tried across the recent candles and could not keep pushing, then buyers take it', () => {
+    const failedSell = read({ strength: 'NORMAL', deltaSide: 'SELL', prog: 0.24, chip: 'SELLERS', ...closedLow });
+    const bidsHeld = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.66, chip: 'BIDS', ...closedHigh });
+    const priors = [failedSell, failedSell, failedSell, bidsHeld];
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.66, chip: 'ASKS', ...closedLow });
+    expect(decideEntry(cur, bidsHeld, priors, { side: 'buy' })).toEqual({ side: 'buy', state: 5 });
+  });
+
+  it('5: a sell campaign that kept extending is not a buy', () => {
+    const pushed = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.9, chip: 'SELLERS', ...closedLow });
+    const priors = [pushed, pushed, pushed, pushed];
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', ...closedHigh });
+    expect(decideEntry(cur, pushed, priors, null)?.state).not.toBe(5);
+  });
+
   it('4: the low was hunted, then price responded on ordinary delta', () => {
     const prev = read({ hunt: 'LOW' });
     const cur = read({ strength: 'NORMAL', deltaSide: 'BUY', prog: 0.9, ...closedHigh });
@@ -136,6 +151,48 @@ function syntheticBars(n: number, seed = 7): EntryBar[] {
   return bars;
 }
 
+describe('state 5 on the chart', () => {
+  it('still labels the buyer candle after the bids-held fade', () => {
+    const bar = (time: number, closeHigh: boolean, sellHeavy: boolean): EntryBar => ({
+      time,
+      open: 100,
+      high: 110,
+      low: 100,
+      close: closeHigh ? 108 : 102,
+      totalBuy: sellHeavy ? 40 : 65,
+      totalSell: sellHeavy ? 60 : 35,
+    });
+    const row = (side: 'BUY' | 'SELL', strength: string, prog: number) => ({
+      deltaSide: side,
+      deltaStrengthState: strength,
+      directionalProgressATR: prog,
+    });
+    const bars = [
+      bar(0, true, false),
+      bar(1, true, false),
+      bar(2, false, true),
+      bar(3, false, true),
+      bar(4, false, true),
+      bar(5, false, true),
+      bar(6, true, true),
+      bar(7, false, false),
+    ];
+    const progress = [
+      row('BUY', 'NORMAL', 0.2),
+      row('BUY', 'NORMAL', 0.2),
+      row('SELL', 'NORMAL', 0.3),
+      row('SELL', 'NORMAL', 0.24),
+      row('SELL', 'NORMAL', 0.24),
+      row('SELL', 'NORMAL', 0.2),
+      row('SELL', 'STRONG', 0.66),
+      row('BUY', 'STRONG', 0.66),
+    ];
+    const marks = entryMarks(bars, null, progress);
+    expect(marks.get(6)?.short).toBe('B1');
+    expect(marks.get(7)?.short).toBe('B5');
+  });
+});
+
 describe('entryMarks', () => {
   const bars = syntheticBars(400);
   const full = entryMarks(bars, null, annotateDeltaProgress(bars));
@@ -143,7 +200,7 @@ describe('entryMarks', () => {
   it('produces marks on synthetic data', () => {
     expect(full.size).toBeGreaterThan(5);
     for (const mark of full.values()) {
-      expect(mark.short).toMatch(/^[BS][1-4]$/);
+      expect(mark.short).toMatch(/^[BS][1-5]$/);
     }
   });
 

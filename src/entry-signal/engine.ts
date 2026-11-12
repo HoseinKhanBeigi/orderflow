@@ -1,5 +1,5 @@
 /**
- * Candle entry script: marks closed candles as BUY/SELL 1–4.
+ * Candle entry script: marks closed candles as BUY/SELL 1–5.
  *
  * Ported from public/app.js so the browser chart, the alerts and the backtest
  * all run the same rules. Inputs are closed footprint bars (quote notional
@@ -17,7 +17,7 @@ export const BATTLE_CLOSE_WIN = 0.55;
 /** Buy/sell power split closer than this = PAIR. */
 export const BATTLE_EVEN_GAP_PCT = 6;
 
-export type EntryState = 1 | 2 | 3 | 4;
+export type EntryState = 1 | 2 | 3 | 4 | 5;
 export type EntrySide = 'buy' | 'sell';
 
 export const ENTRY_DETAIL: Record<EntryState, string> = {
@@ -25,6 +25,7 @@ export const ENTRY_DETAIL: Record<EntryState, string> = {
   2: 'high delta, high response',
   3: 'effort flipped, price stopped',
   4: 'failed side, price responded',
+  5: 'side tried, could not push',
 };
 
 export interface EntryBar {
@@ -196,11 +197,37 @@ function otherSideFailed(
 }
 
 /**
+ * A side tried on the recent candles and did not keep extending.
+ * At least 3 of the last 4 candles are that delta, at least 2 of those failed
+ * to both move price and win the close, and the candle just before this one
+ * is still that failed attempt.
+ */
+function triedButCouldnt(priors: EntryRead[], side: 'SELL' | 'BUY'): boolean {
+  const recent = priors.slice(-4);
+  let tries = 0;
+  let failed = 0;
+  for (const row of recent) {
+    if (row.deltaSide !== side) continue;
+    tries += 1;
+    const extended = row.prog != null && row.prog >= ENTRY_REAL_PROG;
+    const won = side === 'SELL' ? row.downside === 'SELLERS_WIN' : row.upside === 'BUYERS_WIN';
+    if (!extended || !won) failed += 1;
+  }
+  if (tries < 3 || failed < 2) return false;
+  const prev = priors[priors.length - 1];
+  if (!prev || prev.deltaSide !== side) return false;
+  const prevExtended = prev.prog != null && prev.prog >= ENTRY_REAL_PROG;
+  const prevWon = side === 'SELL' ? prev.downside === 'SELLERS_WIN' : prev.upside === 'BUYERS_WIN';
+  return !prevExtended || !prevWon;
+}
+
+/**
  * One entry from the last closed candle.
  * 1 high delta, low response, and that side did not win the close → fade it.
  * 2 high delta and a real response, and the earlier candles already own that side.
  * 3 the previous candle's effort was accepted, this candle flips the delta and price stops.
  * 4 the other side failed, then this candle responds on ordinary delta.
+ * 5 a side tried across the recent candles and could not keep pushing, then this candle takes the other side.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -253,6 +280,13 @@ export function decideEntry(
     }
   }
 
+  if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.deltaSide === 'BUY' && triedButCouldnt(priors, 'SELL')) {
+    return { side: 'buy', state: 5 };
+  }
+  if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.deltaSide === 'SELL' && triedButCouldnt(priors, 'BUY')) {
+    return { side: 'sell', state: 5 };
+  }
+
   const buyersLost = cur.highDelta && cur.deltaSide === 'BUY' && cur.upside === 'ASKS_HOLD';
   const sellersLost = cur.highDelta && cur.deltaSide === 'SELL' && cur.downside === 'BIDS_HOLD';
   const prevLostSame = prev && (
@@ -271,7 +305,7 @@ function lower(s: string): string {
 /**
  * Closed candles the entry script would have taken, keyed by bar time.
  * `liveTime` is the open candle's time (it is skipped); pass null when every bar is closed.
- * A mark only appears when the side changes from the currently open one.
+ * A mark appears when the side changes. State 5 can still mark after a different state on the same side.
  */
 export function entryMarks(
   bars: EntryBar[],
@@ -285,6 +319,7 @@ export function entryMarks(
   const reads: EntryRead[] = [];
   for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
   let openSide: EntrySide | null = null;
+  let openState: EntryState | null = null;
   for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
     const cur = reads[index]!;
     const prev = reads[index - 1]!;
@@ -293,11 +328,15 @@ export function entryMarks(
     const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG
       && ((openSide === 'sell' && cur.downside === 'SELLERS_WIN') || (openSide === 'buy' && cur.upside === 'BUYERS_WIN'));
     if (!signal) {
-      if (stalled || (openSide === 'sell' && cur.upside === 'BUYERS_WIN') || (openSide === 'buy' && cur.downside === 'SELLERS_WIN')) openSide = null;
+      if (stalled || (openSide === 'sell' && cur.upside === 'BUYERS_WIN') || (openSide === 'buy' && cur.downside === 'SELLERS_WIN')) {
+        openSide = null;
+        openState = null;
+      }
       continue;
     }
     const time = bars[index]!.time;
-    if (signal.side !== openSide && !marks.has(time)) {
+    const held = signal.side === openSide && (signal.state !== 5 || openState === 5);
+    if (!held && !marks.has(time)) {
       const buy = signal.side === 'buy';
       const word = buy ? 'BUY' : 'SELL';
       marks.set(time, {
@@ -310,6 +349,7 @@ export function entryMarks(
       });
     }
     openSide = signal.side;
+    openState = signal.state;
   }
   return marks;
 }

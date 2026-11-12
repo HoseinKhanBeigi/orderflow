@@ -16553,7 +16553,8 @@ var process = globalThis.process || { env: {} };
     1: "high delta, low response",
     2: "high delta, high response",
     3: "effort flipped, price stopped",
-    4: "failed side, price responded"
+    4: "failed side, price responded",
+    5: "side tried, could not push"
   };
   function barBattleVerdict(bar) {
     const buy = Math.max(0, bar.totalBuy ?? 0);
@@ -16655,6 +16656,24 @@ var process = globalThis.process || { env: {} };
     }
     return n >= 2;
   }
+  function triedButCouldnt(priors, side2) {
+    const recent = priors.slice(-4);
+    let tries = 0;
+    let failed = 0;
+    for (const row of recent) {
+      if (row.deltaSide !== side2) continue;
+      tries += 1;
+      const extended = row.prog != null && row.prog >= ENTRY_REAL_PROG;
+      const won = side2 === "SELL" ? row.downside === "SELLERS_WIN" : row.upside === "BUYERS_WIN";
+      if (!extended || !won) failed += 1;
+    }
+    if (tries < 3 || failed < 2) return false;
+    const prev = priors[priors.length - 1];
+    if (!prev || prev.deltaSide !== side2) return false;
+    const prevExtended = prev.prog != null && prev.prog >= ENTRY_REAL_PROG;
+    const prevWon = side2 === "SELL" ? prev.downside === "SELLERS_WIN" : prev.upside === "BUYERS_WIN";
+    return !prevExtended || !prevWon;
+  }
   function decideEntry(cur, prev, priors, prevSignal) {
     if (!cur) return null;
     const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
@@ -16694,6 +16713,12 @@ var process = globalThis.process || { env: {} };
         return { side: "buy", state: 2 };
       }
     }
+    if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.deltaSide === "BUY" && triedButCouldnt(priors, "SELL")) {
+      return { side: "buy", state: 5 };
+    }
+    if (cur.highDelta && cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.deltaSide === "SELL" && triedButCouldnt(priors, "BUY")) {
+      return { side: "sell", state: 5 };
+    }
     const buyersLost = cur.highDelta && cur.deltaSide === "BUY" && cur.upside === "ASKS_HOLD";
     const sellersLost = cur.highDelta && cur.deltaSide === "SELL" && cur.downside === "BIDS_HOLD";
     const prevLostSame = prev && (buyersLost && prev.highDelta && prev.deltaSide === "BUY" && prev.upside === "ASKS_HOLD" || sellersLost && prev.highDelta && prev.deltaSide === "SELL" && prev.downside === "BIDS_HOLD");
@@ -16712,6 +16737,7 @@ var process = globalThis.process || { env: {} };
     const reads = [];
     for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
     let openSide = null;
+    let openState = null;
     for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
       const cur = reads[index];
       const prev = reads[index - 1];
@@ -16719,11 +16745,15 @@ var process = globalThis.process || { env: {} };
       const signal = decideEntry(cur, prev, priors, openSide ? { side: openSide } : null);
       const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG && (openSide === "sell" && cur.downside === "SELLERS_WIN" || openSide === "buy" && cur.upside === "BUYERS_WIN");
       if (!signal) {
-        if (stalled || openSide === "sell" && cur.upside === "BUYERS_WIN" || openSide === "buy" && cur.downside === "SELLERS_WIN") openSide = null;
+        if (stalled || openSide === "sell" && cur.upside === "BUYERS_WIN" || openSide === "buy" && cur.downside === "SELLERS_WIN") {
+          openSide = null;
+          openState = null;
+        }
         continue;
       }
       const time = bars[index].time;
-      if (signal.side !== openSide && !marks.has(time)) {
+      const held = signal.side === openSide && (signal.state !== 5 || openState === 5);
+      if (!held && !marks.has(time)) {
         const buy = signal.side === "buy";
         const word = buy ? "BUY" : "SELL";
         marks.set(time, {
@@ -16738,6 +16768,7 @@ Upside ${lower(cur.upside)} \xB7 downside ${lower(cur.downside)}`
         });
       }
       openSide = signal.side;
+      openState = signal.state;
     }
     return marks;
   }
