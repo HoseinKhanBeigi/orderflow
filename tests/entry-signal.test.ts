@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   barBattleVerdict,
+  couldntMarks,
   decideEntry,
   entryMarks,
   type EntryBar,
@@ -227,6 +228,20 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 1 });
   });
 
+  it('2: buyers already lost the close inside the uptrend, so the next push is not a join', () => {
+    const priors = [3.5, 3.51, 3.52, 3.53, 3.54, 3.53].map((close, i) => read({
+      close,
+      deltaSide: 'BUY',
+      prog: i === 5 ? 0.2 : 0.6,
+      agg: 0.2,
+      pas: 0.3,
+      chip: 'BIDS',
+      ...(i === 5 ? closedLow : closedHigh),
+    }));
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.8, chip: 'BUYERS', agg: 0.3, pas: 0.2, close: 3.55, ...closedHigh });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
   it('2: buyers pushing inside a downtrend are not a buy', () => {
     const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', agg: 0.4, pas: 0.2, ...closedHigh });
     const priors = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5].map((close) => read({
@@ -357,6 +372,59 @@ function syntheticBars(n: number, seed = 7): EntryBar[] {
   }
   return bars;
 }
+
+describe("sellers can't and buyers can't", () => {
+  function downBar(time: number, close: number, highClose: boolean): EntryBar {
+    return {
+      time,
+      open: close + 0.01,
+      high: highClose ? close + 0.004 : close + 0.02,
+      low: highClose ? close - 0.02 : close - 0.004,
+      close,
+      totalBuy: highClose ? 70 : 40,
+      totalSell: highClose ? 30 : 60,
+    };
+  }
+
+  it("labels sellers can't on the close that comes back up, and not on the next one", () => {
+    const closes = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5, 3.505, 3.51];
+    const bars = closes.map((close, i) => downBar(i, close, i >= 6));
+    const marks = couldntMarks(bars, null, bars.map(() => ({ deltaSide: 'SELL', deltaStrengthState: 'WEAK', directionalProgressATR: 0.2 })));
+    expect(marks.get(6)?.text).toBe("SELLERS CAN'T");
+    expect(marks.has(7)).toBe(false);
+    expect(marks.has(5)).toBe(false);
+  });
+
+  it("does not label sellers can't while the close is still falling", () => {
+    const closes = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5, 3.49];
+    const bars = closes.map((close, i) => downBar(i, close, false));
+    const marks = couldntMarks(bars, null, bars.map(() => ({ deltaSide: 'SELL', deltaStrengthState: 'NORMAL', directionalProgressATR: 0.6 })));
+    expect(marks.size).toBe(0);
+  });
+
+  it("labels buyers can't when an uptrend close comes back down", () => {
+    const upBar = (time: number, close: number, lowClose: boolean): EntryBar => ({
+      time,
+      open: close - 0.01,
+      high: lowClose ? close + 0.02 : close + 0.004,
+      low: lowClose ? close - 0.004 : close - 0.02,
+      close,
+      totalBuy: lowClose ? 30 : 70,
+      totalSell: lowClose ? 70 : 30,
+    });
+    const closes = [3.5, 3.51, 3.52, 3.53, 3.54, 3.55, 3.545];
+    const bars = closes.map((close, i) => upBar(i, close, i === 6));
+    const marks = couldntMarks(bars, null, bars.map(() => ({ deltaSide: 'BUY', deltaStrengthState: 'NORMAL', directionalProgressATR: 0.6 })));
+    expect(marks.get(6)?.text).toBe("BUYERS CAN'T");
+  });
+
+  it('skips the live candle', () => {
+    const closes = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5, 3.505];
+    const bars = closes.map((close, i) => downBar(i, close, i === 6));
+    const marks = couldntMarks(bars, 6, bars.map(() => ({ deltaSide: 'SELL', deltaStrengthState: 'WEAK', directionalProgressATR: 0.2 })));
+    expect(marks.has(6)).toBe(false);
+  });
+});
 
 describe('state 5 on the chart', () => {
   it('still labels the buyer candle after the bids-held fade', () => {

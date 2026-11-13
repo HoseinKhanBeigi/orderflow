@@ -108,6 +108,15 @@ export interface EntryMark extends EntrySignal {
   tip: string;
 }
 
+/** Chart label for the candle where the trend side's close fails. Not an entry by itself. */
+export interface CouldntMark {
+  side: 'BUY' | 'SELL';
+  text: string;
+  short: string;
+  color: string;
+  tip: string;
+}
+
 export function barBattleVerdict(bar: EntryBar): BattleVerdict | null {
   const buy = Math.max(0, bar.totalBuy ?? 0);
   const sell = Math.max(0, bar.totalSell ?? 0);
@@ -466,6 +475,60 @@ function trendFailed(cur: EntryRead, trend: EffortSide): boolean {
 }
 
 /**
+ * Sellers can't: this close did not go down.
+ * Buyers can't: this close did not go up.
+ * A real extension that still owns its close is that side still moving price.
+ */
+function closeCouldnt(row: EntryRead, prev: EntryRead | null, side: EffortSide): boolean {
+  if (side === 'SELL') {
+    if (row.deltaSide === 'SELL' && row.prog != null && row.prog >= ENTRY_REAL_PROG && row.upside !== 'BUYERS_WIN') return false;
+    if (row.upside === 'BUYERS_WIN') return true;
+    return known(row.close) && !!prev && known(prev.close) && row.close >= prev.close;
+  }
+  if (row.deltaSide === 'BUY' && row.prog != null && row.prog >= ENTRY_REAL_PROG && row.downside !== 'SELLERS_WIN') return false;
+  if (row.downside === 'SELLERS_WIN') return true;
+  return known(row.close) && !!prev && known(prev.close) && row.close <= prev.close;
+}
+
+/**
+ * The 6 candles are that trend, and the latest effort candle already lost its close.
+ * Null means the window has no trend read, so states 1–7 keep their older rule.
+ */
+function effortCouldnt(recent: EntryRead[], side: EffortSide): boolean | null {
+  if (recent.length < ENTRY_CONTEXT_MIN) return null;
+  if (!trendContext(recent, side)) return priceDrift(recent) == null ? null : false;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    if (!trendTrying(recent[i]!, side)) continue;
+    return closeCouldnt(recent[i]!, i > 0 ? recent[i - 1]! : null, side);
+  }
+  return null;
+}
+
+/** The signal candle is where that side's price stops: the close turns, or progress stalls. */
+function candleFailsSide(cur: EntryRead, prev: EntryRead | null, side: EffortSide): boolean {
+  if (closeCouldnt(cur, prev, side)) return true;
+  if (cur.prog != null && cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG) return true;
+  return cur.deltaSide === side && cur.prog != null && cur.prog < ENTRY_REAL_PROG;
+}
+
+/**
+ * A fade stands when that side already can't, or when this candle is the failure.
+ * A flat window keeps the older rule.
+ */
+function fadeStands(recent: EntryRead[], cur: EntryRead, prev: EntryRead | null, side: EffortSide): boolean {
+  const prior = effortCouldnt(recent, side);
+  if (prior == null || prior) return true;
+  return candleFailsSide(cur, prev, side);
+}
+
+/** A join stays quiet once that side has already lost its close inside the 6. */
+function joinStands(recent: EntryRead[], side: EffortSide): boolean {
+  const prior = effortCouldnt(recent, side);
+  if (prior == null) return true;
+  return !prior;
+}
+
+/**
  * One entry from the last closed candle. The 6 candles before it are read first.
  * Effort is the aggressive imbalance. The book is passive imbalance and A/B replenishment.
  * 1 that side was already pushing, then this candle's effort is absorbed.
@@ -479,6 +542,10 @@ function trendFailed(cur: EntryRead, trend: EffortSide): boolean {
  *    The trend is up and aggressive buyers plus bids cannot push price up, so this candle is a sell.
  * Every state reads that same trend. A downtrend is sellers and asks. An uptrend is buyers and bids.
  * Fades need the trend they are fading. A push with the move needs that side's trend.
+ * Sellers can't means a downtrend whose sellers and asks did not get the close down.
+ * Buyers can't means an uptrend whose buyers and bids did not get the close up.
+ * A fade stands when that side already can't, or when this candle is that failure.
+ * A join stays quiet when that side already can't.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -497,10 +564,12 @@ export function decideEntry(
 
   if (prevAccepted && cur.highDelta && little) {
     if (prevSide === 'SELL' && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && passiveAbsorbs(cur, 'BUY')) {
-      return inTrend(recent, 'SELL') ? { side: 'buy', state: 3 } : null;
+      if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+      return { side: 'buy', state: 3 };
     }
     if (prevSide === 'BUY' && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && passiveAbsorbs(cur, 'SELL')) {
-      return inTrend(recent, 'BUY') ? { side: 'sell', state: 3 } : null;
+      if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+      return { side: 'sell', state: 3 };
     }
   }
 
@@ -511,41 +580,50 @@ export function decideEntry(
     const continued = chip && prevSignal && prevSignal.side === side;
     const took = effort === 'BUY' ? buyersOwnClose(cur) : effort === 'SELL' ? sellersOwnClose(cur) : false;
     if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
-      return inTrend(recent, effort) ? { side, state: 2 } : null;
+      if (!inTrend(recent, effort) || !joinStands(recent, effort)) return null;
+      return { side, state: 2 };
     }
   }
 
   const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
   if (responded && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW')) {
-    return inTrend(recent, 'SELL') ? { side: 'buy', state: 4 } : null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    return { side: 'buy', state: 4 };
   }
   if (responded && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH')) {
-    return inTrend(recent, 'BUY') ? { side: 'sell', state: 4 } : null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    return { side: 'sell', state: 4 };
   }
 
   const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== 'WEAK';
   if (battleWon && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW') && !(prevSignal && prevSignal.side === 'buy')) {
-    return inTrend(recent, 'SELL') ? { side: 'buy', state: 4 } : null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    return { side: 'buy', state: 4 };
   }
   if (battleWon && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH') && !(prevSignal && prevSignal.side === 'sell')) {
-    return inTrend(recent, 'BUY') ? { side: 'sell', state: 4 } : null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    return { side: 'sell', state: 4 };
   }
   // State 2 needs the delta on the same side as the trade, and at least two of the
   // setup candles already won that battle. A heavy SELL candle that closed high stays a fade.
   if (cur.highDelta && real) {
     if (sellersOwnClose(cur) && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
-      return inTrend(recent, 'SELL') ? { side: 'sell', state: 2 } : null;
+      if (!inTrend(recent, 'SELL') || !joinStands(recent, 'SELL')) return null;
+      return { side: 'sell', state: 2 };
     }
     if (buyersOwnClose(cur) && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
-      return inTrend(recent, 'BUY') ? { side: 'buy', state: 2 } : null;
+      if (!inTrend(recent, 'BUY') || !joinStands(recent, 'BUY')) return null;
+      return { side: 'buy', state: 2 };
     }
   }
 
   if (cur.highDelta && real && buyersTook(cur) && triedButCouldnt(recent, 'SELL')) {
-    return inTrend(recent, 'SELL') ? { side: 'buy', state: 5 } : null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    return { side: 'buy', state: 5 };
   }
   if (cur.highDelta && real && sellersTook(cur) && triedButCouldnt(recent, 'BUY')) {
-    return inTrend(recent, 'BUY') ? { side: 'sell', state: 5 } : null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    return { side: 'sell', state: 5 };
   }
 
   const buyersLost = cur.highDelta && cur.deltaSide === 'BUY' && cur.upside === 'ASKS_HOLD' && aggLeans(cur, 'BUY') && passiveAbsorbs(cur, 'BUY');
@@ -555,10 +633,12 @@ export function decideEntry(
     (sellersLost && prev.highDelta && prev.deltaSide === 'SELL' && prev.downside === 'BIDS_HOLD')
   );
   if (!prevLostSame && sellersLost && countDelta(recent, 'SELL') >= 3) {
-    return inTrend(recent, 'SELL') ? { side: 'buy', state: 1 } : null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    return { side: 'buy', state: 1 };
   }
   if (!prevLostSame && buyersLost && countDelta(recent, 'BUY') >= 3) {
-    return inTrend(recent, 'BUY') ? { side: 'sell', state: 1 } : null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    return { side: 'sell', state: 1 };
   }
 
   // The side that just moved does not progress on this candle. Open the other side
@@ -571,7 +651,8 @@ export function decideEntry(
     const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
     const groups = fight(cur);
     if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
-      return inTrend(recent, stalledSide) ? { side: joining === 'BUY' ? 'buy' : 'sell', state: 6 } : null;
+      if (!inTrend(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
+      return { side: joining === 'BUY' ? 'buy' : 'sell', state: 6 };
     }
   }
 
@@ -587,17 +668,18 @@ export function decideEntry(
       ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === 'BUYERS_WIN')
       : fight(cur).aggSellers && (fight(cur).bids || cur.downside === 'SELLERS_WIN');
     if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
-      return inTrend(recent, prevSide) ? { side: prevSide === 'BUY' ? 'sell' : 'buy', state: 7 } : null;
+      if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
+      return { side: prevSide === 'BUY' ? 'sell' : 'buy', state: 7 };
     }
   }
 
   // Trend context. A downtrend is judged by aggressive sellers and the asks:
   // if they no longer get price down, buy on the candle that takes the close.
   // An uptrend is judged by aggressive buyers and the bids, and the failure is a sell.
-  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
+  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
     return { side: 'buy', state: 8 };
   }
-  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
+  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
     return { side: 'sell', state: 8 };
   }
   return null;
@@ -659,6 +741,12 @@ export function entryMarks(
     if (!held && !marks.has(time)) {
       const buy = signal.side === 'buy';
       const word = buy ? 'BUY' : 'SELL';
+      const faded: EffortSide = buy ? 'SELL' : 'BUY';
+      const cant = signal.state === 2
+        ? null
+        : closeCouldnt(cur, prev, faded) || effortCouldnt(priors, faded) === true
+          ? faded === 'SELL' ? "Sellers can't" : "Buyers can't"
+          : null;
       marks.set(time, {
         side: signal.side,
         state: signal.state,
@@ -668,6 +756,7 @@ export function entryMarks(
         tip: [
           `${word} ${signal.state}`,
           ENTRY_DETAIL[signal.state],
+          ...(cant ? [cant] : []),
           `Agg ${fmtSignedPct(cur.agg)} · Pas ${fmtSignedPct(cur.pas)}`,
           `A repl ${fmtNotional(cur.askRepl)} · B repl ${fmtNotional(cur.bidRepl)}`,
           `Upside ${lower(cur.upside)} · downside ${lower(cur.downside)}`,
@@ -676,6 +765,58 @@ export function entryMarks(
     }
     openSide = signal.side;
     openState = signal.state;
+  }
+  return marks;
+}
+
+function couldntMark(side: EffortSide): CouldntMark {
+  const sellers = side === 'SELL';
+  return {
+    side,
+    text: sellers ? "SELLERS CAN'T" : "BUYERS CAN'T",
+    short: sellers ? "SELL CAN'T" : "BUY CAN'T",
+    color: sellers ? '#60a5fa' : '#fbbf24',
+    tip: sellers
+      ? "Sellers can't\nDowntrend. Aggressive sellers and the asks had the effort, and this close did not go down."
+      : "Buyers can't\nUptrend. Aggressive buyers and the bids had the effort, and this close did not go up.",
+  };
+}
+
+/**
+ * SELLERS CAN'T / BUYERS CAN'T on the first closed candle where that trend loses its close.
+ * The 6 candles before it are the same window the entry states use.
+ * The forming candle is never labeled. The next candle of the same failure stays quiet.
+ */
+export function couldntMarks(
+  bars: EntryBar[],
+  liveTime: number | null,
+  progress: EntryProgressRow[],
+): Map<number, CouldntMark> {
+  const marks = new Map<number, CouldntMark>();
+  if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
+  const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
+  const last = lastIsLive ? bars.length - 1 : bars.length;
+  const reads: EntryRead[] = [];
+  for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+  let open: EffortSide | null = null;
+  for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
+    const cur = reads[index]!;
+    const prev = reads[index - 1]!;
+    const recent = reads.slice(Math.max(0, index - ENTRY_PRIOR_BARS), index);
+    const drift = priceDrift(recent);
+    const sellCant = trendContext(recent, 'SELL') && closeCouldnt(cur, prev, 'SELL');
+    const buyCant = trendContext(recent, 'BUY') && closeCouldnt(cur, prev, 'BUY');
+    const side: EffortSide | null = drift === 'SELL' && sellCant
+      ? 'SELL'
+      : drift === 'BUY' && buyCant
+        ? 'BUY'
+        : sellCant && !buyCant
+          ? 'SELL'
+          : buyCant && !sellCant
+            ? 'BUY'
+            : null;
+    if (side && side !== open) marks.set(bars[index]!.time, couldntMark(side));
+    open = side;
   }
   return marks;
 }

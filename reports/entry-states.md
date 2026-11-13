@@ -18,6 +18,18 @@ If those six closes did not drift enough to be a trend, states 1–7 keep their 
 
 Fades need the trend they are fading. A push that goes with the move needs that side's trend.
 
+## Sellers can't and buyers can't
+
+This is a reading of the same six candles, drawn on the candle where it shows. It is not a ninth entry.
+
+**Sellers can't:** the six are a downtrend, so aggressive sellers and the asks had the effort, and this close did not go down.
+
+**Buyers can't:** the six are an uptrend, so aggressive buyers and the bids had the effort, and this close did not go up.
+
+The label sits on the first candle of that failure. The next candle of the same failure stays quiet. The forming candle is never labeled.
+
+A fade (states 1, 3, 4, 5, 6, 7, 8) stands when that side already can't, or when this candle is the one where the close or the progress fails. A join (state 2) stays quiet when that side already can't inside the six. State 8 is that failure candle, so the can't label confirms it.
+
 ## Effort and response
 
 Effort is the aggressive imbalance (Agg) and the delta. Response is how far price moved with that delta, in ATR.
@@ -49,7 +61,7 @@ That side already owns the move, and this candle's effort is accepted.
 - **Buy:** uptrend. High buy delta, real progress, buyers win the close, Agg leans buy, bids are not refilling against them. Buyers already own the setup, or at least two of the six candles already closed as buyers.
 - **Sell:** downtrend. The mirror: sellers win the close, asks are not refilling against them.
 
-A heavy sell candle that closed high stays a fade. It is not buy 2.
+If that side already can't inside the six, this join stays quiet. A heavy sell candle that closed high stays a fade. It is not buy 2.
 
 ### 3 — effort flipped, book refilled, price stopped
 

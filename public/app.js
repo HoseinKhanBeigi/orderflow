@@ -2488,66 +2488,16 @@ function battleVerdictLabel(v, dense) {
   return { text: `${arrow} ${side.power}% ${who}`, color: out.color };
 }
 
-const TRIO_CANDLES = 3;
-
-function couldntLabel(side, pct, why) {
-  if (side === 'BUY') {
-    return {
-      text: "BUYERS CAN'T",
-      short: "BUY CAN'T",
-      color: '#fbbf24',
-      tip: `Buyers can't\n${why}\nAggressive buys were ${pct}% of these 3 candles.`,
-    };
-  }
-  return {
-    text: "SELLERS CAN'T",
-    short: "SELL CAN'T",
-    color: '#60a5fa',
-    tip: `Sellers can't\n${why}\nAggressive sells were ${pct}% of these 3 candles.`,
-  };
-}
-
 /**
- * Candles run 1 2 3, then 4 5 6, then 7 8 9.
- * The label can only sit on candle 3, 6, 9, ….
- * It is BUYERS CAN'T only when buys were the stronger attack and the close did not rise.
- * It is SELLERS CAN'T only when sells were the stronger attack and the close did not fall.
- * If that side actually moved the price, the group gets no label.
+ * SELLERS CAN'T / BUYERS CAN'T from the same 6-candle trend the entry states use.
+ * Downtrend: sellers and asks had the effort, and this close did not go down.
+ * Uptrend: buyers and bids had the effort, and this close did not go up.
  */
-function trioCouldntLabel(group) {
-  let buy = 0;
-  let sell = 0;
-  for (const bar of group) {
-    buy += Math.max(0, bar.totalBuy ?? 0);
-    sell += Math.max(0, bar.totalSell ?? 0);
-  }
-  const vol = buy + sell;
-  if (vol <= 0) return null;
-  const buyPct = Math.round((buy / vol) * 100);
-  const sellPct = 100 - buyPct;
-  if (Math.abs(buyPct - sellPct) < BATTLE_EVEN_GAP_PCT) return null;
-  const open = Number(group[0].open);
-  const close = Number(group[2].close);
-  if (!Number.isFinite(open) || !Number.isFinite(close)) return null;
-  if (buyPct > sellPct && close <= open) {
-    return couldntLabel('BUY', buyPct, 'Buys were the stronger attack and the close did not rise.');
-  }
-  if (sellPct > buyPct && close >= open) {
-    return couldntLabel('SELL', sellPct, 'Sells were the stronger attack and the close did not fall.');
-  }
-  return null;
-}
-
-/** Closed candles only, in order. The label is on the 3rd, 6th, 9th, … */
-function trioCouldntMarks(bars, liveTime) {
-  const marks = new Map();
-  const closed = bars.filter((bar) => bar.time !== liveTime);
-  for (let n = TRIO_CANDLES; n <= closed.length; n += TRIO_CANDLES) {
-    const group = closed.slice(n - TRIO_CANDLES, n);
-    const label = trioCouldntLabel(group);
-    if (label) marks.set(group[2].time, label);
-  }
-  return marks;
+function couldntMarks(bars, liveTime) {
+  const impl = window.OrderFlowClient?.couldntMarks;
+  if (!impl || !bars?.length) return new Map();
+  const rows = annotateDeltaProgress(bars, { lastIsLive: bars[bars.length - 1]?.time === liveTime });
+  return impl(bars, liveTime, rows);
 }
 
 function battleVerdictTip(v) {
@@ -5245,7 +5195,7 @@ function drawFootprint(symbol = selectedSymbol) {
     lastIsLive: lastIsLive && endIdx === bars.length,
   });
   const frByTime = buildFrByConfirmTime(lie);
-  const couldntByTime = trioCouldntMarks(bars, nowBucket);
+  const couldntByTime = couldntMarks(bars, nowBucket);
   const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
