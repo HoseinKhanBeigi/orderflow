@@ -411,6 +411,45 @@ function prevStillTrend(prev: EntryRead, trend: EffortSide): boolean {
 }
 
 /**
+ * The four groups on one candle.
+ * Aggressive buyers and sellers come from the tape. Asks and bids come from the close and from Pas.
+ */
+function fight(row: EntryRead) {
+  return {
+    aggBuyers: row.deltaSide === 'BUY' && aggLeans(row, 'BUY'),
+    aggSellers: row.deltaSide === 'SELL' && aggLeans(row, 'SELL'),
+    asks: row.upside === 'ASKS_HOLD' || row.chip === 'ASKS' || (known(row.pas) && row.pas < 0),
+    bids: row.downside === 'BIDS_HOLD' || row.chip === 'BIDS' || (known(row.pas) && row.pas > 0),
+  };
+}
+
+/** Aggressive buyers won the close and the bids are with them. */
+function buyersOwnClose(row: EntryRead): boolean {
+  const groups = fight(row);
+  return groups.aggBuyers && row.upside === 'BUYERS_WIN' && groups.bids && passiveAgrees(row, 'BUY');
+}
+
+/** Aggressive sellers won the close and the asks are with them. */
+function sellersOwnClose(row: EntryRead): boolean {
+  const groups = fight(row);
+  return groups.aggSellers && row.downside === 'SELLERS_WIN' && groups.asks && passiveAgrees(row, 'SELL');
+}
+
+/** Buyers own the close, or they moved price while asks were still sitting on it. */
+function buyersTook(row: EntryRead): boolean {
+  const groups = fight(row);
+  if (buyersOwnClose(row)) return true;
+  return groups.aggBuyers && groups.asks && row.upside !== 'BUYERS_WIN';
+}
+
+/** Sellers own the close, or they moved price while bids were still sitting on it. */
+function sellersTook(row: EntryRead): boolean {
+  const groups = fight(row);
+  if (sellersOwnClose(row)) return true;
+  return groups.aggSellers && groups.bids && row.downside !== 'SELLERS_WIN';
+}
+
+/**
  * The trend did not get its price. A downtrend fails when the close comes back up,
  * an uptrend when the close goes back down. Weak or flat delta still counts:
  * 14:00 was a weak print that closed high after the asks could not extend the drop.
@@ -470,41 +509,42 @@ export function decideEntry(
     const chip = effort === 'BUY' ? 'BUYERS' : effort === 'SELL' ? 'SELLERS' : null;
     const side: EntrySide = chip === 'BUYERS' ? 'buy' : 'sell';
     const continued = chip && prevSignal && prevSignal.side === side;
-    if (chip && effort && cur.chip === chip && priorsOwn(recent, chip) && !continued && aggLeans(cur, effort) && passiveAgrees(cur, effort)) {
+    const took = effort === 'BUY' ? buyersOwnClose(cur) : effort === 'SELL' ? sellersOwnClose(cur) : false;
+    if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
       return inTrend(recent, effort) ? { side, state: 2 } : null;
     }
   }
 
   const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
-  if (responded && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && responseHeld(cur, 'BUY') && failedSideShown(recent, 'SELLERS', 'LOW')) {
+  if (responded && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW')) {
     return inTrend(recent, 'SELL') ? { side: 'buy', state: 4 } : null;
   }
-  if (responded && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && responseHeld(cur, 'SELL') && failedSideShown(recent, 'BUYERS', 'HIGH')) {
+  if (responded && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH')) {
     return inTrend(recent, 'BUY') ? { side: 'sell', state: 4 } : null;
   }
 
   const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== 'WEAK';
-  if (battleWon && cur.upside === 'BUYERS_WIN' && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && responseHeld(cur, 'BUY') && failedSideShown(recent, 'SELLERS', 'LOW') && !(prevSignal && prevSignal.side === 'buy')) {
+  if (battleWon && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW') && !(prevSignal && prevSignal.side === 'buy')) {
     return inTrend(recent, 'SELL') ? { side: 'buy', state: 4 } : null;
   }
-  if (battleWon && cur.downside === 'SELLERS_WIN' && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && responseHeld(cur, 'SELL') && failedSideShown(recent, 'BUYERS', 'HIGH') && !(prevSignal && prevSignal.side === 'sell')) {
+  if (battleWon && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH') && !(prevSignal && prevSignal.side === 'sell')) {
     return inTrend(recent, 'BUY') ? { side: 'sell', state: 4 } : null;
   }
   // State 2 needs the delta on the same side as the trade, and at least two of the
   // setup candles already won that battle. A heavy SELL candle that closed high stays a fade.
   if (cur.highDelta && real) {
-    if (cur.deltaSide === 'SELL' && cur.downside === 'SELLERS_WIN' && aggLeans(cur, 'SELL') && passiveAgrees(cur, 'SELL') && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
+    if (sellersOwnClose(cur) && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
       return inTrend(recent, 'SELL') ? { side: 'sell', state: 2 } : null;
     }
-    if (cur.deltaSide === 'BUY' && cur.upside === 'BUYERS_WIN' && aggLeans(cur, 'BUY') && passiveAgrees(cur, 'BUY') && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
+    if (buyersOwnClose(cur) && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
       return inTrend(recent, 'BUY') ? { side: 'buy', state: 2 } : null;
     }
   }
 
-  if (cur.highDelta && real && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY') && triedButCouldnt(recent, 'SELL')) {
+  if (cur.highDelta && real && buyersTook(cur) && triedButCouldnt(recent, 'SELL')) {
     return inTrend(recent, 'SELL') ? { side: 'buy', state: 5 } : null;
   }
-  if (cur.highDelta && real && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL') && triedButCouldnt(recent, 'BUY')) {
+  if (cur.highDelta && real && sellersTook(cur) && triedButCouldnt(recent, 'BUY')) {
     return inTrend(recent, 'BUY') ? { side: 'sell', state: 5 } : null;
   }
 
@@ -529,7 +569,8 @@ export function decideEntry(
     const joining = stalledSide === 'BUY' ? 'SELL' : 'BUY';
     const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
     const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
-    if (prevMoved && otherAlreadyMoved) {
+    const groups = fight(cur);
+    if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
       return inTrend(recent, stalledSide) ? { side: joining === 'BUY' ? 'buy' : 'sell', state: 6 } : null;
     }
   }
@@ -542,7 +583,10 @@ export function decideEntry(
     const sameEffort = effortRatio >= ENTRY_EFFORT_SAME_MIN && effortRatio <= ENTRY_EFFORT_SAME_MAX;
     const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
     const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
-    if (sameEffort && responseOkBefore && responseFaded) {
+    const fadedFight = prevSide === 'BUY'
+      ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === 'BUYERS_WIN')
+      : fight(cur).aggSellers && (fight(cur).bids || cur.downside === 'SELLERS_WIN');
+    if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
       return inTrend(recent, prevSide) ? { side: prevSide === 'BUY' ? 'sell' : 'buy', state: 7 } : null;
     }
   }

@@ -178,7 +178,7 @@ describe('decideEntry states', () => {
 
   it('7: same buy effort, response fades, sell is marked on that candle', () => {
     const prev = read({ deltaSide: 'BUY', delta: 497_000, prog: 0.9, strength: 'STRONG' });
-    const cur = read({ deltaSide: 'BUY', delta: 410_000, prog: 0.3, strength: 'STRONG' });
+    const cur = read({ deltaSide: 'BUY', delta: 410_000, prog: 0.3, strength: 'STRONG', ...closedHigh });
     const priors = [...sideTries('BUY', 5, { prog: 0.4 }), prev];
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'sell', state: 7 });
   });
@@ -192,7 +192,7 @@ describe('decideEntry states', () => {
 
   it('7: same sell effort, response fades, buy is marked on that candle', () => {
     const prev = read({ deltaSide: 'SELL', delta: -800_000, prog: 0.96, strength: 'STRONG' });
-    const cur = read({ deltaSide: 'SELL', delta: -700_000, prog: 0.3, strength: 'STRONG' });
+    const cur = read({ deltaSide: 'SELL', delta: -700_000, prog: 0.3, strength: 'STRONG', ...closedLow });
     const priors = [...sideTries('SELL', 5, { prog: 0.4 }), prev];
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 7 });
   });

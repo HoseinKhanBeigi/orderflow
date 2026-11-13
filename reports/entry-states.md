@@ -64,15 +64,15 @@ A flip the book accepts is not state 3.
 
 The other side already failed, then price responds.
 
-- **Buy:** downtrend. Sellers already failed at least twice in the six, and the candle just before still belongs to that failure. This candle is buyers: they win the close, Agg leans buy, and the book does not refill against them. Progress is a large response on ordinary delta, or a real response that is not weak.
-- **Sell:** uptrend. The mirror, after buyers failed.
+- **Buy:** downtrend. Sellers already failed at least twice in the six, and the candle just before still belongs to that failure. Aggressive buyers win the close and the bids are with them. Progress is a large response on ordinary delta, or a real response that is not weak.
+- **Sell:** uptrend. The mirror: aggressive sellers win the close and the asks are with them.
 
 ### 5 — side tried, book held, other side took it
 
 One side kept trying and the book held. The other side takes it.
 
-- **Buy:** downtrend. At least 3 of the 6 are sell delta, at least 2 of those failed to extend or got absorbed, and the candle just before is still that failed sell. This candle is high buy delta with real progress.
-- **Sell:** uptrend. The mirror.
+- **Buy:** downtrend. At least 3 of the 6 are sell delta, at least 2 of those failed to extend or got absorbed, and the candle just before is still that failed sell. Aggressive buyers either win the close with the bids, or they move price while the asks are still on the close.
+- **Sell:** uptrend. The mirror: sellers win the close with the asks, or they move price while the bids are still on the close.
 
 State 5 can mark even if that side is already open, unless the open mark is already state 5.
 
@@ -80,8 +80,8 @@ State 5 can mark even if that side is already open, unless the open mark is alre
 
 The side that just moved does not progress. Open the other side on this candle, before the next move's candles.
 
-- **Sell:** uptrend. The previous candle was an accepted buy with real progress. This candle is still buy delta, and progress is little. Sellers already printed one real push inside the six.
-- **Buy:** downtrend. The mirror. The previous sell stalls, and buyers already moved once in the six.
+- **Sell:** uptrend. The previous candle was an accepted buy with real progress. This candle is still buy delta, progress is little, and asks or bids are on the candle. Sellers already printed one real push inside the six.
+- **Buy:** downtrend. The mirror. The previous sell stalls, asks or bids are on the candle, and buyers already moved once in the six.
 
 A candle that is still progressing is left alone.
 
@@ -89,8 +89,8 @@ A candle that is still progressing is left alone.
 
 Effort stays about the same and the response fades. The other side is opened on this candle.
 
-- **Sell:** uptrend. This candle's buy delta is 70% to 115% of the previous buy. The previous candle had real progress. This candle's progress is under 0.50 ATR and under half of that previous progress.
-- **Buy:** downtrend. The mirror on sell delta.
+- **Sell:** uptrend. This candle's buy delta is 70% to 115% of the previous buy. The previous candle had real progress. This candle's progress is under 0.50 ATR and under half of that previous progress. Aggressive buyers are still on it, and either they still hold the close or the asks have it.
+- **Buy:** downtrend. The mirror: aggressive sellers are still on it, and either they still hold the close or the bids have it.
 
 If effort and response are both still growing, there is no fade. Effort that collapses below 70% is state 6, not state 7.
 
