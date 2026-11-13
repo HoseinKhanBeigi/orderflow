@@ -1626,9 +1626,11 @@ function resizeFpView(symbol) {
   const h = Math.max(1, Math.floor(host.clientHeight));
   view.ctx = mountCanvas(view.canvas, w, h);
   const foot = view.footCanvas;
-  const footHost = foot?.parentElement;
-  if (foot && footHost?.classList.contains('is-open')) {
-    view.footCtx = mountCanvas(foot, w, fpBottomPad() + 12);
+  const footPane = view.footPane;
+  if (foot && footPane?.classList.contains('is-open')) {
+    const width = Math.max(1, Math.floor((view.footScroll || footPane).clientWidth));
+    if (view.timeCanvas) view.timeCtx = mountCanvas(view.timeCanvas, width, 22);
+    view.footCtx = mountCanvas(foot, width, fpBottomPad());
   }
 }
 
@@ -1732,12 +1734,21 @@ function buildFpGrid() {
     const canvas = document.createElement('canvas');
     host.appendChild(canvas);
     const footHost = card.querySelector('[data-fp-foot]');
+    const footScroll = document.createElement('div');
+    footScroll.className = 'fp-card-foot-scroll';
+    const timeCanvas = document.createElement('canvas');
+    timeCanvas.className = 'fp-time-axis';
     const footCanvas = document.createElement('canvas');
-    footHost.appendChild(footCanvas);
+    footScroll.append(timeCanvas, footCanvas);
+    footHost.appendChild(footScroll);
     grid.appendChild(card);
     fpViews.set(coin.symbol, {
       canvas,
       ctx: canvas.getContext('2d'),
+      footPane: footHost,
+      footScroll,
+      timeCanvas,
+      timeCtx: timeCanvas.getContext('2d'),
       footCanvas,
       footCtx: footCanvas.getContext('2d'),
       footHits: [],
@@ -1752,7 +1763,8 @@ function buildFpGrid() {
       levelEventHits: [],
     });
     bindFpCanvas(coin.symbol, canvas);
-    bindFpCanvas(coin.symbol, footCanvas, { pan: false, scrollHost: footHost });
+    bindFpCanvas(coin.symbol, timeCanvas, { pan: true, scrollHost: footScroll });
+    bindFpCanvas(coin.symbol, footCanvas, { pan: false, scrollHost: footScroll });
     card.addEventListener('pointerdown', () => focusFootprintSymbol(coin.symbol));
   }
   syncFootprintSymbolPicker();
@@ -4363,7 +4375,12 @@ function showPatternTip(symbol, event) {
   const tip = view?.card?.querySelector('[data-fp-pattern-tip]');
   if (!view || !tip) return;
   const canvas = event.currentTarget || view.canvas;
-  const onFoot = canvas === view.footCanvas;
+  const onTime = canvas === view.timeCanvas;
+  const onFoot = canvas === view.footCanvas || onTime;
+  if (onTime) {
+    tip.classList.add('hidden');
+    return;
+  }
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
@@ -5049,7 +5066,7 @@ function drawDeltaProgressLabels(ctx, result, cx, footY, maxW) {
 }
 
 function syncFootPane(view, open) {
-  const pane = view?.footCanvas?.parentElement;
+  const pane = view?.footPane || view?.footCanvas?.closest('[data-fp-foot]');
   if (!pane || pane.classList.contains('is-open') === open) return false;
   pane.classList.toggle('is-open', open);
   return true;
@@ -5187,13 +5204,26 @@ function drawFootprint(symbol = selectedSymbol) {
   view.footHits = [];
   view.levelEventHits = [];
   const footCtx = view.footCtx;
-  const footY = 12;
+  const timeCtx = view.timeCtx;
+  const footY = 8;
   if (footCtx && view.footCanvas) {
     const fW = view.footCanvas.width / devicePixelRatio;
     const fH = view.footCanvas.height / devicePixelRatio;
     footCtx.clearRect(0, 0, fW, fH);
     footCtx.fillStyle = '#0d1117';
     footCtx.fillRect(0, 0, fW, fH);
+  }
+  if (timeCtx && view.timeCanvas) {
+    const tW = view.timeCanvas.width / devicePixelRatio;
+    const tH = view.timeCanvas.height / devicePixelRatio;
+    timeCtx.clearRect(0, 0, tW, tH);
+    timeCtx.fillStyle = '#0d1117';
+    timeCtx.fillRect(0, 0, tW, tH);
+    timeCtx.strokeStyle = '#1c2128';
+    timeCtx.beginPath();
+    timeCtx.moveTo(0, tH - 0.5);
+    timeCtx.lineTo(tW, tH - 0.5);
+    timeCtx.stroke();
   }
   const patternByTime = new Map();
   for (const marker of patternMarkersFor(symbol)) {
@@ -5351,7 +5381,13 @@ function drawFootprint(symbol = selectedSymbol) {
       footCtx.textBaseline = 'middle';
       // Daily: date only. All other TFs: date + time under each candle.
       const timeLabel = fmtFpCandleLabel(bar.time, chartTfMinutes);
-      footCtx.fillText(timeLabel, cx, footY + 14, barWidth - 2);
+      if (timeCtx) {
+        timeCtx.font = 'bold 10px JetBrains Mono, monospace';
+        timeCtx.textAlign = 'center';
+        timeCtx.textBaseline = 'middle';
+        timeCtx.fillStyle = '#c6cdd8';
+        timeCtx.fillText(timeLabel, cx, 11, barWidth - 2);
+      }
 
       const metrics = flowByTime.get(bar.time);
       if (metrics) {

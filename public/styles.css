@@ -403,13 +403,32 @@ body {
 }
 
 .fp-card-foot.is-open {
+  display: flex;
+  flex-direction: column;
   flex: 0 0 32%;
   height: auto;
   max-height: 220px;
   min-height: 108px;
+  overflow: hidden;
+  border-top: 1px solid #243044;
+}
+
+.fp-card-foot-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  border-top: 1px solid #243044;
+  scrollbar-width: thin;
+  scrollbar-color: #3d4654 transparent;
+}
+
+.fp-time-axis {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: block;
+  background: #0d1117;
+  cursor: grab;
 }
 
 .fp-card-foot canvas {
