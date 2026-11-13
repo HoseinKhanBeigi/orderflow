@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   barBattleVerdict,
+  barEntryRead,
   couldntMarks,
   decideEntry,
   entryMarks,
+  levelMarks,
   trapMarks,
   type EntryBar,
   type EntryRead,
@@ -27,6 +29,10 @@ function read(over: Partial<EntryRead> = {}): EntryRead {
     bidRepl: null,
     delta: null,
     close: null,
+    atFloor: false,
+    atCeiling: false,
+    failDown: false,
+    failUp: false,
   };
   const out = { ...base, ...over };
   if (over.prog !== undefined && over.absProg === undefined) out.absProg = over.prog == null ? null : Math.abs(over.prog);
@@ -235,6 +241,18 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 1 });
   });
 
+  it('2: a held ceiling keeps the buy join quiet', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', agg: 0.3, pas: 0.2, ...closedHigh });
+    const priors = [read({ chip: 'BUYERS', atCeiling: true }), read({ chip: 'BUYERS' }), read({ chip: 'SELLERS' }), read(), read(), read()];
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
+  it('1: a held ceiling is not a buy', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.1, ...closedHigh });
+    const priors = [...sideTries('SELL', 5), read({ deltaSide: 'SELL', atCeiling: true })];
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
   it('2: buyers were trapped at the high, so the join stays quiet', () => {
     const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', agg: 0.3, pas: 0.2, ...closedHigh });
     const priors = [read({ chip: 'BUYERS', hunt: 'HIGH' }), read({ chip: 'BUYERS' }), read({ chip: 'SELLERS' }), read(), read(), read()];
@@ -385,6 +403,32 @@ function syntheticBars(n: number, seed = 7): EntryBar[] {
   }
   return bars;
 }
+
+describe('floor, ceiling, and failure', () => {
+  it('marks the second defense of a low as the floor, and a break that closes back as fail down', () => {
+    const held = (time: number): EntryBar => ({
+      time, open: 104, high: 110, low: 100, close: 108, totalBuy: 60, totalSell: 40,
+    });
+    const bars = [0, 1, 2, 3, 4, 5].map(held);
+    const progress = bars.map(() => ({ deltaSide: 'BUY' as const, deltaStrengthState: 'NORMAL', directionalProgressATR: 0.2 }));
+    const floor = barEntryRead(bars, 5, progress);
+    expect(floor.atFloor).toBe(true);
+    expect(floor.failDown).toBe(false);
+    const broken = [...bars, { time: 6, open: 104, high: 109, low: 97, close: 106, totalBuy: 55, totalSell: 45 }];
+    const brokeProgress = [...progress, progress[0]!];
+    const fail = barEntryRead(broken, 6, brokeProgress);
+    expect(fail.failDown).toBe(true);
+    expect(levelMarks(broken, null, brokeProgress).get(6)?.short).toBe('FAIL ↓');
+  });
+
+  it('does not call the first touch of a low a floor', () => {
+    const bars = [0, 1, 2, 3, 4].map((time) => ({
+      time, open: 100 + time, high: 112 + time, low: 100 + time, close: 108 + time, totalBuy: 50, totalSell: 50,
+    }));
+    const progress = bars.map(() => ({ deltaSide: 'BUY' as const, deltaStrengthState: 'NORMAL', directionalProgressATR: 0.3 }));
+    expect(barEntryRead(bars, 4, progress).atFloor).toBe(false);
+  });
+});
 
 describe('sell trap and buy trap', () => {
   function leg(time: number, close: number, lowClose: boolean): EntryBar {

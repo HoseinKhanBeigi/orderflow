@@ -42,6 +42,20 @@ A sweep that is not that trend stays unlabeled. The label sits on the sweep cand
 
 States 1, 4, 5, and 8 stand when the window has that trap. A buy stands with an S trap. A sell stands with a B trap. If the window has no trap, those states keep their own rule. State 2 stays quiet when its side is the one that was trapped. State 4 is still the entry on the candle that responds after the trap.
 
+## Failure, floor, and ceiling
+
+The floor and the ceiling are the prior swing. One test is not enough.
+
+**Floor:** the low was already defended once, and this close holds above it again. The bids held.
+
+**Ceiling:** the high was already defended once, and this close holds below it again. The asks held.
+
+**Fail down:** price went through that floor and the close came back above it. This is the same idea as FAIL ↓.
+
+**Fail up:** price went through that ceiling and the close came back below it. This is the same idea as FAIL ↑.
+
+A buy in states 1, 4, 5, and 8 stands at a floor or a fail down. A sell stands at a ceiling or a fail up. The other level keeps that fade quiet. If the window has neither, those states keep their own rule. A buy join (state 2) stays quiet into a ceiling. A sell join stays quiet into a floor.
+
 ## Effort and response
 
 Effort is the aggressive imbalance (Agg) and the delta. Response is how far price moved with that delta, in ATR.

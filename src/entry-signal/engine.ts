@@ -94,6 +94,14 @@ export interface EntryRead {
   delta: number | null;
   /** Candle close, used to see whether the last 6 candles drifted up or down. */
   close: number | null;
+  /** This candle is another defense of a low the bids already held. */
+  atFloor: boolean;
+  /** This candle is another defense of a high the asks already held. */
+  atCeiling: boolean;
+  /** Price went through that floor and the close came back above it. */
+  failDown: boolean;
+  /** Price went through that ceiling and the close came back below it. */
+  failUp: boolean;
 }
 
 export interface EntrySignal {
@@ -180,6 +188,40 @@ export function stopHuntKind(bar: EntryBar, prior: EntryBar[]): 'HIGH' | 'LOW' |
   return null;
 }
 
+const NO_LEVEL = { atFloor: false, atCeiling: false, failDown: false, failUp: false };
+
+/**
+ * Floor: the swing low, defended at least once already, and this close holds above it.
+ * Ceiling: the swing high, defended at least once already, and this close holds below it.
+ * One test is not a floor or a ceiling. A failure is a break of that level whose close comes back.
+ */
+function levelFlags(bar: EntryBar, prior: EntryBar[]): Pick<EntryRead, 'atFloor' | 'atCeiling' | 'failDown' | 'failUp'> {
+  if (prior.length < 5) return NO_LEVEL;
+  const { support, resistance } = priorSwingLevels(prior);
+  if (support == null || resistance == null || resistance <= support) return NO_LEVEL;
+  const atr = recentBarAtr(prior, bar);
+  const band = Math.max((resistance - support) * 0.08, atr * 0.35);
+  let floorTests = 0;
+  let ceilingTests = 0;
+  for (const b of prior) {
+    const range = b.high - b.low;
+    if (!(range > 0)) continue;
+    const closePos = (b.close - b.low) / range;
+    if (b.low <= support + band && b.close > support && closePos >= BATTLE_CLOSE_WIN) floorTests += 1;
+    if (b.high >= resistance - band && b.close < resistance && closePos <= 1 - BATTLE_CLOSE_WIN) ceilingTests += 1;
+  }
+  const range = bar.high - bar.low;
+  const closePos = range > 0 ? (bar.close - bar.low) / range : 0.5;
+  const holdsFloor = bar.low <= support + band && bar.close > support && closePos >= BATTLE_CLOSE_WIN;
+  const holdsCeiling = bar.high >= resistance - band && bar.close < resistance && closePos <= 1 - BATTLE_CLOSE_WIN;
+  return {
+    atFloor: floorTests >= 1 && holdsFloor,
+    atCeiling: ceilingTests >= 1 && holdsCeiling,
+    failDown: floorTests >= 1 && bar.low < support && bar.close > support,
+    failUp: ceilingTests >= 1 && bar.high > resistance && bar.close < resistance,
+  };
+}
+
 function entryChip(verdict: BattleVerdict | null): EntryChip {
   if (!verdict || verdict.stronger === 'EVEN') return 'PAIR';
   const outcome = verdict.stronger === 'UP' ? verdict.up.outcome : verdict.down.outcome;
@@ -230,6 +272,7 @@ export function barEntryRead(bars: EntryBar[], index: number, progress: EntryPro
     ...barPressure(bar),
     delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null,
     close: Number.isFinite(bar.close) ? bar.close : null,
+    ...levelFlags(bar, prior),
   };
 }
 
@@ -578,6 +621,36 @@ function trapAllowsJoin(recent: EntryRead[], cur: EntryRead, joining: EffortSide
   return trap !== joining;
 }
 
+function levelSeen(rows: EntryRead[]): { floor: boolean; ceiling: boolean } {
+  let floor = false;
+  let ceiling = false;
+  for (const row of rows) {
+    if (row.atFloor || row.failDown) floor = true;
+    if (row.atCeiling || row.failUp) ceiling = true;
+  }
+  return { floor, ceiling };
+}
+
+/**
+ * A buy fade stands at a floor or a failed break down. A sell fade stands at a ceiling or a failed break up.
+ * The other level blocks that fade. No floor and no ceiling keeps the older rule.
+ */
+function levelAllowsFade(recent: EntryRead[], cur: EntryRead, faded: EffortSide): boolean {
+  const { floor, ceiling } = levelSeen([...recent, cur]);
+  if (!floor && !ceiling) return true;
+  if (floor && !ceiling) return faded === 'SELL';
+  if (ceiling && !floor) return faded === 'BUY';
+  return true;
+}
+
+/** A buy join stays quiet into a ceiling. A sell join stays quiet into a floor. */
+function levelAllowsJoin(recent: EntryRead[], cur: EntryRead, joining: EffortSide): boolean {
+  const { floor, ceiling } = levelSeen([...recent, cur]);
+  if (joining === 'BUY' && ceiling && !floor) return false;
+  if (joining === 'SELL' && floor && !ceiling) return false;
+  return true;
+}
+
 /**
  * One entry from the last closed candle. The 6 candles before it are read first.
  * Effort is the aggressive imbalance. The book is passive imbalance and A/B replenishment.
@@ -598,6 +671,9 @@ function trapAllowsJoin(recent: EntryRead[], cur: EntryRead, joining: EffortSide
  * A join stays quiet when that side already can't.
  * S trap is a downtrend that took the prior low and closed back up. B trap is the mirror.
  * States 1, 4, 5, and 8 stand with that trap. State 2 stays quiet when its side was trapped.
+ * A floor is a low the bids have already held. A ceiling is a high the asks have already held.
+ * Fail down is a break of the floor whose close comes back. Fail up is the mirror.
+ * A buy fade stands at the floor. A sell fade stands at the ceiling. A join stays quiet into that level.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -632,49 +708,49 @@ export function decideEntry(
     const continued = chip && prevSignal && prevSignal.side === side;
     const took = effort === 'BUY' ? buyersOwnClose(cur) : effort === 'SELL' ? sellersOwnClose(cur) : false;
     if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
-      if (!inTrend(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort)) return null;
+      if (!inTrend(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort)) return null;
       return { side, state: 2 };
     }
   }
 
   const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
   if (responded && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW')) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL') || !levelAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 4 };
   }
   if (responded && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH')) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY') || !levelAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 4 };
   }
 
   const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== 'WEAK';
   if (battleWon && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW') && !(prevSignal && prevSignal.side === 'buy')) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL') || !levelAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 4 };
   }
   if (battleWon && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH') && !(prevSignal && prevSignal.side === 'sell')) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY') || !levelAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 4 };
   }
   // State 2 needs the delta on the same side as the trade, and at least two of the
   // setup candles already won that battle. A heavy SELL candle that closed high stays a fade.
   if (cur.highDelta && real) {
     if (sellersOwnClose(cur) && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
-      if (!inTrend(recent, 'SELL') || !joinStands(recent, 'SELL') || !trapAllowsJoin(recent, cur, 'SELL')) return null;
+      if (!inTrend(recent, 'SELL') || !joinStands(recent, 'SELL') || !trapAllowsJoin(recent, cur, 'SELL') || !levelAllowsJoin(recent, cur, 'SELL')) return null;
       return { side: 'sell', state: 2 };
     }
     if (buyersOwnClose(cur) && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
-      if (!inTrend(recent, 'BUY') || !joinStands(recent, 'BUY') || !trapAllowsJoin(recent, cur, 'BUY')) return null;
+      if (!inTrend(recent, 'BUY') || !joinStands(recent, 'BUY') || !trapAllowsJoin(recent, cur, 'BUY') || !levelAllowsJoin(recent, cur, 'BUY')) return null;
       return { side: 'buy', state: 2 };
     }
   }
 
   if (cur.highDelta && real && buyersTook(cur) && triedButCouldnt(recent, 'SELL')) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL') || !levelAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 5 };
   }
   if (cur.highDelta && real && sellersTook(cur) && triedButCouldnt(recent, 'BUY')) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY') || !levelAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 5 };
   }
 
@@ -685,11 +761,11 @@ export function decideEntry(
     (sellersLost && prev.highDelta && prev.deltaSide === 'SELL' && prev.downside === 'BIDS_HOLD')
   );
   if (!prevLostSame && sellersLost && countDelta(recent, 'SELL') >= 3) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL') || !levelAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 1 };
   }
   if (!prevLostSame && buyersLost && countDelta(recent, 'BUY') >= 3) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY') || !levelAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 1 };
   }
 
@@ -728,10 +804,10 @@ export function decideEntry(
   // Trend context. A downtrend is judged by aggressive sellers and the asks:
   // if they no longer get price down, buy on the candle that takes the close.
   // An uptrend is judged by aggressive buyers and the bids, and the failure is a sell.
-  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && trapAllowsFade(recent, cur, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
+  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && trapAllowsFade(recent, cur, 'SELL') && levelAllowsFade(recent, cur, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
     return { side: 'buy', state: 8 };
   }
-  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && trapAllowsFade(recent, cur, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
+  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && trapAllowsFade(recent, cur, 'BUY') && levelAllowsFade(recent, cur, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
     return { side: 'sell', state: 8 };
   }
   return null;
@@ -803,6 +879,16 @@ export function entryMarks(
         ? trendTrap(priors, cur)
         : null;
       const trapLine = trapped === faded ? (trapped === 'SELL' ? 'Sell trap' : 'Buy trap') : null;
+      const seen = signal.state === 1 || signal.state === 4 || signal.state === 5 || signal.state === 8
+        ? levelSeen([...priors, cur])
+        : null;
+      const levelLine = !seen
+        ? null
+        : buy && seen.floor && !seen.ceiling
+          ? (cur.failDown || priors.some((row) => row.failDown) ? 'Fail down at the floor' : 'Floor held')
+          : !buy && seen.ceiling && !seen.floor
+            ? (cur.failUp || priors.some((row) => row.failUp) ? 'Fail up at the ceiling' : 'Ceiling held')
+            : null;
       marks.set(time, {
         side: signal.side,
         state: signal.state,
@@ -814,6 +900,7 @@ export function entryMarks(
           ENTRY_DETAIL[signal.state],
           ...(cant ? [cant] : []),
           ...(trapLine ? [trapLine] : []),
+          ...(levelLine ? [levelLine] : []),
           `Agg ${fmtSignedPct(cur.agg)} · Pas ${fmtSignedPct(cur.pas)}`,
           `A repl ${fmtNotional(cur.askRepl)} · B repl ${fmtNotional(cur.bidRepl)}`,
           `Upside ${lower(cur.upside)} · downside ${lower(cur.downside)}`,
@@ -917,6 +1004,84 @@ export function trapMarks(
         ? 'BUY'
         : null;
     if (side) marks.set(bars[index]!.time, trapLabel(side));
+  }
+  return marks;
+}
+
+/** Chart label for a defended floor or ceiling, or the failure of that level. */
+export interface LevelMark {
+  kind: 'FLOOR' | 'CEILING' | 'FAIL_DOWN' | 'FAIL_UP';
+  text: string;
+  short: string;
+  color: string;
+  tip: string;
+}
+
+function levelLabel(kind: LevelMark['kind']): LevelMark {
+  if (kind === 'FAIL_DOWN') {
+    return {
+      kind,
+      text: 'FAIL ↓',
+      short: 'FAIL ↓',
+      color: '#84cc16',
+      tip: 'Fail down\nPrice went through a floor the bids had already held, and the close came back above it.',
+    };
+  }
+  if (kind === 'FAIL_UP') {
+    return {
+      kind,
+      text: 'FAIL ↑',
+      short: 'FAIL ↑',
+      color: '#f59e0b',
+      tip: 'Fail up\nPrice went through a ceiling the asks had already held, and the close came back below it.',
+    };
+  }
+  if (kind === 'FLOOR') {
+    return {
+      kind,
+      text: 'FLOOR',
+      short: 'FLOOR',
+      color: '#38bdf8',
+      tip: 'Floor\nThe bids held this low again. One test is not a floor.',
+    };
+  }
+  return {
+    kind: 'CEILING',
+    text: 'CEILING',
+    short: 'CEIL',
+    color: '#fb7185',
+    tip: 'Ceiling\nThe asks held this high again. One test is not a ceiling.',
+  };
+}
+
+/**
+ * FLOOR / CEILING on the candle that defends a level already tested once.
+ * FAIL ↓ / FAIL ↑ on the candle that breaks that level and closes back inside.
+ * The forming candle is never labeled.
+ */
+export function levelMarks(
+  bars: EntryBar[],
+  liveTime: number | null,
+  progress: EntryProgressRow[],
+): Map<number, LevelMark> {
+  const marks = new Map<number, LevelMark>();
+  if (!bars || bars.length < 6) return marks;
+  const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
+  const last = lastIsLive ? bars.length - 1 : bars.length;
+  const reads: EntryRead[] = [];
+  for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+  for (let index = 0; index < last; index++) {
+    const cur = reads[index]!;
+    const kind: LevelMark['kind'] | null = cur.failDown
+      ? 'FAIL_DOWN'
+      : cur.failUp
+        ? 'FAIL_UP'
+        : cur.atFloor
+          ? 'FLOOR'
+          : cur.atCeiling
+            ? 'CEILING'
+            : null;
+    if (kind) marks.set(bars[index]!.time, levelLabel(kind));
   }
   return marks;
 }

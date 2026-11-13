@@ -2508,6 +2508,14 @@ function trapMarks(bars, liveTime) {
   return impl(bars, liveTime, rows);
 }
 
+/** Floor, ceiling, and the failure of that level. Same rule as the entry states. */
+function levelMarks(bars, liveTime) {
+  const impl = window.OrderFlowClient?.levelMarks;
+  if (!impl || !bars?.length) return new Map();
+  const rows = annotateDeltaProgress(bars, { lastIsLive: bars[bars.length - 1]?.time === liveTime });
+  return impl(bars, liveTime, rows);
+}
+
 function battleVerdictTip(v) {
   const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
   const stronger = v.stronger === 'EVEN' ? 'pair (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
@@ -5186,6 +5194,7 @@ function drawFootprint(symbol = selectedSymbol) {
   const frByTime = buildFrByConfirmTime(lie);
   const couldntByTime = couldntMarks(bars, nowBucket);
   const trapByTime = trapMarks(bars, nowBucket);
+  const levelByTime = levelMarks(bars, nowBucket);
   const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
@@ -5400,6 +5409,15 @@ function drawFootprint(symbol = selectedSymbol) {
       if (entryHit) view.microHits.push(entryHit);
     }
     const levelStory = trapByTime.get(bar.time) || levelStoryLabel(bars, startIdx + i);
+    const levelMark = levelByTime.get(bar.time);
+    if (levelMark) {
+      const atLow = levelMark.kind === 'FLOOR' || levelMark.kind === 'FAIL_DOWN';
+      const y = atLow
+        ? Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.low) + (levelStory ? 34 : 16)))
+        : Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - (entry ? 52 : couldnt ? 34 : 16)));
+      const levelHit = drawCouldntLabel(ctx, levelMark, cx, y, barWidth - 4);
+      if (levelHit) view.microHits.push(levelHit);
+    }
     if (levelStory) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.low) + 16));
       const levelHit = drawCouldntLabel(ctx, levelStory, cx, y, barWidth - 4);
