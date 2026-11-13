@@ -422,7 +422,7 @@ body {
   scrollbar-color: #3d4654 transparent;
 }
 
-.fp-time-axis {
+.fp-card-foot canvas.fp-time-axis {
   position: sticky;
   top: 0;
   z-index: 2;

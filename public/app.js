@@ -1628,9 +1628,8 @@ function resizeFpView(symbol) {
   const foot = view.footCanvas;
   const footPane = view.footPane;
   if (foot && footPane?.classList.contains('is-open')) {
-    const width = Math.max(1, Math.floor((view.footScroll || footPane).clientWidth));
-    if (view.timeCanvas) view.timeCtx = mountCanvas(view.timeCanvas, width, 22);
-    view.footCtx = mountCanvas(foot, width, fpBottomPad());
+    if (view.timeCanvas) view.timeCtx = mountCanvas(view.timeCanvas, w, 22);
+    view.footCtx = mountCanvas(foot, w, fpBottomPad() + 8);
   }
 }
 
