@@ -24,6 +24,7 @@ function read(over: Partial<EntryRead> = {}): EntryRead {
     askRepl: null,
     bidRepl: null,
     delta: null,
+    close: null,
   };
   const out = { ...base, ...over };
   if (over.prog !== undefined && over.absProg === undefined) out.absProg = over.prog == null ? null : Math.abs(over.prog);
@@ -210,6 +211,93 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 4 });
   });
 
+  it('1: an uptrend blocks the seller fade, even when the sell lost the close', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.1, ...closedHigh });
+    const priors = [3.5, 3.51, 3.52, 3.53, 3.54, 3.55].map((close) => read({
+      close, deltaSide: 'SELL', pas: -0.3, chip: 'ASKS', agg: -0.2, ...closedLow,
+    }));
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
+  it('1: a downtrend with asks still fades the absorbed sell', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.1, ...closedHigh });
+    const priors = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5].map((close) => read({
+      close, deltaSide: 'SELL', pas: -0.4, chip: 'ASKS', agg: -0.2, ...closedLow,
+    }));
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 1 });
+  });
+
+  it('2: buyers pushing inside a downtrend are not a buy', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', agg: 0.4, pas: 0.2, ...closedHigh });
+    const priors = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5].map((close) => read({
+      close, chip: 'BUYERS', upside: 'BUYERS_WIN', deltaSide: 'BUY', pas: 0.3, agg: 0.2, ...closedHigh,
+    }));
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
+  it('7: same buy effort is not a sell when the window drifted down', () => {
+    const priors = [3.55, 3.54, 3.53, 3.52, 3.51].map((close) => read({
+      close, deltaSide: 'BUY', prog: 0.4, pas: 0.2, ...closedHigh,
+    }));
+    const prev = read({ close: 3.5, deltaSide: 'BUY', delta: 497_000, prog: 0.9, strength: 'STRONG', pas: 0.2 });
+    const cur = read({ deltaSide: 'BUY', delta: 410_000, prog: 0.3, strength: 'STRONG' });
+    expect(decideEntry(cur, prev, [...priors, prev], null)).toBeNull();
+  });
+
+  it('8: downside trend, sellers and asks cannot push down, buyers take the close', () => {
+    const sellMoved = read({ deltaSide: 'SELL', prog: 0.7, agg: -0.3, pas: -0.4, chip: 'ASKS', strength: 'NORMAL', ...closedLow });
+    const sellWeak = read({ deltaSide: 'SELL', prog: 0.2, agg: -0.12, pas: -0.2, chip: 'SELLERS', strength: 'NORMAL', ...closedLow });
+    const priors = [sellMoved, sellMoved, sellWeak, sellWeak, sellWeak, sellWeak];
+    const cur = read({ deltaSide: 'BUY', prog: 0.2, strength: 'NORMAL', agg: 0.28, pas: 0.14, chip: 'BUYERS', ...closedHigh });
+    expect(decideEntry(cur, sellWeak, priors, null)).toEqual({ side: 'buy', state: 8 });
+  });
+
+  it('8: upside trend, buyers and bids cannot push up, sellers take the close', () => {
+    const buyMoved = read({ deltaSide: 'BUY', prog: 0.7, agg: 0.3, pas: 0.4, chip: 'BIDS', strength: 'NORMAL', ...closedHigh });
+    const buyWeak = read({ deltaSide: 'BUY', prog: 0.2, agg: 0.12, pas: 0.2, chip: 'BUYERS', strength: 'NORMAL', ...closedHigh });
+    const priors = [buyMoved, buyMoved, buyWeak, buyWeak, buyWeak, buyWeak];
+    const cur = read({ deltaSide: 'SELL', prog: 0.2, strength: 'NORMAL', agg: -0.28, pas: -0.14, chip: 'SELLERS', ...closedLow });
+    expect(decideEntry(cur, buyWeak, priors, null)).toEqual({ side: 'sell', state: 8 });
+  });
+
+  it('8: sellers never showed asks, so the downtrend failure is not a buy', () => {
+    const sellMoved = read({ deltaSide: 'SELL', prog: 0.7, agg: -0.3, pas: 0.4, chip: 'BIDS', strength: 'NORMAL', ...closedHigh });
+    const priors = [sellMoved, sellMoved, sellMoved, sellMoved, sellMoved, sellMoved];
+    const cur = read({ deltaSide: 'BUY', prog: 0.2, strength: 'NORMAL', agg: 0.28, pas: 0.14, chip: 'BUYERS', ...closedHigh });
+    expect(decideEntry(cur, sellMoved, priors, null)?.state).not.toBe(8);
+  });
+
+  it('8: 14:00, weak delta closes back up after sellers and asks could not extend the drop', () => {
+    const down = (close: number) => read({
+      close, deltaSide: 'SELL', prog: 0.2, agg: -0.05, pas: -0.6, chip: 'ASKS', strength: 'WEAK', ...closedLow,
+    });
+    const priors = [down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
+    const cur = read({
+      close: 3.484, deltaSide: 'BUY', prog: -0.03, strength: 'WEAK', agg: 0.03, pas: 0.14, chip: 'PAIR', ...closedHigh,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 8 });
+    const later = read({
+      close: 3.497, deltaSide: 'BUY', prog: 0.4, strength: 'NORMAL', agg: 0.2, pas: 0.35, chip: 'BUYERS', ...closedHigh,
+    });
+    expect(decideEntry(later, cur, [...priors.slice(1), cur], { side: 'buy' })).toBeNull();
+  });
+
+  it('8: a drifting downtrend whose asks showed, then buyers take an ordinary close', () => {
+    const down = (close: number) => read({
+      close, deltaSide: 'SELL', prog: 0.15, agg: -0.04, pas: -0.25, chip: 'ASKS', strength: 'WEAK', ...closedLow,
+    });
+    const priors = [down(3.52), down(3.51), down(3.505), down(3.50), down(3.495), down(3.485)];
+    const cur = read({ close: 3.484, deltaSide: 'BUY', prog: 0.12, strength: 'NORMAL', agg: 0.28, pas: 0.14, chip: 'BUYERS', ...closedHigh });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 8 });
+  });
+
+  it('8: a high-delta flip after a sell that just moved is not this context', () => {
+    const prev = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.7, agg: -0.4, pas: -0.3 });
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.1, agg: 0.25, pas: 0.4, ...closedHigh });
+    const priors = [...sideTries('SELL', 5), prev];
+    expect(decideEntry(cur, prev, priors, null)?.state).not.toBe(8);
+  });
+
   it('missing progress is unknown, not "price stopped"', () => {
     const prev = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.7 });
     const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: null });
@@ -319,7 +407,7 @@ describe('entryMarks', () => {
   it('produces marks on synthetic data', () => {
     expect(full.size).toBeGreaterThan(5);
     for (const mark of full.values()) {
-      expect(mark.short).toMatch(/^[BS][1-7]$/);
+      expect(mark.short).toMatch(/^[BS][1-8]$/);
     }
   });
 

@@ -16745,7 +16745,8 @@ var process = globalThis.process || { env: {} };
     4: "failed side, response held",
     5: "side tried, book held, other side took it",
     6: "effort stopped, open before the move",
-    7: "same effort, response faded"
+    7: "same effort, response faded",
+    8: "trend side could not move price"
   };
   function barBattleVerdict(bar) {
     const buy = Math.max(0, bar.totalBuy ?? 0);
@@ -16841,7 +16842,8 @@ var process = globalThis.process || { env: {} };
       highDelta: strength === "STRONG" || strength === "EXTREME",
       hunt: prior.length ? stopHuntKind2(bar, prior) : null,
       ...barPressure(bar),
-      delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null
+      delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null,
+      close: Number.isFinite(bar.close) ? bar.close : null
     };
   }
   function known(n) {
@@ -16925,6 +16927,72 @@ var process = globalThis.process || { env: {} };
     const prevWon = side2 === "SELL" ? prev.downside === "SELLERS_WIN" : prev.upside === "BUYERS_WIN";
     return !prevExtended || !prevWon;
   }
+  function trendBookSeen(row, trend) {
+    if (trend === "SELL") {
+      if (known(row.pas)) return row.pas <= 0;
+      return row.chip === "ASKS" || row.upside === "ASKS_HOLD";
+    }
+    if (known(row.pas)) return row.pas >= 0;
+    return row.chip === "BIDS" || row.downside === "BIDS_HOLD";
+  }
+  function priceDrift(recent) {
+    const closes = recent.map((row) => row.close).filter((n) => known(n));
+    if (closes.length < ENTRY_CONTEXT_MIN) return null;
+    const first = closes[0];
+    const last = closes[closes.length - 1];
+    if (!(first > 0)) return null;
+    const change = (last - first) / first;
+    if (change <= -25e-4) return "SELL";
+    if (change >= 25e-4) return "BUY";
+    return null;
+  }
+  function trendTrying(row, trend) {
+    if (trend === "SELL") {
+      return row.deltaSide === "SELL" || row.chip === "SELLERS" || row.chip === "ASKS" || row.upside === "ASKS_HOLD" || row.downside === "SELLERS_WIN";
+    }
+    return row.deltaSide === "BUY" || row.chip === "BUYERS" || row.chip === "BIDS" || row.downside === "BIDS_HOLD" || row.upside === "BUYERS_WIN";
+  }
+  function trendContext(recent, trend) {
+    const other = trend === "SELL" ? "BUY" : "SELL";
+    let effort = 0;
+    let otherEffort = 0;
+    let book = false;
+    let moved = false;
+    let tries = 0;
+    for (const row of recent) {
+      if (trendTrying(row, trend)) {
+        tries += 1;
+        if (trendBookSeen(row, trend)) book = true;
+        if (row.deltaSide === trend && row.prog != null && row.prog >= ENTRY_REAL_PROG) moved = true;
+      }
+      if (row.deltaSide === trend && aggLeans(row, trend)) effort += 1;
+      else if (row.deltaSide === other && aggLeans(row, other)) otherEffort += 1;
+    }
+    const drift = priceDrift(recent);
+    if (drift === trend) return book && tries >= 2;
+    if (drift != null) return false;
+    return effort >= 2 && effort > otherEffort && book && (moved || effort >= 3);
+  }
+  function inTrend(recent, trend) {
+    const drift = priceDrift(recent);
+    if (drift == null) return true;
+    return trendContext(recent, trend);
+  }
+  function prevStillTrend(prev, trend) {
+    if (trend === "SELL") {
+      return prev.deltaSide === "SELL" || prev.downside === "SELLERS_WIN" || prev.chip === "SELLERS" || prev.chip === "ASKS" || prev.upside === "ASKS_HOLD";
+    }
+    return prev.deltaSide === "BUY" || prev.upside === "BUYERS_WIN" || prev.chip === "BUYERS" || prev.chip === "BIDS" || prev.downside === "BIDS_HOLD";
+  }
+  function trendFailed(cur, trend) {
+    if (cur.highDelta) return false;
+    if (trend === "SELL") {
+      if (cur.upside !== "BUYERS_WIN") return false;
+      return !(cur.deltaSide === "SELL" && cur.prog != null && cur.prog >= ENTRY_REAL_PROG);
+    }
+    if (cur.downside !== "SELLERS_WIN") return false;
+    return !(cur.deltaSide === "BUY" && cur.prog != null && cur.prog >= ENTRY_REAL_PROG);
+  }
   function decideEntry(cur, prev, priors, prevSignal) {
     const recent = cur ? setupContext(priors) : null;
     if (!cur || !recent) return null;
@@ -16934,10 +17002,10 @@ var process = globalThis.process || { env: {} };
     const prevAccepted = !!prev && !!prevSide && prev.highDelta && prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, prevSide) && passiveAgrees(prev, prevSide) && countDelta(recent, prevSide) >= 2;
     if (prevAccepted && cur.highDelta && little) {
       if (prevSide === "SELL" && cur.deltaSide === "BUY" && aggLeans(cur, "BUY") && passiveAbsorbs(cur, "BUY")) {
-        return { side: "buy", state: 3 };
+        return inTrend(recent, "SELL") ? { side: "buy", state: 3 } : null;
       }
       if (prevSide === "BUY" && cur.deltaSide === "SELL" && aggLeans(cur, "SELL") && passiveAbsorbs(cur, "SELL")) {
-        return { side: "sell", state: 3 };
+        return inTrend(recent, "BUY") ? { side: "sell", state: 3 } : null;
       }
     }
     if (cur.highDelta && real) {
@@ -16946,48 +17014,54 @@ var process = globalThis.process || { env: {} };
       const side2 = chip === "BUYERS" ? "buy" : "sell";
       const continued = chip && prevSignal && prevSignal.side === side2;
       if (chip && effort && cur.chip === chip && priorsOwn(recent, chip) && !continued && aggLeans(cur, effort) && passiveAgrees(cur, effort)) {
-        return { side: side2, state: 2 };
+        return inTrend(recent, effort) ? { side: side2, state: 2 } : null;
       }
     }
     const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
     if (responded && cur.upside === "BUYERS_WIN" && cur.deltaSide === "BUY" && aggLeans(cur, "BUY") && responseHeld(cur, "BUY") && failedSideShown(recent, "SELLERS", "LOW")) {
-      return { side: "buy", state: 4 };
+      return inTrend(recent, "SELL") ? { side: "buy", state: 4 } : null;
     }
     if (responded && cur.downside === "SELLERS_WIN" && cur.deltaSide === "SELL" && aggLeans(cur, "SELL") && responseHeld(cur, "SELL") && failedSideShown(recent, "BUYERS", "HIGH")) {
-      return { side: "sell", state: 4 };
+      return inTrend(recent, "BUY") ? { side: "sell", state: 4 } : null;
     }
     const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== "WEAK";
     if (battleWon && cur.upside === "BUYERS_WIN" && cur.deltaSide === "BUY" && aggLeans(cur, "BUY") && responseHeld(cur, "BUY") && failedSideShown(recent, "SELLERS", "LOW") && !(prevSignal && prevSignal.side === "buy")) {
-      return { side: "buy", state: 4 };
+      return inTrend(recent, "SELL") ? { side: "buy", state: 4 } : null;
     }
     if (battleWon && cur.downside === "SELLERS_WIN" && cur.deltaSide === "SELL" && aggLeans(cur, "SELL") && responseHeld(cur, "SELL") && failedSideShown(recent, "BUYERS", "HIGH") && !(prevSignal && prevSignal.side === "sell")) {
-      return { side: "sell", state: 4 };
+      return inTrend(recent, "BUY") ? { side: "sell", state: 4 } : null;
     }
     if (cur.highDelta && real) {
       if (cur.deltaSide === "SELL" && cur.downside === "SELLERS_WIN" && aggLeans(cur, "SELL") && passiveAgrees(cur, "SELL") && countWins(recent, "SELLERS_WIN") >= 2 && !(prevSignal && prevSignal.side === "sell")) {
-        return { side: "sell", state: 2 };
+        return inTrend(recent, "SELL") ? { side: "sell", state: 2 } : null;
       }
       if (cur.deltaSide === "BUY" && cur.upside === "BUYERS_WIN" && aggLeans(cur, "BUY") && passiveAgrees(cur, "BUY") && countWins(recent, "BUYERS_WIN") >= 2 && !(prevSignal && prevSignal.side === "buy")) {
-        return { side: "buy", state: 2 };
+        return inTrend(recent, "BUY") ? { side: "buy", state: 2 } : null;
       }
     }
     if (cur.highDelta && real && cur.deltaSide === "BUY" && aggLeans(cur, "BUY") && triedButCouldnt(recent, "SELL")) {
-      return { side: "buy", state: 5 };
+      return inTrend(recent, "SELL") ? { side: "buy", state: 5 } : null;
     }
     if (cur.highDelta && real && cur.deltaSide === "SELL" && aggLeans(cur, "SELL") && triedButCouldnt(recent, "BUY")) {
-      return { side: "sell", state: 5 };
+      return inTrend(recent, "BUY") ? { side: "sell", state: 5 } : null;
     }
     const buyersLost = cur.highDelta && cur.deltaSide === "BUY" && cur.upside === "ASKS_HOLD" && aggLeans(cur, "BUY") && passiveAbsorbs(cur, "BUY");
     const sellersLost = cur.highDelta && cur.deltaSide === "SELL" && cur.downside === "BIDS_HOLD" && aggLeans(cur, "SELL") && passiveAbsorbs(cur, "SELL");
     const prevLostSame = prev && (buyersLost && prev.highDelta && prev.deltaSide === "BUY" && prev.upside === "ASKS_HOLD" || sellersLost && prev.highDelta && prev.deltaSide === "SELL" && prev.downside === "BIDS_HOLD");
-    if (!prevLostSame && sellersLost && countDelta(recent, "SELL") >= 3) return { side: "buy", state: 1 };
-    if (!prevLostSame && buyersLost && countDelta(recent, "BUY") >= 3) return { side: "sell", state: 1 };
+    if (!prevLostSame && sellersLost && countDelta(recent, "SELL") >= 3) {
+      return inTrend(recent, "SELL") ? { side: "buy", state: 1 } : null;
+    }
+    if (!prevLostSame && buyersLost && countDelta(recent, "BUY") >= 3) {
+      return inTrend(recent, "BUY") ? { side: "sell", state: 1 } : null;
+    }
     if (prev && prevSide && cur.deltaSide === prevSide && cur.prog != null && cur.prog <= ENTRY_LITTLE_PROG) {
       const stalledSide = prevSide;
       const joining = stalledSide === "BUY" ? "SELL" : "BUY";
       const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
       const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
-      if (prevMoved && otherAlreadyMoved) return { side: joining === "BUY" ? "buy" : "sell", state: 6 };
+      if (prevMoved && otherAlreadyMoved) {
+        return inTrend(recent, stalledSide) ? { side: joining === "BUY" ? "buy" : "sell", state: 6 } : null;
+      }
     }
     if (prev && prevSide && cur.deltaSide === prevSide && known(prev.delta) && known(cur.delta) && known(prev.prog) && known(cur.prog)) {
       const prevEffort = Math.abs(prev.delta);
@@ -16996,8 +17070,14 @@ var process = globalThis.process || { env: {} };
       const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
       const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
       if (sameEffort && responseOkBefore && responseFaded) {
-        return { side: prevSide === "BUY" ? "sell" : "buy", state: 7 };
+        return inTrend(recent, prevSide) ? { side: prevSide === "BUY" ? "sell" : "buy", state: 7 } : null;
       }
+    }
+    if (prev && trendContext(recent, "SELL") && prevStillTrend(prev, "SELL") && trendFailed(cur, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
+      return { side: "buy", state: 8 };
+    }
+    if (prev && trendContext(recent, "BUY") && prevStillTrend(prev, "BUY") && trendFailed(cur, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
+      return { side: "sell", state: 8 };
     }
     return null;
   }
