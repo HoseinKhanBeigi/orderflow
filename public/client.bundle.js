@@ -16735,6 +16735,7 @@ var process = globalThis.process || { env: {} };
   var ENTRY_EFFORT_SAME_MIN = 0.7;
   var ENTRY_EFFORT_SAME_MAX = 1.15;
   var ENTRY_RESPONSE_FADE = 0.5;
+  var ENTRY_CLOSE_FLAT = 5e-4;
   var BATTLE_CLOSE_WIN = 0.55;
   var BATTLE_EVEN_GAP_PCT = 6;
   var ENTRY_DETAIL = {
@@ -17043,14 +17044,13 @@ var process = globalThis.process || { env: {} };
     return !(cur.deltaSide === "BUY" && cur.prog != null && cur.prog >= ENTRY_REAL_PROG);
   }
   function closeCouldnt(row, prev, side2) {
-    if (side2 === "SELL") {
-      if (row.deltaSide === "SELL" && row.prog != null && row.prog >= ENTRY_REAL_PROG && row.upside !== "BUYERS_WIN") return false;
-      if (row.upside === "BUYERS_WIN") return true;
-      return known(row.close) && !!prev && known(prev.close) && row.close >= prev.close;
+    if (known(row.close) && prev && known(prev.close) && prev.close > 0) {
+      const change = (row.close - prev.close) / prev.close;
+      if (side2 === "SELL") return change > -ENTRY_CLOSE_FLAT;
+      return change < ENTRY_CLOSE_FLAT;
     }
-    if (row.deltaSide === "BUY" && row.prog != null && row.prog >= ENTRY_REAL_PROG && row.downside !== "SELLERS_WIN") return false;
-    if (row.downside === "SELLERS_WIN") return true;
-    return known(row.close) && !!prev && known(prev.close) && row.close <= prev.close;
+    if (side2 === "SELL") return row.upside === "BUYERS_WIN";
+    return row.downside === "SELLERS_WIN";
   }
   function effortCouldnt(recent, side2) {
     if (recent.length < ENTRY_CONTEXT_MIN) return null;

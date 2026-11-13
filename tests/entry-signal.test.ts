@@ -492,6 +492,13 @@ describe("sellers can't and buyers can't", () => {
     expect(marks.has(5)).toBe(false);
   });
 
+  it("does not label sellers can't when the close is still lower, even if it finished off the low", () => {
+    const closes = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5, 3.48];
+    const bars = closes.map((close, i) => downBar(i, close, i === 6));
+    const marks = couldntMarks(bars, null, bars.map(() => ({ deltaSide: 'SELL', deltaStrengthState: 'WEAK', directionalProgressATR: 0.2 })));
+    expect(marks.has(6)).toBe(false);
+  });
+
   it("does not label sellers can't while the close is still falling", () => {
     const closes = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5, 3.49];
     const bars = closes.map((close, i) => downBar(i, close, false));

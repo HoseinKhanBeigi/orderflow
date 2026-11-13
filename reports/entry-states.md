@@ -22,9 +22,9 @@ Fades need the trend they are fading. A push that goes with the move needs that 
 
 This is a reading of the same six candles, drawn on the candle where it shows. It is not a ninth entry.
 
-**Sellers can't:** the six are a downtrend, so aggressive sellers and the asks had the effort, and this close did not go down.
+**Sellers can't:** the six are a downtrend, so aggressive sellers and the asks had the effort, and this close did not go down versus the previous close. A close that is still lower is sellers getting price down, even when that candle finished off its low.
 
-**Buyers can't:** the six are an uptrend, so aggressive buyers and the bids had the effort, and this close did not go up.
+**Buyers can't:** the six are an uptrend, so aggressive buyers and the bids had the effort, and this close did not go up versus the previous close. A close that is still higher is buyers getting price up, even when that candle finished off its high.
 
 The label sits on the first candle of that failure. The next candle of the same failure stays quiet. The forming candle is never labeled.
 

@@ -22,6 +22,11 @@ export const ENTRY_EFFORT_SAME_MIN = 0.7;
 export const ENTRY_EFFORT_SAME_MAX = 1.15;
 /** Response has faded when it is under half the previous candle's progress. */
 export const ENTRY_RESPONSE_FADE = 0.5;
+/**
+ * A close inside this band did not extend the move.
+ * 13 Nov 14:00 closed about 3 bp lower and was still the failure. A clearly lower close is not.
+ */
+export const ENTRY_CLOSE_FLAT = 0.0005;
 
 /** Close position in range at or above this = buyers won the close. */
 export const BATTLE_CLOSE_WIN = 0.55;
@@ -527,19 +532,19 @@ function trendFailed(cur: EntryRead, trend: EffortSide): boolean {
 }
 
 /**
- * Sellers can't: this close did not go down.
- * Buyers can't: this close did not go up.
- * A real extension that still owns its close is that side still moving price.
+ * Sellers can't: this close did not go down versus the previous close.
+ * Buyers can't: this close did not go up versus the previous close.
+ * Finishing off the low of a candle that still closed lower is sellers getting price down.
+ * A close only a few bp through the previous close did not extend. 14:00 is that case.
  */
 function closeCouldnt(row: EntryRead, prev: EntryRead | null, side: EffortSide): boolean {
-  if (side === 'SELL') {
-    if (row.deltaSide === 'SELL' && row.prog != null && row.prog >= ENTRY_REAL_PROG && row.upside !== 'BUYERS_WIN') return false;
-    if (row.upside === 'BUYERS_WIN') return true;
-    return known(row.close) && !!prev && known(prev.close) && row.close >= prev.close;
+  if (known(row.close) && prev && known(prev.close) && prev.close > 0) {
+    const change = (row.close - prev.close) / prev.close;
+    if (side === 'SELL') return change > -ENTRY_CLOSE_FLAT;
+    return change < ENTRY_CLOSE_FLAT;
   }
-  if (row.deltaSide === 'BUY' && row.prog != null && row.prog >= ENTRY_REAL_PROG && row.downside !== 'SELLERS_WIN') return false;
-  if (row.downside === 'SELLERS_WIN') return true;
-  return known(row.close) && !!prev && known(prev.close) && row.close <= prev.close;
+  if (side === 'SELL') return row.upside === 'BUYERS_WIN';
+  return row.downside === 'SELLERS_WIN';
 }
 
 /**
