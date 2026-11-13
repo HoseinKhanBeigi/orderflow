@@ -117,6 +117,15 @@ export interface CouldntMark {
   tip: string;
 }
 
+/** Chart label for the sweep that traps the trend side. Not an entry by itself. */
+export interface TrapMark {
+  side: 'BUY' | 'SELL';
+  text: string;
+  short: string;
+  color: string;
+  tip: string;
+}
+
 export function barBattleVerdict(bar: EntryBar): BattleVerdict | null {
   const buy = Math.max(0, bar.totalBuy ?? 0);
   const sell = Math.max(0, bar.totalSell ?? 0);
@@ -528,6 +537,47 @@ function joinStands(recent: EntryRead[], side: EffortSide): boolean {
   return !prior;
 }
 
+/** Latest sweep in the window. LOW traps sellers. HIGH traps buyers. */
+function latestHunt(rows: EntryRead[]): 'HIGH' | 'LOW' | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const hunt = rows[i]?.hunt;
+    if (hunt === 'HIGH' || hunt === 'LOW') return hunt;
+  }
+  return null;
+}
+
+/**
+ * S trap: a downtrend (or a window with no drift) whose low was taken and given back.
+ * B trap: an uptrend (or a window with no drift) whose high was taken and given back.
+ * A sweep against the trend is not that side's trap. Null means no trap.
+ */
+function trendTrap(recent: EntryRead[], cur: EntryRead | null): EffortSide | null {
+  const hunt = latestHunt(cur ? [...recent, cur] : recent);
+  if (hunt === 'LOW') {
+    if (trendContext(recent, 'SELL') || priceDrift(recent) == null) return 'SELL';
+    return null;
+  }
+  if (hunt === 'HIGH') {
+    if (trendContext(recent, 'BUY') || priceDrift(recent) == null) return 'BUY';
+    return null;
+  }
+  return null;
+}
+
+/** A buy fade needs an S trap when one is there. A sell fade needs a B trap. No trap keeps the older rule. */
+function trapAllowsFade(recent: EntryRead[], cur: EntryRead, faded: EffortSide): boolean {
+  const trap = trendTrap(recent, cur);
+  if (trap == null) return true;
+  return trap === faded;
+}
+
+/** A join stays quiet when that side is the one that just got trapped. */
+function trapAllowsJoin(recent: EntryRead[], cur: EntryRead, joining: EffortSide): boolean {
+  const trap = trendTrap(recent, cur);
+  if (trap == null) return true;
+  return trap !== joining;
+}
+
 /**
  * One entry from the last closed candle. The 6 candles before it are read first.
  * Effort is the aggressive imbalance. The book is passive imbalance and A/B replenishment.
@@ -546,6 +596,8 @@ function joinStands(recent: EntryRead[], side: EffortSide): boolean {
  * Buyers can't means an uptrend whose buyers and bids did not get the close up.
  * A fade stands when that side already can't, or when this candle is that failure.
  * A join stays quiet when that side already can't.
+ * S trap is a downtrend that took the prior low and closed back up. B trap is the mirror.
+ * States 1, 4, 5, and 8 stand with that trap. State 2 stays quiet when its side was trapped.
  */
 export function decideEntry(
   cur: EntryRead | null,
@@ -580,49 +632,49 @@ export function decideEntry(
     const continued = chip && prevSignal && prevSignal.side === side;
     const took = effort === 'BUY' ? buyersOwnClose(cur) : effort === 'SELL' ? sellersOwnClose(cur) : false;
     if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
-      if (!inTrend(recent, effort) || !joinStands(recent, effort)) return null;
+      if (!inTrend(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort)) return null;
       return { side, state: 2 };
     }
   }
 
   const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
   if (responded && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW')) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 4 };
   }
   if (responded && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH')) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 4 };
   }
 
   const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== 'WEAK';
   if (battleWon && buyersOwnClose(cur) && failedSideShown(recent, 'SELLERS', 'LOW') && !(prevSignal && prevSignal.side === 'buy')) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 4 };
   }
   if (battleWon && sellersOwnClose(cur) && failedSideShown(recent, 'BUYERS', 'HIGH') && !(prevSignal && prevSignal.side === 'sell')) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 4 };
   }
   // State 2 needs the delta on the same side as the trade, and at least two of the
   // setup candles already won that battle. A heavy SELL candle that closed high stays a fade.
   if (cur.highDelta && real) {
     if (sellersOwnClose(cur) && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
-      if (!inTrend(recent, 'SELL') || !joinStands(recent, 'SELL')) return null;
+      if (!inTrend(recent, 'SELL') || !joinStands(recent, 'SELL') || !trapAllowsJoin(recent, cur, 'SELL')) return null;
       return { side: 'sell', state: 2 };
     }
     if (buyersOwnClose(cur) && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
-      if (!inTrend(recent, 'BUY') || !joinStands(recent, 'BUY')) return null;
+      if (!inTrend(recent, 'BUY') || !joinStands(recent, 'BUY') || !trapAllowsJoin(recent, cur, 'BUY')) return null;
       return { side: 'buy', state: 2 };
     }
   }
 
   if (cur.highDelta && real && buyersTook(cur) && triedButCouldnt(recent, 'SELL')) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 5 };
   }
   if (cur.highDelta && real && sellersTook(cur) && triedButCouldnt(recent, 'BUY')) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 5 };
   }
 
@@ -633,11 +685,11 @@ export function decideEntry(
     (sellersLost && prev.highDelta && prev.deltaSide === 'SELL' && prev.downside === 'BIDS_HOLD')
   );
   if (!prevLostSame && sellersLost && countDelta(recent, 'SELL') >= 3) {
-    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL')) return null;
+    if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL')) return null;
     return { side: 'buy', state: 1 };
   }
   if (!prevLostSame && buyersLost && countDelta(recent, 'BUY') >= 3) {
-    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY')) return null;
+    if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY')) return null;
     return { side: 'sell', state: 1 };
   }
 
@@ -676,10 +728,10 @@ export function decideEntry(
   // Trend context. A downtrend is judged by aggressive sellers and the asks:
   // if they no longer get price down, buy on the candle that takes the close.
   // An uptrend is judged by aggressive buyers and the bids, and the failure is a sell.
-  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
+  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && trapAllowsFade(recent, cur, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
     return { side: 'buy', state: 8 };
   }
-  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
+  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && trapAllowsFade(recent, cur, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
     return { side: 'sell', state: 8 };
   }
   return null;
@@ -747,6 +799,10 @@ export function entryMarks(
         : closeCouldnt(cur, prev, faded) || effortCouldnt(priors, faded) === true
           ? faded === 'SELL' ? "Sellers can't" : "Buyers can't"
           : null;
+      const trapped = signal.state === 1 || signal.state === 4 || signal.state === 5 || signal.state === 8
+        ? trendTrap(priors, cur)
+        : null;
+      const trapLine = trapped === faded ? (trapped === 'SELL' ? 'Sell trap' : 'Buy trap') : null;
       marks.set(time, {
         side: signal.side,
         state: signal.state,
@@ -757,6 +813,7 @@ export function entryMarks(
           `${word} ${signal.state}`,
           ENTRY_DETAIL[signal.state],
           ...(cant ? [cant] : []),
+          ...(trapLine ? [trapLine] : []),
           `Agg ${fmtSignedPct(cur.agg)} · Pas ${fmtSignedPct(cur.pas)}`,
           `A repl ${fmtNotional(cur.askRepl)} · B repl ${fmtNotional(cur.bidRepl)}`,
           `Upside ${lower(cur.upside)} · downside ${lower(cur.downside)}`,
@@ -817,6 +874,49 @@ export function couldntMarks(
             : null;
     if (side && side !== open) marks.set(bars[index]!.time, couldntMark(side));
     open = side;
+  }
+  return marks;
+}
+
+function trapLabel(side: EffortSide): TrapMark {
+  const sellers = side === 'SELL';
+  return {
+    side,
+    text: sellers ? 'SELL TRAP' : 'BUY TRAP',
+    short: sellers ? 'S TRAP' : 'B TRAP',
+    color: sellers ? '#38bdf8' : '#fb7185',
+    tip: sellers
+      ? 'Sell trap\nDowntrend. Sellers and the asks took the prior low, and the close came back up.'
+      : 'Buy trap\nUptrend. Buyers and the bids took the prior high, and the close came back down.',
+  };
+}
+
+/**
+ * S TRAP on the candle that takes the prior low and closes back up, after a downtrend.
+ * B TRAP on the candle that takes the prior high and closes back down, after an uptrend.
+ * A sweep without that trend is left unlabeled. The forming candle is never labeled.
+ */
+export function trapMarks(
+  bars: EntryBar[],
+  liveTime: number | null,
+  progress: EntryProgressRow[],
+): Map<number, TrapMark> {
+  const marks = new Map<number, TrapMark>();
+  if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
+  const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
+  const last = lastIsLive ? bars.length - 1 : bars.length;
+  const reads: EntryRead[] = [];
+  for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+  for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
+    const cur = reads[index]!;
+    const prev = reads[index - 1]!;
+    const recent = reads.slice(Math.max(0, index - ENTRY_PRIOR_BARS), index);
+    const side: EffortSide | null = cur.hunt === 'LOW' && trendContext(recent, 'SELL') && closeCouldnt(cur, prev, 'SELL')
+      ? 'SELL'
+      : cur.hunt === 'HIGH' && trendContext(recent, 'BUY') && closeCouldnt(cur, prev, 'BUY')
+        ? 'BUY'
+        : null;
+    if (side) marks.set(bars[index]!.time, trapLabel(side));
   }
   return marks;
 }

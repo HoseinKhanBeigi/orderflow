@@ -4,6 +4,7 @@ import {
   couldntMarks,
   decideEntry,
   entryMarks,
+  trapMarks,
   type EntryBar,
   type EntryRead,
 } from '../src/entry-signal/index.js';
@@ -220,12 +221,24 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
   });
 
+  it('1: a buyer trap in the window is not a buy', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.1, ...closedHigh });
+    const priors = [...sideTries('SELL', 5), read({ deltaSide: 'SELL', hunt: 'HIGH' })];
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
   it('1: a downtrend with asks still fades the absorbed sell', () => {
     const cur = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.1, ...closedHigh });
     const priors = [3.55, 3.54, 3.53, 3.52, 3.51, 3.5].map((close) => read({
       close, deltaSide: 'SELL', pas: -0.4, chip: 'ASKS', agg: -0.2, ...closedLow,
     }));
     expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 1 });
+  });
+
+  it('2: buyers were trapped at the high, so the join stays quiet', () => {
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', agg: 0.3, pas: 0.2, ...closedHigh });
+    const priors = [read({ chip: 'BUYERS', hunt: 'HIGH' }), read({ chip: 'BUYERS' }), read({ chip: 'SELLERS' }), read(), read(), read()];
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
   });
 
   it('2: buyers already lost the close inside the uptrend, so the next push is not a join', () => {
@@ -372,6 +385,46 @@ function syntheticBars(n: number, seed = 7): EntryBar[] {
   }
   return bars;
 }
+
+describe('sell trap and buy trap', () => {
+  function leg(time: number, close: number, lowClose: boolean): EntryBar {
+    return {
+      time,
+      open: close,
+      high: lowClose ? close + 0.016 : close + 0.004,
+      low: lowClose ? close - 0.004 : close - 0.016,
+      close,
+      totalBuy: lowClose ? 40 : 70,
+      totalSell: lowClose ? 60 : 30,
+    };
+  }
+
+  it('labels S TRAP when a downtrend takes the prior low and closes back up', () => {
+    const closes = [3.55, 3.53, 3.51, 3.49, 3.47, 3.45];
+    const bars = closes.map((close, i) => leg(i, close, true));
+    bars.push({ time: 6, open: 3.44, high: 3.47, low: 3.42, close: 3.462, totalBuy: 70, totalSell: 30 });
+    const progress = bars.map(() => ({ deltaSide: 'SELL' as const, deltaStrengthState: 'NORMAL', directionalProgressATR: 0.4 }));
+    const marks = trapMarks(bars, null, progress);
+    expect(marks.get(6)?.short).toBe('S TRAP');
+    expect(marks.has(5)).toBe(false);
+  });
+
+  it('does not label a low sweep that is not a downtrend', () => {
+    const closes = [3.45, 3.47, 3.49, 3.51, 3.53, 3.55];
+    const bars = closes.map((close, i) => leg(i, close, false));
+    bars.push({ time: 6, open: 3.54, high: 3.57, low: 3.4, close: 3.56, totalBuy: 30, totalSell: 70 });
+    const progress = bars.map(() => ({ deltaSide: 'BUY' as const, deltaStrengthState: 'NORMAL', directionalProgressATR: 0.5 }));
+    expect(trapMarks(bars, null, progress).size).toBe(0);
+  });
+
+  it('labels B TRAP when an uptrend takes the prior high and closes back down', () => {
+    const closes = [3.45, 3.47, 3.49, 3.51, 3.53, 3.55];
+    const bars = closes.map((close, i) => leg(i, close, false));
+    bars.push({ time: 6, open: 3.56, high: 3.6, low: 3.53, close: 3.542, totalBuy: 30, totalSell: 70 });
+    const progress = bars.map(() => ({ deltaSide: 'BUY' as const, deltaStrengthState: 'NORMAL', directionalProgressATR: 0.5 }));
+    expect(trapMarks(bars, null, progress).get(6)?.short).toBe('B TRAP');
+  });
+});
 
 describe("sellers can't and buyers can't", () => {
   function downBar(time: number, close: number, highClose: boolean): EntryBar {

@@ -2500,6 +2500,14 @@ function couldntMarks(bars, liveTime) {
   return impl(bars, liveTime, rows);
 }
 
+/** S TRAP / B TRAP from the same six-candle trend. A sweep without that trend stays unlabeled. */
+function trapMarks(bars, liveTime) {
+  const impl = window.OrderFlowClient?.trapMarks;
+  if (!impl || !bars?.length) return new Map();
+  const rows = annotateDeltaProgress(bars, { lastIsLive: bars[bars.length - 1]?.time === liveTime });
+  return impl(bars, liveTime, rows);
+}
+
 function battleVerdictTip(v) {
   const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
   const stronger = v.stronger === 'EVEN' ? 'pair (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
@@ -2758,35 +2766,16 @@ function absorptionReversalKind(bar) {
   return null;
 }
 
-/** Sweep of prior swing high/low (stop liquidity), then close back through the level. */
 /**
  * Absorption at a level: aggressive flow is absorbed while price is at the prior swing.
- * Trapped trader: price sweeps that swing and closes back through it.
- * A trap replaces absorption on the same candle.
+ * S TRAP / B TRAP come from the entry script, on the trend side's sweep.
  */
 function levelStoryLabel(bars, index) {
   if (index < 1) return null;
   const bar = bars[index];
   const prior = bars.slice(Math.max(0, index - 16), index);
-  const hunt = stopHuntKind(bar, prior);
   const absorbed = barAbsorbed(bar);
   const location = barLocationFromPrior(bar, prior);
-  if (hunt === 'HIGH') {
-    return {
-      text: 'BUY TRAP',
-      short: 'B TRAP',
-      color: '#fb7185',
-      tip: 'Buyer trap\nPrice took the prior high and closed back below it. Buyers who chased that high are trapped.',
-    };
-  }
-  if (hunt === 'LOW') {
-    return {
-      text: 'SELL TRAP',
-      short: 'S TRAP',
-      color: '#38bdf8',
-      tip: 'Seller trap\nPrice took the prior low and closed back above it. Sellers who chased that low are trapped.',
-    };
-  }
   if (absorbed === 'BUYERS' && location === 'AT_RESISTANCE') {
     return {
       text: 'ABSORB ASK',
@@ -5196,6 +5185,7 @@ function drawFootprint(symbol = selectedSymbol) {
   });
   const frByTime = buildFrByConfirmTime(lie);
   const couldntByTime = couldntMarks(bars, nowBucket);
+  const trapByTime = trapMarks(bars, nowBucket);
   const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
@@ -5409,7 +5399,7 @@ function drawFootprint(symbol = selectedSymbol) {
       const entryHit = drawCouldntLabel(ctx, entry, cx, y, barWidth - 4);
       if (entryHit) view.microHits.push(entryHit);
     }
-    const levelStory = levelStoryLabel(bars, startIdx + i);
+    const levelStory = trapByTime.get(bar.time) || levelStoryLabel(bars, startIdx + i);
     if (levelStory) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.low) + 16));
       const levelHit = drawCouldntLabel(ctx, levelStory, cx, y, barWidth - 4);

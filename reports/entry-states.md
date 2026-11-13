@@ -30,6 +30,18 @@ The label sits on the first candle of that failure. The next candle of the same 
 
 A fade (states 1, 3, 4, 5, 6, 7, 8) stands when that side already can't, or when this candle is the one where the close or the progress fails. A join (state 2) stays quiet when that side already can't inside the six. State 8 is that failure candle, so the can't label confirms it.
 
+## Sell trap and buy trap
+
+A trap is that same trend, plus a sweep of the prior swing.
+
+**S TRAP:** downtrend. Aggressive sellers and the asks had the effort, price took the prior low, and the close came back up.
+
+**B TRAP:** uptrend. Aggressive buyers and the bids had the effort, price took the prior high, and the close came back down.
+
+A sweep that is not that trend stays unlabeled. The label sits on the sweep candle. The forming candle is never labeled.
+
+States 1, 4, 5, and 8 stand when the window has that trap. A buy stands with an S trap. A sell stands with a B trap. If the window has no trap, those states keep their own rule. State 2 stays quiet when its side is the one that was trapped. State 4 is still the entry on the candle that responds after the trap.
+
 ## Effort and response
 
 Effort is the aggressive imbalance (Agg) and the delta. Response is how far price moved with that delta, in ATR.
@@ -61,7 +73,7 @@ That side already owns the move, and this candle's effort is accepted.
 - **Buy:** uptrend. High buy delta, real progress, buyers win the close, Agg leans buy, bids are not refilling against them. Buyers already own the setup, or at least two of the six candles already closed as buyers.
 - **Sell:** downtrend. The mirror: sellers win the close, asks are not refilling against them.
 
-If that side already can't inside the six, this join stays quiet. A heavy sell candle that closed high stays a fade. It is not buy 2.
+If that side already can't inside the six, or that side was just trapped, this join stays quiet. A heavy sell candle that closed high stays a fade. It is not buy 2.
 
 ### 3 — effort flipped, book refilled, price stopped
 
