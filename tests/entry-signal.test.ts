@@ -70,17 +70,6 @@ describe('barBattleVerdict', () => {
 });
 
 describe('decideEntry states', () => {
-  it('2: a strong sell that is still closing down joins before the six have drifted down', () => {
-    const priors = [3.30, 3.31, 3.32, 3.33, 3.34, 3.35].map((close) => read({
-      close, deltaSide: 'BUY', delta: 200_000, agg: 0.2, pas: 0.3, chip: 'BUYERS', ...closedHigh,
-    }));
-    const cur = read({
-      close: 3.345, strength: 'STRONG', deltaSide: 'SELL', delta: -700_000, prog: 0.3,
-      agg: -0.2, pas: -0.4, chip: 'SELLERS', ...closedLow,
-    });
-    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'sell', state: 2 });
-  });
-
   it('1: a small up close does not answer a strong sell, so that candle stays a sell', () => {
     const priors = [3.33, 3.32, 3.30, 3.28, 3.26, 3.24].map((close) => read({
       close, deltaSide: 'SELL', delta: -400_000, agg: -0.2, pas: -0.3, chip: 'ASKS', ...closedLow,

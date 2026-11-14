@@ -89,8 +89,6 @@ That side already owns the move, and this candle's effort is accepted.
 
 If that side already can't inside the six, or that side was just trapped, this join stays quiet. A heavy sell candle that closed high stays a fade. It is not buy 2.
 
-A strong sell that wins the close and is still closing down is the sell even when that one candle moved less than 0.50 ATR, and even when the six closes have not drifted into a downtrend yet. 14 Nov 16:00 to 17:15 is that push. The mirror is a buy.
-
 ### 3 — effort flipped, book refilled, price stopped
 
 The side that just worked gets answered, and price stops.

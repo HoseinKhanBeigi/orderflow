@@ -892,24 +892,6 @@ export function decideEntry(
     return { side: 'sell', state: 1 };
   }
 
-  // 14 Nov 16:00–17:15. The sell started while the six closes were still up, and each
-  // candle moved less than 0.50 ATR, so the downtrend join never spoke.
-  // A strong sell that wins the close and is still closing down is the sell.
-  if (cur.deltaSide === 'SELL' && sellersOwnClose(cur) && closeStillDown(cur, prev)
-    && cur.prog != null && (cur.highDelta ? cur.prog > 0 : cur.prog >= ENTRY_LITTLE_PROG) && cur.strength !== 'WEAK'
-    && !(prevSignal && prevSignal.side === 'sell')) {
-    if (joinStands(recent, 'SELL') && trapAllowsJoin(recent, cur, 'SELL') && levelAllowsJoin(recent, cur, 'SELL')) {
-      return { side: 'sell', state: 2 };
-    }
-  }
-  if (cur.deltaSide === 'BUY' && buyersOwnClose(cur) && closeStillUp(cur, prev)
-    && cur.prog != null && cur.prog >= ENTRY_LITTLE_PROG && cur.strength !== 'WEAK'
-    && !(prevSignal && prevSignal.side === 'buy')) {
-    if (joinStands(recent, 'BUY') && trapAllowsJoin(recent, cur, 'BUY') && levelAllowsJoin(recent, cur, 'BUY')) {
-      return { side: 'buy', state: 2 };
-    }
-  }
-
   // The side that just moved does not progress on this candle. Open the other side
   // here, before that side's move candles start. The other side must already have
   // moved once inside the setup.
