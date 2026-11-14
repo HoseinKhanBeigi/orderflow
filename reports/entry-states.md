@@ -14,7 +14,7 @@ Every state reads the **6 closed candles before** the signal candle. At least 5 
 
 A downtrend is judged by aggressive sellers and the asks: can they still get price down. An uptrend is judged by aggressive buyers and the bids: can they still get price up.
 
-If those six closes did not drift enough to be a trend, states 1–7 keep their own rule. State 8 only marks when the trend is there.
+If those six closes did not drift enough to be a trend, states 1–7 keep their own rule. State 8 only marks when the trend is there. A flat window is not a trend, even when one side printed more delta.
 
 Fades need the trend they are fading. A push that goes with the move needs that side's trend.
 
@@ -97,6 +97,8 @@ The side that just worked gets answered, and price stops.
 - **Sell:** uptrend. The mirror.
 
 A flip the book accepts is not state 3.
+
+A bounce that never clears the other side is the same flip when the next candle gives it back. 14 Nov 16:45 closed up inside the sell candles' high. That is not a buy. 17:00 gave that close back, and that candle is the sell. The mirror is a buy. A candle that actually extends is state 2, not this.
 
 ### 4 — failed side, response held
 

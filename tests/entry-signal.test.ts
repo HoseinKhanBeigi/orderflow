@@ -29,6 +29,8 @@ function read(over: Partial<EntryRead> = {}): EntryRead {
     bidRepl: null,
     delta: null,
     close: null,
+    high: null,
+    low: null,
     atFloor: false,
     atCeiling: false,
     failDown: false,
@@ -210,6 +212,34 @@ describe('decideEntry states', () => {
     const cur = read({ deltaSide: 'SELL', prog: 0.76, strength: 'NORMAL', agg: -0.15, pas: -0.4, ...closedLow });
     const priors = [read({ deltaSide: 'BUY', prog: 0.8, ...closedHigh }), read(), read(), read(), read(), prev];
     expect(decideEntry(cur, prev, priors, null)?.state).not.toBe(6);
+  });
+
+  it('8: a flat window is not a downtrend, so the uptick is not a buy', () => {
+    const flat = [3.332, 3.335, 3.346, 3.335, 3.331, 3.329].map((close) => read({
+      close, deltaSide: 'SELL', delta: -400_000, high: close + 0.01, low: close - 0.02,
+      agg: -0.2, pas: -0.4, chip: 'ASKS', strength: 'STRONG', ...closedLow,
+    }));
+    const cur = read({
+      close: 3.334, high: 3.343, low: 3.316, deltaSide: 'BUY', delta: 189_000,
+      prog: 0.28, strength: 'NORMAL', agg: 0.07, pas: 0.27, chip: 'BUYERS', ...closedHigh,
+    });
+    expect(decideEntry(cur, flat[5]!, flat, null)?.side).not.toBe('buy');
+  });
+
+  it('3: the bounce is given back on the next candle, so that candle is the sell', () => {
+    const sells = [
+      read({ deltaSide: 'SELL', delta: -445_000, high: 3.351, low: 3.332, close: 3.335 }),
+      read({ deltaSide: 'SELL', delta: -579_000, high: 3.348, low: 3.326, close: 3.331 }),
+      read({ deltaSide: 'SELL', delta: -740_000, high: 3.332, low: 3.299, close: 3.329 }),
+    ];
+    const bounce = read({
+      deltaSide: 'BUY', delta: 189_000, high: 3.343, low: 3.316, close: 3.334, upside: 'BUYERS_WIN', downside: 'BIDS_HOLD',
+    });
+    const cur = read({
+      deltaSide: 'SELL', delta: -198_000, agg: -0.1, prog: 0.1, high: 3.341, low: 3.320, close: 3.331,
+    });
+    const priors = [read({ close: 3.335, deltaSide: 'NONE', delta: -2_000 }), read({ close: 3.346, deltaSide: 'BUY', delta: 57_000, high: 3.346 }), ...sells, bounce];
+    expect(decideEntry(cur, bounce, priors, null)).toEqual({ side: 'sell', state: 3 });
   });
 
   it('4: the low was hunted, then price responded on ordinary delta', () => {

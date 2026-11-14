@@ -16871,6 +16871,8 @@ var process = globalThis.process || { env: {} };
       ...barPressure(bar),
       delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null,
       close: Number.isFinite(bar.close) ? bar.close : null,
+      high: Number.isFinite(bar.high) ? bar.high : null,
+      low: Number.isFinite(bar.low) ? bar.low : null,
       ...levelFlags(bar, prior)
     };
   }
@@ -16995,6 +16997,8 @@ var process = globalThis.process || { env: {} };
     const drift = priceDrift(recent);
     if (drift === trend) return book && tries >= 2;
     if (drift != null) return false;
+    const closes = recent.map((row) => row.close).filter((n) => known(n));
+    if (closes.length >= ENTRY_CONTEXT_MIN) return false;
     return effort >= 2 && effort > otherEffort && book && (moved || effort >= 3);
   }
   function inTrend(recent, trend) {
@@ -17121,6 +17125,52 @@ var process = globalThis.process || { env: {} };
     if (ceiling && !floor) return faded === "BUY";
     return true;
   }
+  function sideExtreme(recent, side2, edge) {
+    let best = null;
+    for (const row of recent) {
+      if (row.deltaSide !== side2) continue;
+      const value = edge === "high" ? row.high : row.low;
+      if (!known(value)) continue;
+      if (best == null || (edge === "high" ? value > best : value < best)) best = value;
+    }
+    return best;
+  }
+  function responseClears(recent, cur, failed) {
+    if (failed === "SELL") {
+      const cap = sideExtreme(recent, "SELL", "high");
+      if (cap == null || !known(cur.high)) return true;
+      return cur.high >= cap;
+    }
+    const floor = sideExtreme(recent, "BUY", "low");
+    if (floor == null || !known(cur.low)) return true;
+    return cur.low <= floor;
+  }
+  function effortDominates(recent, side2) {
+    const other = side2 === "SELL" ? "BUY" : "SELL";
+    let mine = 0;
+    let theirs = 0;
+    let mineN = 0;
+    for (const row of recent) {
+      if (!known(row.delta) || row.deltaSide !== side2 && row.deltaSide !== other) continue;
+      if (row.deltaSide === side2) {
+        mine += Math.abs(row.delta);
+        mineN += 1;
+      } else theirs += Math.abs(row.delta);
+    }
+    return mineN >= 2 && mine > theirs;
+  }
+  function bounceFailed(recent, prev, cur) {
+    if (!prev) return null;
+    const gaveBack = known(cur.close) && known(prev.close) && prev.close > 0 ? (cur.close - prev.close) / prev.close : null;
+    const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
+    if (prev.deltaSide === "BUY" && prev.upside === "BUYERS_WIN" && cur.deltaSide === "SELL" && aggLeans(cur, "SELL") && !extended && effortDominates(recent, "SELL") && !responseClears(recent, prev, "SELL") && (gaveBack == null || gaveBack <= ENTRY_CLOSE_FLAT)) {
+      return { side: "sell", state: 3 };
+    }
+    if (prev.deltaSide === "SELL" && prev.downside === "SELLERS_WIN" && cur.deltaSide === "BUY" && aggLeans(cur, "BUY") && !extended && effortDominates(recent, "BUY") && !responseClears(recent, prev, "BUY") && (gaveBack == null || gaveBack >= -ENTRY_CLOSE_FLAT)) {
+      return { side: "buy", state: 3 };
+    }
+    return null;
+  }
   function levelAllowsJoin(recent, cur, joining) {
     const { floor, ceiling } = levelSeen([...recent, cur]);
     if (joining === "BUY" && ceiling && !floor) return false;
@@ -17130,6 +17180,8 @@ var process = globalThis.process || { env: {} };
   function decideEntry(cur, prev, priors, prevSignal) {
     const recent = cur ? setupContext(priors) : null;
     if (!cur || !recent) return null;
+    const bounce = bounceFailed(recent, prev, cur);
+    if (bounce && inTrend(recent, bounce.side === "sell" ? "SELL" : "BUY")) return bounce;
     const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
     const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
     const prevSide = prev?.deltaSide === "BUY" || prev?.deltaSide === "SELL" ? prev.deltaSide : null;

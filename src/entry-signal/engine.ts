@@ -99,6 +99,8 @@ export interface EntryRead {
   delta: number | null;
   /** Candle close, used to see whether the last 6 candles drifted up or down. */
   close: number | null;
+  high: number | null;
+  low: number | null;
   /** This candle is another defense of a low the bids already held. */
   atFloor: boolean;
   /** This candle is another defense of a high the asks already held. */
@@ -277,6 +279,8 @@ export function barEntryRead(bars: EntryBar[], index: number, progress: EntryPro
     ...barPressure(bar),
     delta: (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0 ? (bar.totalBuy ?? 0) - (bar.totalSell ?? 0) : null,
     close: Number.isFinite(bar.close) ? bar.close : null,
+    high: Number.isFinite(bar.high) ? bar.high : null,
+    low: Number.isFinite(bar.low) ? bar.low : null,
     ...levelFlags(bar, prior),
   };
 }
@@ -454,6 +458,10 @@ function trendContext(recent: EntryRead[], trend: EffortSide): boolean {
   const drift = priceDrift(recent);
   if (drift === trend) return book && tries >= 2;
   if (drift != null) return false;
+  // Closes are here and did not drift. That is not a trend, so state 8 stays quiet.
+  // Missing closes keep the effort rule, so a fixture without prices still resolves.
+  const closes = recent.map((row) => row.close).filter((n): n is number => known(n));
+  if (closes.length >= ENTRY_CONTEXT_MIN) return false;
   return effort >= 2 && effort > otherEffort && book && (moved || effort >= 3);
 }
 
@@ -648,6 +656,87 @@ function levelAllowsFade(recent: EntryRead[], cur: EntryRead, faded: EffortSide)
   return true;
 }
 
+/** Highest high of that side's candles in the six, or the lowest low. */
+function sideExtreme(recent: EntryRead[], side: EffortSide, edge: 'high' | 'low'): number | null {
+  let best: number | null = null;
+  for (const row of recent) {
+    if (row.deltaSide !== side) continue;
+    const value = edge === 'high' ? row.high : row.low;
+    if (!known(value)) continue;
+    if (best == null || (edge === 'high' ? value > best : value < best)) best = value;
+  }
+  return best;
+}
+
+/**
+ * A buy response has to trade above the sell candles' high.
+ * A sell response has to trade under the buy candles' low.
+ * No prices keeps the older rule.
+ */
+function responseClears(recent: EntryRead[], cur: EntryRead, failed: EffortSide): boolean {
+  if (failed === 'SELL') {
+    const cap = sideExtreme(recent, 'SELL', 'high');
+    if (cap == null || !known(cur.high)) return true;
+    return cur.high >= cap;
+  }
+  const floor = sideExtreme(recent, 'BUY', 'low');
+  if (floor == null || !known(cur.low)) return true;
+  return cur.low <= floor;
+}
+
+/**
+ * The other side's effort is still the larger one in the six.
+ * Unknown deltas do not count, so this stays quiet in fixtures without volume.
+ */
+function effortDominates(recent: EntryRead[], side: EffortSide): boolean {
+  const other: EffortSide = side === 'SELL' ? 'BUY' : 'SELL';
+  let mine = 0;
+  let theirs = 0;
+  let mineN = 0;
+  for (const row of recent) {
+    if (!known(row.delta) || (row.deltaSide !== side && row.deltaSide !== other)) continue;
+    if (row.deltaSide === side) {
+      mine += Math.abs(row.delta);
+      mineN += 1;
+    } else theirs += Math.abs(row.delta);
+  }
+  return mineN >= 2 && mine > theirs;
+}
+
+/**
+ * A bounce that never cleared the other side, then this candle gives it back.
+ * 14 Nov 16:45 closed up inside the sell. 17:00 gave that close back. That is the sell.
+ * The mirror is a buy. A real extension is left to state 2.
+ */
+function bounceFailed(recent: EntryRead[], prev: EntryRead | null, cur: EntryRead): EntrySignal | null {
+  if (!prev) return null;
+  const gaveBack = known(cur.close) && known(prev.close) && prev.close > 0
+    ? (cur.close - prev.close) / prev.close
+    : null;
+  const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
+  if (
+    prev.deltaSide === 'BUY' && prev.upside === 'BUYERS_WIN'
+    && cur.deltaSide === 'SELL' && aggLeans(cur, 'SELL')
+    && !extended
+    && effortDominates(recent, 'SELL')
+    && !responseClears(recent, prev, 'SELL')
+    && (gaveBack == null || gaveBack <= ENTRY_CLOSE_FLAT)
+  ) {
+    return { side: 'sell', state: 3 };
+  }
+  if (
+    prev.deltaSide === 'SELL' && prev.downside === 'SELLERS_WIN'
+    && cur.deltaSide === 'BUY' && aggLeans(cur, 'BUY')
+    && !extended
+    && effortDominates(recent, 'BUY')
+    && !responseClears(recent, prev, 'BUY')
+    && (gaveBack == null || gaveBack >= -ENTRY_CLOSE_FLAT)
+  ) {
+    return { side: 'buy', state: 3 };
+  }
+  return null;
+}
+
 /** A buy join stays quiet into a ceiling. A sell join stays quiet into a floor. */
 function levelAllowsJoin(recent: EntryRead[], cur: EntryRead, joining: EffortSide): boolean {
   const { floor, ceiling } = levelSeen([...recent, cur]);
@@ -688,6 +777,8 @@ export function decideEntry(
 ): EntrySignal | null {
   const recent = cur ? setupContext(priors) : null;
   if (!cur || !recent) return null;
+  const bounce = bounceFailed(recent, prev, cur);
+  if (bounce && inTrend(recent, bounce.side === 'sell' ? 'SELL' : 'BUY')) return bounce;
   const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
   const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
   const prevSide = prev?.deltaSide === 'BUY' || prev?.deltaSide === 'SELL' ? prev.deltaSide : null;
