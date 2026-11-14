@@ -17047,6 +17047,20 @@ var process = globalThis.process || { env: {} };
     if (cur.downside !== "SELLERS_WIN") return false;
     return !(cur.deltaSide === "BUY" && cur.prog != null && cur.prog >= ENTRY_REAL_PROG);
   }
+  function closeStillDown(cur, prev) {
+    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+    return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
+  }
+  function closeStillUp(cur, prev) {
+    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+    return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
+  }
+  function weakBounce(cur, prev, effort) {
+    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+    if (cur.deltaSide !== effort || cur.prog == null || cur.prog >= 0 || cur.prog <= -ENTRY_REAL_PROG) return false;
+    const change = (cur.close - prev.close) / prev.close;
+    return effort === "SELL" ? change > ENTRY_CLOSE_FLAT : change < -ENTRY_CLOSE_FLAT;
+  }
   function closeCouldnt(row, prev, side2) {
     if (known(row.close) && prev && known(prev.close) && prev.close > 0) {
       const change = (row.close - prev.close) / prev.close;
@@ -17248,11 +17262,23 @@ var process = globalThis.process || { env: {} };
     const prevLostSame = prev && (buyersLost && prev.highDelta && prev.deltaSide === "BUY" && prev.upside === "ASKS_HOLD" || sellersLost && prev.highDelta && prev.deltaSide === "SELL" && prev.downside === "BIDS_HOLD");
     if (!prevLostSame && sellersLost && countDelta(recent, "SELL") >= 3) {
       if (!inTrend(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
+      if (weakBounce(cur, prev, "SELL") || closeStillDown(cur, prev)) return { side: "sell", state: 2 };
       return { side: "buy", state: 1 };
     }
     if (!prevLostSame && buyersLost && countDelta(recent, "BUY") >= 3) {
       if (!inTrend(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
+      if (weakBounce(cur, prev, "BUY") || closeStillUp(cur, prev)) return { side: "buy", state: 2 };
       return { side: "sell", state: 1 };
+    }
+    if (cur.deltaSide === "SELL" && sellersOwnClose(cur) && closeStillDown(cur, prev) && cur.prog != null && (cur.highDelta ? cur.prog > 0 : cur.prog >= ENTRY_LITTLE_PROG) && cur.strength !== "WEAK" && !(prevSignal && prevSignal.side === "sell")) {
+      if (joinStands(recent, "SELL") && trapAllowsJoin(recent, cur, "SELL") && levelAllowsJoin(recent, cur, "SELL")) {
+        return { side: "sell", state: 2 };
+      }
+    }
+    if (cur.deltaSide === "BUY" && buyersOwnClose(cur) && closeStillUp(cur, prev) && cur.prog != null && cur.prog >= ENTRY_LITTLE_PROG && cur.strength !== "WEAK" && !(prevSignal && prevSignal.side === "buy")) {
+      if (joinStands(recent, "BUY") && trapAllowsJoin(recent, cur, "BUY") && levelAllowsJoin(recent, cur, "BUY")) {
+        return { side: "buy", state: 2 };
+      }
     }
     if (prev && prevSide && cur.deltaSide === prevSide && cur.prog != null && cur.prog <= ENTRY_LITTLE_PROG) {
       const stalledSide = prevSide;
@@ -17278,9 +17304,11 @@ var process = globalThis.process || { env: {} };
       }
     }
     if (prev && trendContext(recent, "SELL") && prevStillTrend(prev, "SELL") && trendFailed(cur, "SELL") && closeCouldnt(cur, prev, "SELL") && trapAllowsFade(recent, cur, "SELL") && levelAllowsFade(recent, cur, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
+      if (weakBounce(cur, prev, "SELL")) return { side: "sell", state: 2 };
       return { side: "buy", state: 8 };
     }
     if (prev && trendContext(recent, "BUY") && prevStillTrend(prev, "BUY") && trendFailed(cur, "BUY") && closeCouldnt(cur, prev, "BUY") && trapAllowsFade(recent, cur, "BUY") && levelAllowsFade(recent, cur, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
+      if (weakBounce(cur, prev, "BUY")) return { side: "buy", state: 2 };
       return { side: "sell", state: 8 };
     }
     return null;

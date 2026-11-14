@@ -545,6 +545,31 @@ function trendFailed(cur: EntryRead, trend: EffortSide): boolean {
  * Finishing off the low of a candle that still closed lower is sellers getting price down.
  * A close only a few bp through the previous close did not extend. 14:00 is that case.
  */
+/**
+ * The close ticked against that effort, but not by a real amount, and the tape is still that side.
+ * 14 Nov 18:00 and 19:00 did this inside the sell. That is not a buy.
+ * No previous close keeps the older rule.
+ */
+/** This close is still lower than the previous close. Sellers are getting price down. */
+function closeStillDown(cur: EntryRead, prev: EntryRead | null): boolean {
+  if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+  return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
+}
+
+/** This close is still higher than the previous close. Buyers are getting price up. */
+function closeStillUp(cur: EntryRead, prev: EntryRead | null): boolean {
+  if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+  return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
+}
+
+function weakBounce(cur: EntryRead, prev: EntryRead | null, effort: EffortSide): boolean {
+  if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+  // Against the effort, but not a real answer. Progress with the effort is not a bounce.
+  if (cur.deltaSide !== effort || cur.prog == null || cur.prog >= 0 || cur.prog <= -ENTRY_REAL_PROG) return false;
+  const change = (cur.close - prev.close) / prev.close;
+  return effort === 'SELL' ? change > ENTRY_CLOSE_FLAT : change < -ENTRY_CLOSE_FLAT;
+}
+
 function closeCouldnt(row: EntryRead, prev: EntryRead | null, side: EffortSide): boolean {
   if (known(row.close) && prev && known(prev.close) && prev.close > 0) {
     const change = (row.close - prev.close) / prev.close;
@@ -858,11 +883,31 @@ export function decideEntry(
   );
   if (!prevLostSame && sellersLost && countDelta(recent, 'SELL') >= 3) {
     if (!inTrend(recent, 'SELL') || !fadeStands(recent, cur, prev, 'SELL') || !trapAllowsFade(recent, cur, 'SELL') || !levelAllowsFade(recent, cur, 'SELL')) return null;
+    if (weakBounce(cur, prev, 'SELL') || closeStillDown(cur, prev)) return { side: 'sell', state: 2 };
     return { side: 'buy', state: 1 };
   }
   if (!prevLostSame && buyersLost && countDelta(recent, 'BUY') >= 3) {
     if (!inTrend(recent, 'BUY') || !fadeStands(recent, cur, prev, 'BUY') || !trapAllowsFade(recent, cur, 'BUY') || !levelAllowsFade(recent, cur, 'BUY')) return null;
+    if (weakBounce(cur, prev, 'BUY') || closeStillUp(cur, prev)) return { side: 'buy', state: 2 };
     return { side: 'sell', state: 1 };
+  }
+
+  // 14 Nov 16:00–17:15. The sell started while the six closes were still up, and each
+  // candle moved less than 0.50 ATR, so the downtrend join never spoke.
+  // A strong sell that wins the close and is still closing down is the sell.
+  if (cur.deltaSide === 'SELL' && sellersOwnClose(cur) && closeStillDown(cur, prev)
+    && cur.prog != null && (cur.highDelta ? cur.prog > 0 : cur.prog >= ENTRY_LITTLE_PROG) && cur.strength !== 'WEAK'
+    && !(prevSignal && prevSignal.side === 'sell')) {
+    if (joinStands(recent, 'SELL') && trapAllowsJoin(recent, cur, 'SELL') && levelAllowsJoin(recent, cur, 'SELL')) {
+      return { side: 'sell', state: 2 };
+    }
+  }
+  if (cur.deltaSide === 'BUY' && buyersOwnClose(cur) && closeStillUp(cur, prev)
+    && cur.prog != null && cur.prog >= ENTRY_LITTLE_PROG && cur.strength !== 'WEAK'
+    && !(prevSignal && prevSignal.side === 'buy')) {
+    if (joinStands(recent, 'BUY') && trapAllowsJoin(recent, cur, 'BUY') && levelAllowsJoin(recent, cur, 'BUY')) {
+      return { side: 'buy', state: 2 };
+    }
   }
 
   // The side that just moved does not progress on this candle. Open the other side
@@ -901,9 +946,11 @@ export function decideEntry(
   // if they no longer get price down, buy on the candle that takes the close.
   // An uptrend is judged by aggressive buyers and the bids, and the failure is a sell.
   if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && trapAllowsFade(recent, cur, 'SELL') && levelAllowsFade(recent, cur, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
+    if (weakBounce(cur, prev, 'SELL')) return { side: 'sell', state: 2 };
     return { side: 'buy', state: 8 };
   }
   if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && trapAllowsFade(recent, cur, 'BUY') && levelAllowsFade(recent, cur, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
+    if (weakBounce(cur, prev, 'BUY')) return { side: 'buy', state: 2 };
     return { side: 'sell', state: 8 };
   }
   return null;

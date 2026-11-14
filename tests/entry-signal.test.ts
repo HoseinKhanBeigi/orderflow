@@ -70,6 +70,28 @@ describe('barBattleVerdict', () => {
 });
 
 describe('decideEntry states', () => {
+  it('2: a strong sell that is still closing down joins before the six have drifted down', () => {
+    const priors = [3.30, 3.31, 3.32, 3.33, 3.34, 3.35].map((close) => read({
+      close, deltaSide: 'BUY', delta: 200_000, agg: 0.2, pas: 0.3, chip: 'BUYERS', ...closedHigh,
+    }));
+    const cur = read({
+      close: 3.345, strength: 'STRONG', deltaSide: 'SELL', delta: -700_000, prog: 0.3,
+      agg: -0.2, pas: -0.4, chip: 'SELLERS', ...closedLow,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'sell', state: 2 });
+  });
+
+  it('1: a small up close does not answer a strong sell, so that candle stays a sell', () => {
+    const priors = [3.33, 3.32, 3.30, 3.28, 3.26, 3.24].map((close) => read({
+      close, deltaSide: 'SELL', delta: -400_000, agg: -0.2, pas: -0.3, chip: 'ASKS', ...closedLow,
+    }));
+    const cur = read({
+      close: 3.242, strength: 'STRONG', deltaSide: 'SELL', delta: -630_000, prog: -0.14,
+      agg: -0.09, pas: 0.58, ...closedHigh,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'sell', state: 2 });
+  });
+
   it('1: heavy selling that lost the close → buy, after sellers were the setup', () => {
     const cur = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.1, ...closedHigh });
     const priors = sideTries('SELL', 6);
@@ -212,6 +234,16 @@ describe('decideEntry states', () => {
     const cur = read({ deltaSide: 'SELL', prog: 0.76, strength: 'NORMAL', agg: -0.15, pas: -0.4, ...closedLow });
     const priors = [read({ deltaSide: 'BUY', prog: 0.8, ...closedHigh }), read(), read(), read(), read(), prev];
     expect(decideEntry(cur, prev, priors, null)?.state).not.toBe(6);
+  });
+
+  it('8: a sell-delta uptick that does not answer the drop stays a sell', () => {
+    const priors = [3.33, 3.31, 3.28, 3.26, 3.24, 3.21].map((close) => read({
+      close, deltaSide: 'SELL', delta: -500_000, prog: 0.4, agg: -0.2, pas: -0.3, chip: 'ASKS', strength: 'STRONG', ...closedLow,
+    }));
+    const cur = read({
+      close: 3.219, deltaSide: 'SELL', prog: -0.36, strength: 'NORMAL', agg: -0.04, pas: 0.89, ...closedHigh,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'sell', state: 2 });
   });
 
   it('8: a flat window is not a downtrend, so the uptick is not a buy', () => {

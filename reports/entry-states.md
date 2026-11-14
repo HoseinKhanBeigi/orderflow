@@ -77,8 +77,8 @@ Asks replenished (A) are aggressive buys the close did not keep. Bids replenishe
 
 That side was already pushing, then this candle's effort is absorbed.
 
-- **Buy:** downtrend. Sellers print high delta, lose the close (bids hold), and the asks refilled. At least 3 of the 6 candles are sell delta. The previous candle did not lose the same way.
-- **Sell:** uptrend. Buyers print high delta, lose the close (asks hold), and the bids refilled. At least 3 of the 6 are buy delta.
+- **Buy:** downtrend. Sellers print high delta, lose the close (bids hold), and the asks refilled. At least 3 of the 6 candles are sell delta. The previous candle did not lose the same way. A close that only ticks up, while the tape is still sell and the move against that sell is under 0.50 ATR, is not this buy. That candle stays with the sell.
+- **Sell:** uptrend. Buyers print high delta, lose the close (asks hold), and the bids refilled. At least 3 of the 6 are buy delta. The mirror: a small downtick with the tape still buy stays with the buy.
 
 ### 2 — high effort accepted, book did not refill
 
@@ -88,6 +88,8 @@ That side already owns the move, and this candle's effort is accepted.
 - **Sell:** downtrend. The mirror: sellers win the close, asks are not refilling against them.
 
 If that side already can't inside the six, or that side was just trapped, this join stays quiet. A heavy sell candle that closed high stays a fade. It is not buy 2.
+
+A strong sell that wins the close and is still closing down is the sell even when that one candle moved less than 0.50 ATR, and even when the six closes have not drifted into a downtrend yet. 14 Nov 16:00 to 17:15 is that push. The mirror is a buy.
 
 ### 3 — effort flipped, book refilled, price stopped
 
@@ -138,8 +140,8 @@ If effort and response are both still growing, there is no fade. Effort that col
 
 The trend's effort and book no longer move price. The label is the candle where the close turns back.
 
-- **Buy:** downtrend, sellers and asks. The candle just before still belongs to that downtrend. This candle closes back up (buyers win the close). Weak or flat delta still counts. 13 Nov 14:00 is this buy: the six closes before it fell, the asks were in that push, and 14:00 did not extend the drop.
-- **Sell:** uptrend, buyers and bids. This candle closes back down.
+- **Buy:** downtrend, sellers and asks. The candle just before still belongs to that downtrend. This candle closes back up (buyers win the close). Weak or flat delta still counts. 13 Nov 14:00 is this buy: the six closes before it fell, the asks were in that push, and 14:00 did not extend the drop. A candle that is still sell delta, and only ticks up without a real answer, is not this buy. 14 Nov 19:00 was that pause. It stays a sell.
+- **Sell:** uptrend, buyers and bids. This candle closes back down. The mirror stays a buy when the tape is still buy and the dip is not real.
 
 A high-delta candle is left to states 1–5. The next candle of the same turn is not a second state 8.
 
