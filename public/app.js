@@ -2516,6 +2516,14 @@ function levelMarks(bars, liveTime) {
   return impl(bars, liveTime, rows);
 }
 
+/** MAYBE BUY / MAYBE SELL. A warning on this candle about the next one. Not an entry. */
+function maybeMarks(bars, liveTime) {
+  const impl = window.OrderFlowClient?.maybeMarks;
+  if (!impl || !bars?.length) return new Map();
+  const rows = annotateDeltaProgress(bars, { lastIsLive: bars[bars.length - 1]?.time === liveTime });
+  return impl(bars, liveTime, rows);
+}
+
 function battleVerdictTip(v) {
   const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
   const stronger = v.stronger === 'EVEN' ? 'pair (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
@@ -5195,6 +5203,7 @@ function drawFootprint(symbol = selectedSymbol) {
   const couldntByTime = couldntMarks(bars, nowBucket);
   const trapByTime = trapMarks(bars, nowBucket);
   const levelByTime = levelMarks(bars, nowBucket);
+  const maybeByTime = maybeMarks(bars, nowBucket);
   const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
@@ -5396,15 +5405,24 @@ function drawFootprint(symbol = selectedSymbol) {
       const deltaHit = drawDeltaProgressLabels(footCtx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
       if (deltaHit?.tip) view.footHits.push(deltaHit);
     }
+    const maybe = maybeByTime.get(bar.time);
     const couldnt = couldntByTime.get(bar.time);
+    const entry = entryByTime.get(bar.time);
+    let above = 14;
+    if (maybe) {
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - above));
+      const maybeHit = drawCouldntLabel(ctx, maybe, cx, y, barWidth - 4);
+      if (maybeHit) view.microHits.push(maybeHit);
+      above += 20;
+    }
     if (couldnt) {
-      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - 14));
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - above));
       const couldntHit = drawCouldntLabel(ctx, couldnt, cx, y, barWidth - 4);
       if (couldntHit) view.microHits.push(couldntHit);
+      above += 20;
     }
-    const entry = entryByTime.get(bar.time);
     if (entry) {
-      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - (couldnt ? 34 : 16)));
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - above));
       const entryHit = drawCouldntLabel(ctx, entry, cx, y, barWidth - 4);
       if (entryHit) view.microHits.push(entryHit);
     }

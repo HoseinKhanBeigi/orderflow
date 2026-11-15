@@ -17403,6 +17403,35 @@ var process = globalThis.process || { env: {} };
     }
     return marks;
   }
+  function maybeMarks(bars, liveTime, progress) {
+    const marks = /* @__PURE__ */ new Map();
+    if (!bars || bars.length < SWING_BARS + 1) return marks;
+    const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
+    const last = lastIsLive ? bars.length - 1 : bars.length;
+    const reads = [];
+    for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+    for (let index = SWING_BARS; index < last; index++) {
+      const cur = reads[index];
+      const prev = reads[index - 1];
+      const history = reads.slice(0, index);
+      if (decideEntry(cur, prev, history, null)) continue;
+      const market = swingSide(history);
+      const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
+      const buyBounce = cur.deltaSide === "BUY" && cur.upside === "BUYERS_WIN" && extended;
+      const sellDip = cur.deltaSide === "SELL" && cur.downside === "SELLERS_WIN" && extended;
+      const side2 = market === "SELL" && (buyBounce || cur.atCeiling || cur.failUp) ? "sell" : market === "BUY" && (sellDip || cur.atFloor || cur.failDown) ? "buy" : null;
+      if (!side2) continue;
+      const sell = side2 === "sell";
+      marks.set(bars[index].time, {
+        side: side2,
+        text: sell ? "MAYBE SELL" : "MAYBE BUY",
+        short: sell ? "M SELL" : "M BUY",
+        color: sell ? "#fbbf24" : "#86efac",
+        tip: sell ? "Maybe sell\nThe swing is still down. This candle bounced, or the ceiling held. The next candle may sell. This is not an entry." : "Maybe buy\nThe swing is still up. This candle dipped, or the floor held. The next candle may buy. This is not an entry."
+      });
+    }
+    return marks;
+  }
   function couldntMark(side2) {
     const sellers = side2 === "SELL";
     return {
@@ -17876,6 +17905,7 @@ var process = globalThis.process || { env: {} };
     couldntMarks,
     trapMarks,
     levelMarks,
+    maybeMarks,
     ENTRY_DETAIL,
     ENTRY_PRIOR_BARS
   };

@@ -1079,6 +1079,60 @@ export function entryMarks(
   return marks;
 }
 
+export interface MaybeMark {
+  side: EntrySide;
+  text: string;
+  short: string;
+  color: string;
+  tip: string;
+}
+
+/**
+ * A warning, not an entry. The candle has not decided the trade.
+ * In a drop, a strong bounce or a held ceiling says the next candle may sell.
+ * In a rise, a strong dip or a held floor says the next candle may buy.
+ * 15 Nov 19:45 is the bounce. 20:00 is the sell.
+ */
+export function maybeMarks(
+  bars: EntryBar[],
+  liveTime: number | null,
+  progress: EntryProgressRow[],
+): Map<number, MaybeMark> {
+  const marks = new Map<number, MaybeMark>();
+  if (!bars || bars.length < SWING_BARS + 1) return marks;
+  const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
+  const last = lastIsLive ? bars.length - 1 : bars.length;
+  const reads: EntryRead[] = [];
+  for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+  for (let index = SWING_BARS; index < last; index++) {
+    const cur = reads[index]!;
+    const prev = reads[index - 1]!;
+    const history = reads.slice(0, index);
+    if (decideEntry(cur, prev, history, null)) continue;
+    const market = swingSide(history);
+    const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
+    const buyBounce = cur.deltaSide === 'BUY' && cur.upside === 'BUYERS_WIN' && extended;
+    const sellDip = cur.deltaSide === 'SELL' && cur.downside === 'SELLERS_WIN' && extended;
+    const side: EntrySide | null = market === 'SELL' && (buyBounce || cur.atCeiling || cur.failUp)
+      ? 'sell'
+      : market === 'BUY' && (sellDip || cur.atFloor || cur.failDown)
+        ? 'buy'
+        : null;
+    if (!side) continue;
+    const sell = side === 'sell';
+    marks.set(bars[index]!.time, {
+      side,
+      text: sell ? 'MAYBE SELL' : 'MAYBE BUY',
+      short: sell ? 'M SELL' : 'M BUY',
+      color: sell ? '#fbbf24' : '#86efac',
+      tip: sell
+        ? 'Maybe sell\nThe swing is still down. This candle bounced, or the ceiling held. The next candle may sell. This is not an entry.'
+        : 'Maybe buy\nThe swing is still up. This candle dipped, or the floor held. The next candle may buy. This is not an entry.',
+    });
+  }
+  return marks;
+}
+
 function couldntMark(side: EffortSide): CouldntMark {
   const sellers = side === 'SELL';
   return {

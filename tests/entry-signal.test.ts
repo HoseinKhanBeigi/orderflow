@@ -6,6 +6,7 @@ import {
   decideEntry,
   entryMarks,
   levelMarks,
+  maybeMarks,
   trapMarks,
   type EntryBar,
   type EntryRead,
@@ -650,6 +651,24 @@ describe('state 5 on the chart', () => {
     const marks = entryMarks(bars, null, progress);
     expect(marks.get(6)?.short).toBe('B1');
     expect(marks.get(7)?.short).toBe('B5');
+  });
+});
+
+describe('maybe', () => {
+  it('warns of a sell on a strong bounce that has not turned a drop', () => {
+    const bars: EntryBar[] = [];
+    for (let i = 0; i < 16; i++) {
+      const close = 3.4 - i * 0.012;
+      bars.push({ time: i, open: close + 0.004, high: close + 0.008, low: close - 0.004, close, totalBuy: 30, totalSell: 70 });
+    }
+    const bounce = 3.23;
+    bars.push({ time: 16, open: bounce - 0.02, high: bounce + 0.004, low: bounce - 0.024, close: bounce, totalBuy: 80, totalSell: 20 });
+    const progress = bars.map((bar, i) => ({
+      deltaSide: i === 16 ? 'BUY' as const : 'SELL' as const,
+      deltaStrengthState: 'NORMAL',
+      directionalProgressATR: i === 16 ? 1.2 : 0.4,
+    }));
+    expect(maybeMarks(bars, null, progress).get(16)?.text).toBe('MAYBE SELL');
   });
 });
 
