@@ -16972,6 +16972,28 @@ var process = globalThis.process || { env: {} };
     if (change >= 25e-4) return "BUY";
     return null;
   }
+  var SWING_BARS = 16;
+  var SWING_DRIFT = 5e-3;
+  function swingSide(prior) {
+    const closes = prior.slice(-SWING_BARS).map((row) => row.close).filter((n) => known(n));
+    if (closes.length < SWING_BARS) return null;
+    const first = closes[0];
+    const last = closes[closes.length - 1];
+    if (!(first > 0)) return null;
+    const change = (last - first) / first;
+    if (change <= -SWING_DRIFT) return "SELL";
+    if (change >= SWING_DRIFT) return "BUY";
+    return null;
+  }
+  function keptInMarket(side2, state, market) {
+    const against = market === "SELL" && side2 === "buy" || market === "BUY" && side2 === "sell";
+    if (against) {
+      const buyOk = side2 === "buy" && (state === 1 || state === 5 || state === 8);
+      const sellOk = side2 === "sell" && (state === 1 || state === 2 || state === 4 || state === 5 || state === 8);
+      if (!buyOk && !sellOk) return null;
+    }
+    return { side: side2, state };
+  }
   function trendTrying(row, trend) {
     if (trend === "SELL") {
       return row.deltaSide === "SELL" || row.chip === "SELLERS" || row.chip === "ASKS" || row.upside === "ASKS_HOLD" || row.downside === "SELLERS_WIN";
@@ -17005,6 +17027,14 @@ var process = globalThis.process || { env: {} };
     const drift = priceDrift(recent);
     if (drift == null) return true;
     return trendContext(recent, trend);
+  }
+  function drifted(recent, trend) {
+    const drift = priceDrift(recent);
+    if (drift == null) {
+      const closes = recent.map((row) => row.close).filter((n) => known(n));
+      if (closes.length >= ENTRY_CONTEXT_MIN) return false;
+    }
+    return inTrend(recent, trend);
   }
   function prevStillTrend(prev, trend) {
     if (trend === "SELL") {
@@ -17050,10 +17080,6 @@ var process = globalThis.process || { env: {} };
   function closeStillDown(cur, prev) {
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
     return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
-  }
-  function closeStillUp(cur, prev) {
-    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
-    return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
   }
   function weakBounce(cur, prev, effort) {
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
@@ -17194,8 +17220,9 @@ var process = globalThis.process || { env: {} };
   function decideEntry(cur, prev, priors, prevSignal) {
     const recent = cur ? setupContext(priors) : null;
     if (!cur || !recent) return null;
+    const market = swingSide(priors);
     const bounce = bounceFailed(recent, prev, cur);
-    if (bounce && inTrend(recent, bounce.side === "sell" ? "SELL" : "BUY")) return bounce;
+    if (bounce && inTrend(recent, bounce.side === "sell" ? "SELL" : "BUY")) return keptInMarket(bounce.side, bounce.state, market);
     const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
     const little = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG;
     const prevSide = prev?.deltaSide === "BUY" || prev?.deltaSide === "SELL" ? prev.deltaSide : null;
@@ -17203,11 +17230,11 @@ var process = globalThis.process || { env: {} };
     if (prevAccepted && cur.highDelta && little) {
       if (prevSide === "SELL" && cur.deltaSide === "BUY" && aggLeans(cur, "BUY") && passiveAbsorbs(cur, "BUY")) {
         if (!inTrend(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL")) return null;
-        return { side: "buy", state: 3 };
+        return keptInMarket("buy", 3, market);
       }
       if (prevSide === "BUY" && cur.deltaSide === "SELL" && aggLeans(cur, "SELL") && passiveAbsorbs(cur, "SELL")) {
         if (!inTrend(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY")) return null;
-        return { side: "sell", state: 3 };
+        return keptInMarket("sell", 3, market);
       }
     }
     if (cur.highDelta && real) {
@@ -17217,58 +17244,58 @@ var process = globalThis.process || { env: {} };
       const continued = chip && prevSignal && prevSignal.side === side2;
       const took = effort === "BUY" ? buyersOwnClose(cur) : effort === "SELL" ? sellersOwnClose(cur) : false;
       if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
-        if (!inTrend(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort)) return null;
-        return { side: side2, state: 2 };
+        if (!drifted(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort)) return null;
+        return keptInMarket(side2, 2, market);
       }
     }
     const responded = cur.prog != null && cur.prog >= ENTRY_RESPONSE_PROG && !cur.highDelta;
     if (responded && buyersOwnClose(cur) && failedSideShown(recent, "SELLERS", "LOW")) {
-      if (!inTrend(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
-      return { side: "buy", state: 4 };
+      if (!drifted(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
+      return keptInMarket("buy", 4, market);
     }
     if (responded && sellersOwnClose(cur) && failedSideShown(recent, "BUYERS", "HIGH")) {
-      if (!inTrend(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
-      return { side: "sell", state: 4 };
+      if (!drifted(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
+      return keptInMarket("sell", 4, market);
     }
     const battleWon = cur.prog != null && cur.prog >= ENTRY_REAL_PROG && cur.strength !== "WEAK";
     if (battleWon && buyersOwnClose(cur) && failedSideShown(recent, "SELLERS", "LOW") && !(prevSignal && prevSignal.side === "buy")) {
-      if (!inTrend(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
-      return { side: "buy", state: 4 };
+      if (!drifted(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
+      return keptInMarket("buy", 4, market);
     }
     if (battleWon && sellersOwnClose(cur) && failedSideShown(recent, "BUYERS", "HIGH") && !(prevSignal && prevSignal.side === "sell")) {
-      if (!inTrend(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
-      return { side: "sell", state: 4 };
+      if (!drifted(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
+      return keptInMarket("sell", 4, market);
     }
     if (cur.highDelta && real) {
       if (sellersOwnClose(cur) && countWins(recent, "SELLERS_WIN") >= 2 && !(prevSignal && prevSignal.side === "sell")) {
-        if (!inTrend(recent, "SELL") || !joinStands(recent, "SELL") || !trapAllowsJoin(recent, cur, "SELL") || !levelAllowsJoin(recent, cur, "SELL")) return null;
-        return { side: "sell", state: 2 };
+        if (!drifted(recent, "SELL") || !joinStands(recent, "SELL") || !trapAllowsJoin(recent, cur, "SELL") || !levelAllowsJoin(recent, cur, "SELL")) return null;
+        return keptInMarket("sell", 2, market);
       }
       if (buyersOwnClose(cur) && countWins(recent, "BUYERS_WIN") >= 2 && !(prevSignal && prevSignal.side === "buy")) {
-        if (!inTrend(recent, "BUY") || !joinStands(recent, "BUY") || !trapAllowsJoin(recent, cur, "BUY") || !levelAllowsJoin(recent, cur, "BUY")) return null;
-        return { side: "buy", state: 2 };
+        if (!drifted(recent, "BUY") || !joinStands(recent, "BUY") || !trapAllowsJoin(recent, cur, "BUY") || !levelAllowsJoin(recent, cur, "BUY")) return null;
+        return keptInMarket("buy", 2, market);
       }
     }
     if (cur.highDelta && real && buyersTook(cur) && triedButCouldnt(recent, "SELL")) {
       if (!inTrend(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
-      return { side: "buy", state: 5 };
+      return keptInMarket("buy", 5, market);
     }
     if (cur.highDelta && real && sellersTook(cur) && triedButCouldnt(recent, "BUY")) {
       if (!inTrend(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
-      return { side: "sell", state: 5 };
+      return keptInMarket("sell", 5, market);
     }
     const buyersLost = cur.highDelta && cur.deltaSide === "BUY" && cur.upside === "ASKS_HOLD" && aggLeans(cur, "BUY") && passiveAbsorbs(cur, "BUY");
     const sellersLost = cur.highDelta && cur.deltaSide === "SELL" && cur.downside === "BIDS_HOLD" && aggLeans(cur, "SELL") && passiveAbsorbs(cur, "SELL");
     const prevLostSame = prev && (buyersLost && prev.highDelta && prev.deltaSide === "BUY" && prev.upside === "ASKS_HOLD" || sellersLost && prev.highDelta && prev.deltaSide === "SELL" && prev.downside === "BIDS_HOLD");
     if (!prevLostSame && sellersLost && countDelta(recent, "SELL") >= 3) {
       if (!inTrend(recent, "SELL") || !fadeStands(recent, cur, prev, "SELL") || !trapAllowsFade(recent, cur, "SELL") || !levelAllowsFade(recent, cur, "SELL")) return null;
-      if (weakBounce(cur, prev, "SELL") || closeStillDown(cur, prev)) return { side: "sell", state: 2 };
-      return { side: "buy", state: 1 };
+      if (weakBounce(cur, prev, "SELL") || closeStillDown(cur, prev)) return keptInMarket("sell", 2, market);
+      return keptInMarket("buy", 1, market);
     }
     if (!prevLostSame && buyersLost && countDelta(recent, "BUY") >= 3) {
       if (!inTrend(recent, "BUY") || !fadeStands(recent, cur, prev, "BUY") || !trapAllowsFade(recent, cur, "BUY") || !levelAllowsFade(recent, cur, "BUY")) return null;
-      if (weakBounce(cur, prev, "BUY") || closeStillUp(cur, prev)) return { side: "buy", state: 2 };
-      return { side: "sell", state: 1 };
+      if (weakBounce(cur, prev, "BUY")) return keptInMarket("buy", 2, market);
+      return keptInMarket("sell", 1, market);
     }
     if (prev && prevSide && cur.deltaSide === prevSide && cur.prog != null && cur.prog <= ENTRY_LITTLE_PROG) {
       const stalledSide = prevSide;
@@ -17277,8 +17304,8 @@ var process = globalThis.process || { env: {} };
       const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
       const groups = fight(cur);
       if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
-        if (!inTrend(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
-        return { side: joining === "BUY" ? "buy" : "sell", state: 6 };
+        if (!drifted(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
+        return keptInMarket(joining === "BUY" ? "buy" : "sell", 6, market);
       }
     }
     if (prev && prevSide && cur.deltaSide === prevSide && known(prev.delta) && known(cur.delta) && known(prev.prog) && known(cur.prog)) {
@@ -17290,16 +17317,16 @@ var process = globalThis.process || { env: {} };
       const fadedFight = prevSide === "BUY" ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === "BUYERS_WIN") : fight(cur).aggSellers && (fight(cur).bids || cur.downside === "SELLERS_WIN");
       if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
         if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
-        return { side: prevSide === "BUY" ? "sell" : "buy", state: 7 };
+        return keptInMarket(prevSide === "BUY" ? "sell" : "buy", 7, market);
       }
     }
     if (prev && trendContext(recent, "SELL") && prevStillTrend(prev, "SELL") && trendFailed(cur, "SELL") && closeCouldnt(cur, prev, "SELL") && trapAllowsFade(recent, cur, "SELL") && levelAllowsFade(recent, cur, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
-      if (weakBounce(cur, prev, "SELL")) return { side: "sell", state: 2 };
-      return { side: "buy", state: 8 };
+      if (weakBounce(cur, prev, "SELL")) return keptInMarket("sell", 2, market);
+      return keptInMarket("buy", 8, market);
     }
     if (prev && trendContext(recent, "BUY") && prevStillTrend(prev, "BUY") && trendFailed(cur, "BUY") && closeCouldnt(cur, prev, "BUY") && trapAllowsFade(recent, cur, "BUY") && levelAllowsFade(recent, cur, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
-      if (weakBounce(cur, prev, "BUY")) return { side: "buy", state: 2 };
-      return { side: "sell", state: 8 };
+      if (weakBounce(cur, prev, "BUY")) return keptInMarket("buy", 2, market);
+      return keptInMarket("sell", 8, market);
     }
     return null;
   }
@@ -17331,8 +17358,9 @@ var process = globalThis.process || { env: {} };
     for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
       const cur = reads[index];
       const prev = reads[index - 1];
-      const priors = reads.slice(Math.max(0, index - ENTRY_PRIOR_BARS), index);
-      const signal = decideEntry(cur, prev, priors, openSide ? { side: openSide } : null);
+      const history = reads.slice(0, index);
+      const priors = history.slice(-ENTRY_PRIOR_BARS);
+      const signal = decideEntry(cur, prev, history, openSide ? { side: openSide } : null);
       const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG && (openSide === "sell" && cur.downside === "SELLERS_WIN" || openSide === "buy" && cur.upside === "BUYERS_WIN");
       if (!signal) {
         if (stalled || openSide === "sell" && cur.upside === "BUYERS_WIN" || openSide === "buy" && cur.downside === "SELLERS_WIN") {

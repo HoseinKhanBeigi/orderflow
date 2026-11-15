@@ -14,9 +14,11 @@ Every state reads the **6 closed candles before** the signal candle. At least 5 
 
 A downtrend is judged by aggressive sellers and the asks: can they still get price down. An uptrend is judged by aggressive buyers and the bids: can they still get price up.
 
-If those six closes did not drift enough to be a trend, states 1–7 keep their own rule. State 8 only marks when the trend is there. A flat window is not a trend, even when one side printed more delta.
+If those six closes did not drift enough to be a trend, states 1, 3, 5, and 7 keep their own rule. State 8 only marks when the trend is there. A flat window is not a trend, even when one side printed more delta. A join (state 2) and a response (state 4 or 6) stay quiet on that flat window: the delta is pushing and the close is not leaving. 15 Nov 17:05 on the 5-minute chart is that pin. The 15-minute sell that actually leaves, 17:15, is still the sell.
 
 Fades need the trend they are fading. A push that goes with the move needs that side's trend.
+
+The longer swing is the last 16 closes. Down at least 0.50% is a bearish market. Up at least 0.50% is a bullish market. In a bearish market the sells stand, and a buy has to be the sell failing or being taken. In a bullish market the buys stand, and a sell has to be the buy failing, the buyers already failing and the response holding, or the join once the six closes have turned.
 
 ## Sellers can't and buyers can't
 
@@ -78,7 +80,7 @@ Asks replenished (A) are aggressive buys the close did not keep. Bids replenishe
 That side was already pushing, then this candle's effort is absorbed.
 
 - **Buy:** downtrend. Sellers print high delta, lose the close (bids hold), and the asks refilled. At least 3 of the 6 candles are sell delta. The previous candle did not lose the same way. A close that only ticks up, while the tape is still sell and the move against that sell is under 0.50 ATR, is not this buy. That candle stays with the sell.
-- **Sell:** uptrend. Buyers print high delta, lose the close (asks hold), and the bids refilled. At least 3 of the 6 are buy delta. The mirror: a small downtick with the tape still buy stays with the buy.
+- **Sell:** uptrend. Buyers print high delta, lose the close (asks hold), and the bids refilled. At least 3 of the 6 are buy delta. That is high effort and a low response, so it is this sell even when the close is still higher than the previous close. A small downtick with the tape still buy stays with the buy. 15 Nov 15:00 is this sell.
 
 ### 2 — high effort accepted, book did not refill
 

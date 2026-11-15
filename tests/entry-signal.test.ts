@@ -87,6 +87,17 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 1 });
   });
 
+  it('1: high buy effort with a low response is a sell even when the close is higher', () => {
+    const priors = [3.10, 3.11, 3.12, 3.13, 3.14, 3.15].map((close) => read({
+      close, deltaSide: 'BUY', delta: 200_000, agg: 0.2, pas: 0.2, chip: 'BIDS', ...closedHigh,
+    }));
+    const cur = read({
+      close: 3.157, strength: 'STRONG', deltaSide: 'BUY', delta: 543_000, prog: 0.22,
+      agg: 0.15, pas: -0.3, ...closedLow,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'sell', state: 1 });
+  });
+
   it('1: heavy buying that lost the close → sell, after buyers were the setup', () => {
     const cur = read({ strength: 'EXTREME', deltaSide: 'BUY', prog: 0.1, ...closedLow });
     const priors = sideTries('BUY', 6);
@@ -106,6 +117,16 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, priors, null)).toBeNull();
   });
 
+  it('2: a flat window is pinned, so a strong sell there is not the join', () => {
+    const priors = [3.130, 3.132, 3.129, 3.131, 3.128, 3.130].map((close) => read({
+      close, deltaSide: 'SELL', downside: 'SELLERS_WIN', upside: 'ASKS_HOLD', agg: -0.2, pas: -0.2, chip: 'SELLERS',
+    }));
+    const cur = read({
+      close: 3.127, strength: 'STRONG', deltaSide: 'SELL', prog: 0.88, agg: -0.2, pas: -0.3, chip: 'SELLERS', ...closedLow,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toBeNull();
+  });
+
   it('2: strong buying that moved price, with buyers already owning the priors', () => {
     const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.7, chip: 'BUYERS', ...closedHigh });
     const priors = [read({ chip: 'BUYERS' }), read({ chip: 'BUYERS' }), read({ chip: 'SELLERS' }), read(), read(), read()];
@@ -117,6 +138,15 @@ describe('decideEntry states', () => {
     const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.1, agg: 0.25, pas: -0.45, ...closedLow });
     const priors = [...sideTries('SELL', 5), prev];
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 3 });
+  });
+
+  it('3: a bounce buy inside a bearish swing stays quiet', () => {
+    const priors = Array.from({ length: 16 }, (_, i) => read({
+      close: 3.4 - i * 0.01,
+      deltaSide: 'SELL', strength: 'STRONG', prog: 0.7, agg: -0.4, pas: -0.3,
+    }));
+    const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.1, agg: 0.25, pas: -0.45, close: 3.24, ...closedLow });
+    expect(decideEntry(cur, priors[15]!, priors, null)).toBeNull();
   });
 
   it('3: a flip the book accepted is not an entry', () => {
