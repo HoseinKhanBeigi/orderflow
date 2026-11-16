@@ -20,8 +20,6 @@ Fades need the trend they are fading. A push that goes with the move needs that 
 
 The longer swing is the last 16 closes. Down at least 0.50% is a bearish market. Up at least 0.50% is a bullish market. In a bearish market the sells stand, and a buy has to be the sell failing or being taken. In a bullish market the buys stand, and a sell has to be the buy failing, the buyers already failing and the response holding, or the join once the six closes have turned.
 
-**Maybe** is not an entry. In a drop, a strong bounce or a held ceiling is labeled MAYBE SELL: the next candle may sell. In a rise, a strong dip or a held floor is labeled MAYBE BUY. 15 Nov 19:45 is that bounce. 20:00 is the sell. The forming candle is never labeled.
-
 ## Sellers can't and buyers can't
 
 This is a reading of the same six candles, drawn on the candle where it shows. It is not a ninth entry.

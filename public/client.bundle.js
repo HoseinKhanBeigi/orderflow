@@ -16725,231 +16725,6 @@ var process = globalThis.process || { env: {} };
     }
   };
 
-  // src/entry-signal/shape.ts
-  var BOX_BARS = 8;
-  var PIVOT_SPAN = 2;
-  var PIVOT_LOOK = 20;
-  var MIN_PIVOT_GAP = 5;
-  var MAX_PIVOT_GAP = 14;
-  var BREAK_WINDOW = 8;
-  var SHAPE_HOLD_BARS = 3;
-  var OPEN = { kind: null, note: "", buyOk: true, sellOk: true, fresh: false };
-  function shapeAt(bars, index) {
-    if (!bars || index < 0 || index >= bars.length) return OPEN;
-    const reversal = reversalAt(bars, index);
-    if (reversal) return reversal;
-    const box = boxAt(bars, index);
-    if (box) return box;
-    return OPEN;
-  }
-  function shapeMarks(bars, liveTime) {
-    const marks = /* @__PURE__ */ new Map();
-    if (!bars || bars.length < BOX_BARS) return marks;
-    const lastIsLive = liveTime != null && bars[bars.length - 1].time === liveTime;
-    const last = lastIsLive ? bars.length - 1 : bars.length;
-    for (let index = BOX_BARS; index < last; index++) {
-      const shape = shapeAt(bars, index);
-      if (!shape.fresh || !shape.kind) continue;
-      const time = bars[index].time;
-      if (time == null) continue;
-      marks.set(time, shapeMark(shape.kind, shape.note));
-    }
-    return marks;
-  }
-  function shapeMark(kind, note) {
-    if (kind === "BOX") {
-      return { kind, text: "BOX", short: "BOX", color: "#94a3b8", tip: note };
-    }
-    if (kind === "M") {
-      return { kind, text: "M", short: "M", color: "#fca5a5", tip: note };
-    }
-    return { kind, text: "W", short: "W", color: "#86efac", tip: note };
-  }
-  function boxAt(bars, index) {
-    const box = boxWindow(bars, index);
-    if (!box) return null;
-    const place = placeInBox(bars[index].close, box);
-    if (place === "OUT") return null;
-    const prev = index > 0 ? boxWindow(bars, index - 1) : null;
-    const prevInside = prev != null && placeInBox(bars[index - 1].close, prev) !== "OUT";
-    const note = place === "HIGH" ? "Range box. Price has been sideways, and the close is at the top." : place === "LOW" ? "Range box. Price has been sideways, and the close is at the bottom." : "Range box. Price has been sideways, and the close is in the middle.";
-    return {
-      kind: "BOX",
-      note,
-      buyOk: place === "LOW",
-      sellOk: place === "HIGH",
-      fresh: !prevInside
-    };
-  }
-  function boxWindow(bars, index) {
-    if (index < BOX_BARS) return null;
-    const window = bars.slice(index - BOX_BARS, index);
-    const highs = window.map((bar) => bar.high);
-    const lows = window.map((bar) => bar.low);
-    const high = nth(highs, 1, true);
-    const low = nth(lows, 1, false);
-    const height = high - low;
-    const scale = medianRange(bars, index);
-    if (!(scale > 0) || height < scale * 1.4 || height > scale * 3) return null;
-    const first = window[0].close;
-    const last = window[window.length - 1].close;
-    if (Math.abs(last - first) > height * 0.28) return null;
-    let widest = 0;
-    for (const bar of window) widest = Math.max(widest, bar.high - bar.low);
-    if (widest > height * 0.5) return null;
-    const top = high - height * 0.18;
-    const bottom = low + height * 0.18;
-    const ceiling = [];
-    const floor = [];
-    let inside = 0;
-    for (let i = 0; i < window.length; i++) {
-      const bar = window[i];
-      if (bar.high >= top) ceiling.push(i);
-      if (bar.low <= bottom) floor.push(i);
-      if (bar.close <= high && bar.close >= low) inside += 1;
-    }
-    if (ceiling.length < 2 || floor.length < 2) return null;
-    if (ceiling[ceiling.length - 1] - ceiling[0] < 2) return null;
-    if (floor[floor.length - 1] - floor[0] < 2) return null;
-    if (inside < 6) return null;
-    if (!alternates(ceiling, floor)) return null;
-    return { high, low };
-  }
-  function alternates(ceiling, floor) {
-    const points = [
-      ...ceiling.map((index) => ({ index, side: "H" })),
-      ...floor.map((index) => ({ index, side: "L" }))
-    ].sort((a, b) => a.index - b.index || (a.side < b.side ? -1 : 1));
-    let seq = "";
-    for (const point of points) {
-      if (!seq.endsWith(point.side)) seq += point.side;
-    }
-    return seq.includes("LHL") || seq.includes("HLH");
-  }
-  function placeInBox(close, box) {
-    const height = box.high - box.low;
-    if (!(height > 0) || !(close > 0)) return "OUT";
-    if (close > box.high || close < box.low) return "OUT";
-    const t = (close - box.low) / height;
-    if (t >= 0.7) return "HIGH";
-    if (t <= 0.3) return "LOW";
-    return "MID";
-  }
-  function reversalAt(bars, index) {
-    const m = patternBreak(bars, index, "M");
-    if (m) return m;
-    return patternBreak(bars, index, "W");
-  }
-  function patternBreak(bars, index, kind) {
-    const scale = medianRange(bars, index);
-    if (!(scale > 0) || index < PIVOT_SPAN * 2) return null;
-    const from = Math.max(PIVOT_SPAN, index - PIVOT_LOOK);
-    const highs = [];
-    const lows = [];
-    for (let i = from; i <= index - PIVOT_SPAN; i++) {
-      if (isSwing(bars, i, "high")) highs.push({ index: i, price: bars[i].high });
-      if (isSwing(bars, i, "low")) lows.push({ index: i, price: bars[i].low });
-    }
-    const close = bars[index].close;
-    if (kind === "M") {
-      const pair2 = lastPair(highs);
-      if (!pair2) return null;
-      const [left2, right2] = pair2;
-      const between2 = lows.filter((pivot) => pivot.index > left2.index && pivot.index < right2.index);
-      if (!between2.length) return null;
-      const neck2 = Math.min(...between2.map((pivot) => pivot.price));
-      const depth2 = Math.min(left2.price, right2.price) - neck2;
-      if (!sameLevel(left2.price, right2.price, depth2, scale)) return null;
-      if (!dominant(bars, left2.index, right2.index, "high", left2.price, right2.price, scale)) return null;
-      const brokeAt2 = breakStart(bars, right2.index + 1, index, neck2, "under");
-      if (brokeAt2 < 0) return null;
-      return {
-        kind: "M",
-        note: "M pattern. Two similar highs, then the close left the dip between them.",
-        buyOk: false,
-        sellOk: true,
-        fresh: !(bars[index - 1].close < neck2)
-      };
-    }
-    const pair = lastPair(lows);
-    if (!pair) return null;
-    const [left, right] = pair;
-    const between = highs.filter((pivot) => pivot.index > left.index && pivot.index < right.index);
-    if (!between.length) return null;
-    const neck = Math.max(...between.map((pivot) => pivot.price));
-    const depth = neck - Math.max(left.price, right.price);
-    if (!sameLevel(left.price, right.price, depth, scale)) return null;
-    if (!dominant(bars, left.index, right.index, "low", left.price, right.price, scale)) return null;
-    const brokeAt = breakStart(bars, right.index + 1, index, neck, "over");
-    if (brokeAt < 0) return null;
-    return {
-      kind: "W",
-      note: "W pattern. Two similar lows, then the close left the peak between them.",
-      buyOk: true,
-      sellOk: false,
-      fresh: !(bars[index - 1].close > neck)
-    };
-  }
-  function isSwing(bars, index, side2) {
-    const price = side2 === "high" ? bars[index].high : bars[index].low;
-    for (let step = 1; step <= PIVOT_SPAN; step++) {
-      const left = bars[index - step];
-      const right = bars[index + step];
-      if (!left || !right) return false;
-      if (side2 === "high") {
-        if (!(price > left.high && price > right.high)) return false;
-      } else if (!(price < left.low && price < right.low)) return false;
-    }
-    return true;
-  }
-  function lastPair(pivots) {
-    if (pivots.length < 2) return null;
-    const right = pivots[pivots.length - 1];
-    const left = pivots[pivots.length - 2];
-    const gap = right.index - left.index;
-    if (gap < MIN_PIVOT_GAP || gap > MAX_PIVOT_GAP) return null;
-    return [left, right];
-  }
-  function sameLevel(left, right, depth, scale) {
-    if (!(depth >= scale * 1.3) || !(depth > 0)) return false;
-    const skew = Math.abs(left - right);
-    return skew <= depth * 0.3 && skew <= scale * 0.75;
-  }
-  function dominant(bars, from, to, side2, left, right, scale) {
-    let extreme = side2 === "high" ? -Infinity : Infinity;
-    for (let i = from; i <= to; i++) {
-      const price = side2 === "high" ? bars[i].high : bars[i].low;
-      extreme = side2 === "high" ? Math.max(extreme, price) : Math.min(extreme, price);
-    }
-    const room = scale * 0.35;
-    if (side2 === "high") return extreme - Math.max(left, right) <= room;
-    return Math.min(left, right) - extreme <= room;
-  }
-  function breakStart(bars, from, index, neck, side2) {
-    let brokeAt = -1;
-    for (let i = from; i <= index; i++) {
-      const beyond = side2 === "under" ? bars[i].close < neck : bars[i].close > neck;
-      if (!beyond) brokeAt = -1;
-      else if (brokeAt < 0) brokeAt = i;
-    }
-    if (brokeAt < 0 || brokeAt - from > BREAK_WINDOW || index - brokeAt >= SHAPE_HOLD_BARS) return -1;
-    return brokeAt;
-  }
-  function medianRange(bars, index) {
-    const spans = [];
-    for (let i = Math.max(0, index - 8); i < index; i++) {
-      const span = bars[i].high - bars[i].low;
-      if (span > 0) spans.push(span);
-    }
-    if (!spans.length) return 0;
-    spans.sort((a, b) => a - b);
-    return spans[Math.floor((spans.length - 1) / 2)];
-  }
-  function nth(values, n, high) {
-    const sorted = [...values].sort((a, b) => high ? b - a : a - b);
-    return sorted[Math.min(n, sorted.length - 1)];
-  }
-
   // src/entry-signal/engine.ts
   var ENTRY_LITTLE_PROG = 0.25;
   var ENTRY_REAL_PROG = 0.5;
@@ -17001,30 +16776,6 @@ var process = globalThis.process || { env: {} };
     }
     if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
     return { support, resistance };
-  }
-  var ENTRY_PULLBACK_ATR = 0.15;
-  var ENTRY_THIN_VOLUME = 0.45;
-  function barQuoteVolume(bar) {
-    return Math.max(0, bar.totalBuy ?? 0) + Math.max(0, bar.totalSell ?? 0);
-  }
-  function entryVolumeThin(bars, index) {
-    const vol = barQuoteVolume(bars[index]);
-    const prior = bars.slice(Math.max(0, index - 16), index).map(barQuoteVolume).filter((v) => v > 0);
-    if (prior.length < 6) return false;
-    const scale = medianOf(prior);
-    return scale > 0 && vol < scale * ENTRY_THIN_VOLUME;
-  }
-  function medianOf(values) {
-    const sorted = [...values].sort((a, b) => a - b);
-    return sorted[Math.floor((sorted.length - 1) / 2)] ?? 0;
-  }
-  function entryPullbackPrice(bar, prior, side2) {
-    if (!(bar.close > 0) || !Number.isFinite(bar.high) || !Number.isFinite(bar.low)) return null;
-    const atr = recentBarAtr2(prior, bar);
-    const room = side2 === "buy" ? Math.max(0, bar.close - bar.low) : Math.max(0, bar.high - bar.close);
-    const step = Math.min(Math.max(room * 0.35, atr * ENTRY_PULLBACK_ATR), atr * 0.3);
-    if (!(step > 0)) return bar.close;
-    return side2 === "buy" ? bar.close - step : bar.close + step;
   }
   function recentBarAtr2(prior, bar) {
     const fallback = Math.max(bar.high - bar.low, (bar.close || 1) * 2e-3);
@@ -17249,11 +17000,6 @@ var process = globalThis.process || { env: {} };
     }
     return row.deltaSide === "BUY" || row.chip === "BUYERS" || row.chip === "BIDS" || row.downside === "BIDS_HOLD" || row.upside === "BUYERS_WIN";
   }
-  function sideShowedUp(cur, prev, side2) {
-    if (cur.deltaSide === side2 && known(cur.agg) && aggLeans(cur, side2)) return true;
-    const moved = cur.absProg != null && cur.absProg >= ENTRY_LITTLE_PROG;
-    return moved && (side2 === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev));
-  }
   function trendContext(recent, trend) {
     const other = trend === "SELL" ? "BUY" : "SELL";
     let effort = 0;
@@ -17335,10 +17081,6 @@ var process = globalThis.process || { env: {} };
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
     return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
   }
-  function closeStillUp(cur, prev) {
-    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
-    return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
-  }
   function weakBounce(cur, prev, effort) {
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
     if (cur.deltaSide !== effort || cur.prog == null || cur.prog >= 0 || cur.prog <= -ENTRY_REAL_PROG) return false;
@@ -17372,19 +17114,6 @@ var process = globalThis.process || { env: {} };
     const prior = effortCouldnt(recent, side2);
     if (prior == null || prior) return true;
     return candleFailsSide(cur, prev, side2);
-  }
-  function chaseExtreme(cur, priors, side2) {
-    if (swingSide(priors) !== side2) return false;
-    if (!known(cur.close) || !known(cur.high) || !known(cur.low)) return false;
-    const range = cur.high - cur.low;
-    if (!(range > 0)) return false;
-    const pos = (cur.close - cur.low) / range;
-    if (side2 === "SELL" ? pos > 0.12 : pos < 0.88) return false;
-    const recent = priors.slice(-ENTRY_PRIOR_BARS);
-    const edges = recent.map((row) => side2 === "SELL" ? row.low : row.high).filter((n) => known(n));
-    if (!edges.length) return false;
-    const edge = side2 === "SELL" ? Math.min(...edges) : Math.max(...edges);
-    return side2 === "SELL" ? cur.close < edge : cur.close > edge;
   }
   function joinStands(recent, side2) {
     const prior = effortCouldnt(recent, side2);
@@ -17515,7 +17244,7 @@ var process = globalThis.process || { env: {} };
       const continued = chip && prevSignal && prevSignal.side === side2;
       const took = effort === "BUY" ? buyersOwnClose(cur) : effort === "SELL" ? sellersOwnClose(cur) : false;
       if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
-        if (!drifted(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort) || chaseExtreme(cur, priors, effort)) return null;
+        if (!drifted(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort)) return null;
         return keptInMarket(side2, 2, market);
       }
     }
@@ -17539,11 +17268,11 @@ var process = globalThis.process || { env: {} };
     }
     if (cur.highDelta && real) {
       if (sellersOwnClose(cur) && countWins(recent, "SELLERS_WIN") >= 2 && !(prevSignal && prevSignal.side === "sell")) {
-        if (!drifted(recent, "SELL") || !joinStands(recent, "SELL") || !trapAllowsJoin(recent, cur, "SELL") || !levelAllowsJoin(recent, cur, "SELL") || chaseExtreme(cur, priors, "SELL")) return null;
+        if (!drifted(recent, "SELL") || !joinStands(recent, "SELL") || !trapAllowsJoin(recent, cur, "SELL") || !levelAllowsJoin(recent, cur, "SELL")) return null;
         return keptInMarket("sell", 2, market);
       }
       if (buyersOwnClose(cur) && countWins(recent, "BUYERS_WIN") >= 2 && !(prevSignal && prevSignal.side === "buy")) {
-        if (!drifted(recent, "BUY") || !joinStands(recent, "BUY") || !trapAllowsJoin(recent, cur, "BUY") || !levelAllowsJoin(recent, cur, "BUY") || chaseExtreme(cur, priors, "BUY")) return null;
+        if (!drifted(recent, "BUY") || !joinStands(recent, "BUY") || !trapAllowsJoin(recent, cur, "BUY") || !levelAllowsJoin(recent, cur, "BUY")) return null;
         return keptInMarket("buy", 2, market);
       }
     }
@@ -17574,8 +17303,7 @@ var process = globalThis.process || { env: {} };
       const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
       const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
       const groups = fight(cur);
-      const stillExtending = stalledSide === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
-      if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids) && !stillExtending) {
+      if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
         if (!drifted(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
         return keptInMarket(joining === "BUY" ? "buy" : "sell", 6, market);
       }
@@ -17587,44 +17315,18 @@ var process = globalThis.process || { env: {} };
       const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
       const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
       const fadedFight = prevSide === "BUY" ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === "BUYERS_WIN") : fight(cur).aggSellers && (fight(cur).bids || cur.downside === "SELLERS_WIN");
-      const stillExtending = prevSide === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
-      if (sameEffort && responseOkBefore && responseFaded && fadedFight && !stillExtending) {
+      if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
         if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
         return keptInMarket(prevSide === "BUY" ? "sell" : "buy", 7, market);
       }
     }
-    if (trendFails(cur, prev, recent, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
+    if (prev && trendContext(recent, "SELL") && prevStillTrend(prev, "SELL") && trendFailed(cur, "SELL") && closeCouldnt(cur, prev, "SELL") && trapAllowsFade(recent, cur, "SELL") && levelAllowsFade(recent, cur, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
       if (weakBounce(cur, prev, "SELL")) return keptInMarket("sell", 2, market);
-      if (!sideShowedUp(cur, prev, "BUY")) return null;
       return keptInMarket("buy", 8, market);
     }
-    if (trendFails(cur, prev, recent, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
+    if (prev && trendContext(recent, "BUY") && prevStillTrend(prev, "BUY") && trendFailed(cur, "BUY") && closeCouldnt(cur, prev, "BUY") && trapAllowsFade(recent, cur, "BUY") && levelAllowsFade(recent, cur, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
       if (weakBounce(cur, prev, "BUY")) return keptInMarket("buy", 2, market);
-      if (!sideShowedUp(cur, prev, "SELL")) return null;
       return keptInMarket("sell", 8, market);
-    }
-    const pause = pausedFailure(prev, priors);
-    if (pause === "SELL" && !(prevSignal && prevSignal.side === "buy") && sideShowedUp(cur, prev, "BUY") && closeStillUp(cur, prev) && cur.upside === "BUYERS_WIN") {
-      return keptInMarket("buy", 8, market);
-    }
-    if (pause === "BUY" && !(prevSignal && prevSignal.side === "sell") && sideShowedUp(cur, prev, "SELL") && closeStillDown(cur, prev) && cur.downside === "SELLERS_WIN") {
-      return keptInMarket("sell", 8, market);
-    }
-    return null;
-  }
-  function trendFails(cur, prev, recent, trend) {
-    return !!prev && trendContext(recent, trend) && prevStillTrend(prev, trend) && trendFailed(cur, trend) && closeCouldnt(cur, prev, trend) && trapAllowsFade(recent, cur, trend) && levelAllowsFade(recent, cur, trend);
-  }
-  function pausedFailure(prev, priors) {
-    if (!prev || priors.length < ENTRY_CONTEXT_MIN + 1) return null;
-    const before = priors.slice(0, -1);
-    const prevRecent = before.slice(-ENTRY_PRIOR_BARS);
-    const prevPrev = before[before.length - 1] ?? null;
-    for (const trend of ["SELL", "BUY"]) {
-      if (!trendFails(prev, prevPrev, prevRecent, trend)) continue;
-      if (weakBounce(prev, prevPrev, trend)) return null;
-      const other = trend === "SELL" ? "BUY" : "SELL";
-      return sideShowedUp(prev, prevPrev, other) ? null : trend;
     }
     return null;
   }
@@ -17636,11 +17338,6 @@ var process = globalThis.process || { env: {} };
     const pct = Math.round(n * 100);
     if (pct === 0) return "0%";
     return `${pct > 0 ? "+" : "\u2212"}${Math.abs(pct)}%`;
-  }
-  function fmtEntryPrice(n) {
-    const abs = Math.abs(n);
-    const digits = abs >= 1e3 ? 1 : abs >= 100 ? 2 : abs >= 1 ? 3 : abs >= 0.01 ? 5 : 6;
-    return n.toFixed(digits);
   }
   function fmtNotional(n) {
     if (!known(n)) return "\u2014";
@@ -17658,7 +17355,6 @@ var process = globalThis.process || { env: {} };
     for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
     let openSide = null;
     let openState = null;
-    let thinSide = null;
     for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
       const cur = reads[index];
       const prev = reads[index - 1];
@@ -17667,40 +17363,13 @@ var process = globalThis.process || { env: {} };
       const signal = decideEntry(cur, prev, history, openSide ? { side: openSide } : null);
       const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG && (openSide === "sell" && cur.downside === "SELLERS_WIN" || openSide === "buy" && cur.upside === "BUYERS_WIN");
       if (!signal) {
-        thinSide = null;
         if (stalled || openSide === "sell" && cur.upside === "BUYERS_WIN" || openSide === "buy" && cur.downside === "SELLERS_WIN") {
           openSide = null;
           openState = null;
         }
         continue;
       }
-      const shape = shapeAt(bars, index);
-      if (signal.side === "buy" && !shape.buyOk || signal.side === "sell" && !shape.sellOk) continue;
-      const thin = entryVolumeThin(bars, index);
       const time = bars[index].time;
-      if (thin) {
-        if (signal.side !== thinSide && !marks.has(time)) {
-          const buy = signal.side === "buy";
-          const word = buy ? "BUY" : "SELL";
-          marks.set(time, {
-            side: signal.side,
-            state: signal.state,
-            text: `${word} ${signal.state}`,
-            short: `${buy ? "B" : "S"}${signal.state}`,
-            color: buy ? "#86efac" : "#fca5a5",
-            price: null,
-            tip: [
-              `${word} ${signal.state}`,
-              ENTRY_DETAIL[signal.state],
-              "Volume is small next to the recent candles, so this is not a position.",
-              ...shape.note ? [shape.note] : []
-            ].join("\n")
-          });
-        }
-        thinSide = signal.side;
-        continue;
-      }
-      thinSide = null;
       const held = signal.side === openSide && (signal.state !== 5 || openState === 5);
       if (!held && !marks.has(time)) {
         const buy = signal.side === "buy";
@@ -17711,20 +17380,15 @@ var process = globalThis.process || { env: {} };
         const trapLine = trapped === faded ? trapped === "SELL" ? "Sell trap" : "Buy trap" : null;
         const seen = signal.state === 1 || signal.state === 4 || signal.state === 5 || signal.state === 8 ? levelSeen([...priors, cur]) : null;
         const levelLine = !seen ? null : buy && seen.floor && !seen.ceiling ? cur.failDown || priors.some((row) => row.failDown) ? "Fail down at the floor" : "Floor held" : !buy && seen.ceiling && !seen.floor ? cur.failUp || priors.some((row) => row.failUp) ? "Fail up at the ceiling" : "Ceiling held" : null;
-        const entryPrice = entryPullbackPrice(bars[index], bars.slice(0, index), signal.side);
-        const priceLine = entryPrice == null ? null : buy ? `Open ${fmtEntryPrice(entryPrice)}, a little under the close` : `Open ${fmtEntryPrice(entryPrice)}, a little over the close`;
         marks.set(time, {
           side: signal.side,
           state: signal.state,
           text: `${word} ${signal.state}`,
           short: `${buy ? "B" : "S"}${signal.state}`,
           color: buy ? "#22c55e" : "#ef4444",
-          price: entryPrice,
           tip: [
             `${word} ${signal.state}`,
             ENTRY_DETAIL[signal.state],
-            ...priceLine ? [priceLine] : [],
-            ...shape.note ? [shape.note] : [],
             ...cant ? [cant] : [],
             ...trapLine ? [trapLine] : [],
             ...levelLine ? [levelLine] : [],
@@ -17736,36 +17400,6 @@ var process = globalThis.process || { env: {} };
       }
       openSide = signal.side;
       openState = signal.state;
-    }
-    return marks;
-  }
-  function maybeMarks(bars, liveTime, progress) {
-    const marks = /* @__PURE__ */ new Map();
-    if (!bars || bars.length < SWING_BARS + 1) return marks;
-    const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
-    const last = lastIsLive ? bars.length - 1 : bars.length;
-    const reads = [];
-    for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
-    for (let index = SWING_BARS; index < last; index++) {
-      const cur = reads[index];
-      const prev = reads[index - 1];
-      const history = reads.slice(0, index);
-      if (decideEntry(cur, prev, history, null)) continue;
-      const market = swingSide(history);
-      const recent = priceDrift(history.slice(-ENTRY_PRIOR_BARS));
-      const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
-      const buyBounce = cur.deltaSide === "BUY" && cur.upside === "BUYERS_WIN" && extended;
-      const sellDip = cur.deltaSide === "SELL" && cur.downside === "SELLERS_WIN" && extended;
-      const side2 = market === "SELL" && recent === "SELL" && (buyBounce || cur.atCeiling || cur.failUp) ? "sell" : market === "BUY" && recent === "BUY" && (sellDip || cur.atFloor || cur.failDown) ? "buy" : null;
-      if (!side2) continue;
-      const sell = side2 === "sell";
-      marks.set(bars[index].time, {
-        side: side2,
-        text: sell ? "MAYBE SELL" : "MAYBE BUY",
-        short: sell ? "M SELL" : "M BUY",
-        color: sell ? "#fbbf24" : "#86efac",
-        tip: sell ? "Maybe sell\nThe swing is still down. This candle bounced, or the ceiling held. The next candle may sell. This is not an entry." : "Maybe buy\nThe swing is still up. This candle dipped, or the floor held. The next candle may buy. This is not an entry."
-      });
     }
     return marks;
   }
@@ -18242,8 +17876,6 @@ var process = globalThis.process || { env: {} };
     couldntMarks,
     trapMarks,
     levelMarks,
-    maybeMarks,
-    shapeMarks,
     ENTRY_DETAIL,
     ENTRY_PRIOR_BARS
   };

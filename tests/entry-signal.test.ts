@@ -5,12 +5,7 @@ import {
   couldntMarks,
   decideEntry,
   entryMarks,
-  entryPullbackPrice,
-  entryVolumeThin,
   levelMarks,
-  maybeMarks,
-  shapeAt,
-  shapeMarks,
   trapMarks,
   type EntryBar,
   type EntryRead,
@@ -253,15 +248,6 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 7 });
   });
 
-  it('7: 16 Nov 09:15, same sell effort but the close is still lower: no buy', () => {
-    const prev = read({ close: 3.181, deltaSide: 'SELL', delta: -275_000, prog: 0.53, strength: 'NORMAL', agg: -0.2, ...closedLow });
-    const cur = read({
-      close: 3.176, deltaSide: 'SELL', delta: -221_000, prog: 0.19, strength: 'NORMAL', agg: -0.11, pas: 0.53, chip: 'BIDS', ...closedHigh,
-    });
-    const priors = [...sideTries('SELL', 5, { prog: 0.4 }), prev];
-    expect(decideEntry(cur, prev, priors, null)).not.toEqual({ side: 'buy', state: 7 });
-  });
-
   it('6: a side that is still progressing is left alone', () => {
     const prev = read({ deltaSide: 'SELL', prog: 0.96, strength: 'STRONG', agg: -0.27, pas: -0.5, ...closedLow });
     const cur = read({ deltaSide: 'SELL', prog: 0.76, strength: 'NORMAL', agg: -0.15, pas: -0.4, ...closedLow });
@@ -408,35 +394,19 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, sellMoved, priors, null)?.state).not.toBe(8);
   });
 
-  it('8: 13 Nov 14:00 is a pause, 14:15 buyers take the close and that is the buy', () => {
+  it('8: 14:00, weak delta closes back up after sellers and asks could not extend the drop', () => {
     const down = (close: number) => read({
       close, deltaSide: 'SELL', prog: 0.2, agg: -0.05, pas: -0.6, chip: 'ASKS', strength: 'WEAK', ...closedLow,
     });
-    const priors = [down(3.52), down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
+    const priors = [down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
     const cur = read({
       close: 3.484, deltaSide: 'BUY', prog: -0.03, strength: 'WEAK', agg: 0.03, pas: 0.14, chip: 'PAIR', ...closedHigh,
     });
-    // Flat, two-sided: sellers could not extend, but buyers did not show up either.
-    expect(decideEntry(cur, priors[6]!, priors, null)).toBeNull();
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 8 });
     const later = read({
       close: 3.497, deltaSide: 'BUY', prog: 0.4, strength: 'NORMAL', agg: 0.2, pas: 0.35, chip: 'BUYERS', ...closedHigh,
     });
-    expect(decideEntry(later, cur, [...priors.slice(1), cur], null)).toEqual({ side: 'buy', state: 8 });
-  });
-
-  it('8: 15 Nov 21:15 pause, then sellers come back: no buy', () => {
-    const down = (close: number) => read({
-      close, deltaSide: 'SELL', prog: 0.2, agg: -0.05, pas: -0.6, chip: 'ASKS', strength: 'WEAK', ...closedLow,
-    });
-    const priors = [down(3.52), down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
-    const pause = read({
-      close: 3.486, deltaSide: 'BUY', prog: 0.03, strength: 'NORMAL', agg: 0.04, pas: 0.26, chip: 'PAIR', ...closedHigh,
-    });
-    expect(decideEntry(pause, priors[6]!, priors, null)).toBeNull();
-    const sellersBack = read({
-      close: 3.473, deltaSide: 'SELL', prog: 0.43, strength: 'NORMAL', agg: -0.11, pas: -1, chip: 'SELLERS', ...closedLow,
-    });
-    expect(decideEntry(sellersBack, pause, [...priors.slice(1), pause], null)?.side).not.toBe('buy');
+    expect(decideEntry(later, cur, [...priors.slice(1), cur], { side: 'buy' })).toBeNull();
   });
 
   it('8: a drifting downtrend whose asks showed, then buyers take an ordinary close', () => {
@@ -681,179 +651,6 @@ describe('state 5 on the chart', () => {
     expect(marks.get(6)?.short).toBe('B1');
     expect(marks.get(7)?.short).toBe('B5');
   });
-
-  it('keeps a small-volume read and withholds the position until volume is back', () => {
-    const bar = (time: number, closeHigh: boolean, sellHeavy: boolean, scale = 1): EntryBar => ({
-      time,
-      open: 100,
-      high: 110,
-      low: 100,
-      close: closeHigh ? 108 : 102,
-      totalBuy: (sellHeavy ? 40 : 65) * scale,
-      totalSell: (sellHeavy ? 60 : 35) * scale,
-    });
-    const row = (side: 'BUY' | 'SELL', strength: string, prog: number) => ({
-      deltaSide: side,
-      deltaStrengthState: strength,
-      directionalProgressATR: prog,
-    });
-    const bars = [
-      bar(0, true, false),
-      bar(1, true, false),
-      bar(2, false, true),
-      bar(3, false, true),
-      bar(4, false, true),
-      bar(5, false, true),
-      bar(6, true, true),
-      bar(7, false, false, 0.2),
-    ];
-    const progress = [
-      row('BUY', 'NORMAL', 0.2),
-      row('BUY', 'NORMAL', 0.2),
-      row('SELL', 'NORMAL', 0.3),
-      row('SELL', 'NORMAL', 0.24),
-      row('SELL', 'NORMAL', 0.24),
-      row('SELL', 'NORMAL', 0.2),
-      row('SELL', 'STRONG', 0.66),
-      row('BUY', 'STRONG', 0.66),
-    ];
-    expect(entryVolumeThin(bars, 7)).toBe(true);
-    expect(entryVolumeThin(bars, 6)).toBe(false);
-    const marks = entryMarks(bars, null, progress);
-    expect(marks.get(6)?.price).toBeGreaterThan(100);
-    expect(marks.get(7)?.short).toBe('B5');
-    expect(marks.get(7)?.price).toBeNull();
-    expect(marks.get(7)?.tip).toContain('Volume is small');
-  });
-});
-
-describe('11 Nov 10:00 NEAR', () => {
-  it('does not join the sell on the candle that closed on a new low', () => {
-    const rows: Array<[number, number, number, number, number, number, number, number]> = [
-      [1680, 3.606, 3.649, 3.604, 3.641, 1786734, 6499531, 875389],
-      [1695, 3.642, 3.643, 3.616, 3.628, 695802, 2523092, 281471],
-      [1710, 3.629, 3.634, 3.606, 3.628, 755643, 2734132, 385727],
-      [1725, 3.627, 3.692, 3.622, 3.685, 2153437, 7892263, 1478246],
-      [1740, 3.684, 3.706, 3.676, 3.691, 2080221, 7676151, 1135069],
-      [1755, 3.69, 3.694, 3.657, 3.657, 1004009, 3689777, 434032],
-      [1770, 3.658, 3.666, 3.623, 3.624, 1031761, 3760470, 504150],
-      [1785, 3.624, 3.652, 3.618, 3.64, 1031570, 3747716, 542765],
-      [1800, 3.639, 3.697, 3.631, 3.694, 1081942, 3969678, 577539],
-      [1815, 3.694, 3.703, 3.679, 3.683, 868803, 3207701, 417546],
-      [1830, 3.683, 3.724, 3.672, 3.713, 1102837, 4086037, 626955],
-      [1845, 3.713, 3.725, 3.709, 3.718, 971969, 3611542, 538017],
-      [1860, 3.719, 3.722, 3.69, 3.715, 1696377, 6282926, 575734],
-      [1875, 3.715, 3.718, 3.689, 3.689, 551800, 2043527, 208187],
-      [1890, 3.689, 3.697, 3.665, 3.672, 497968, 1833053, 162438],
-      [1905, 3.673, 3.687, 3.644, 3.679, 1157375, 4239271, 748871],
-      [1920, 3.68, 3.697, 3.677, 3.69, 481076, 1774772, 241994],
-      [1935, 3.69, 3.69, 3.662, 3.666, 430878, 1584192, 164244],
-      [1950, 3.667, 3.673, 3.642, 3.647, 524823, 1918810, 257364],
-      [1965, 3.647, 3.673, 3.646, 3.656, 565630, 2069063, 294230],
-      [1980, 3.657, 3.664, 3.644, 3.649, 342736, 1251752, 192974],
-      [1995, 3.649, 3.672, 3.643, 3.655, 407991, 1493146, 217233],
-      [2010, 3.656, 3.665, 3.629, 3.632, 698180, 2543193, 342176],
-      [2025, 3.632, 3.64, 3.618, 3.619, 682758, 2477749, 340038],
-      [2040, 3.62, 3.64, 3.594, 3.594, 828929, 2997322, 314756],
-    ];
-    const bars: EntryBar[] = rows.map(([time, open, high, low, close, vol, quote, taker]) => {
-      const buyFrac = Math.min(0.95, Math.max(0.05, taker / vol));
-      const totalBuy = quote * buyFrac;
-      return { time, open, high, low, close, totalBuy, totalSell: quote - totalBuy };
-    });
-    const sell = entryMarks(bars, null, annotateDeltaProgress(bars)).get(2040);
-    expect(sell?.side).not.toBe('sell');
-  });
-});
-
-describe('maybe', () => {
-  it('warns of a sell on a strong bounce that has not turned a drop', () => {
-    const bars: EntryBar[] = [];
-    for (let i = 0; i < 16; i++) {
-      const close = 3.4 - i * 0.012;
-      bars.push({ time: i, open: close + 0.004, high: close + 0.008, low: close - 0.004, close, totalBuy: 30, totalSell: 70 });
-    }
-    const bounce = 3.23;
-    bars.push({ time: 16, open: bounce - 0.02, high: bounce + 0.004, low: bounce - 0.024, close: bounce, totalBuy: 80, totalSell: 20 });
-    const progress = bars.map((bar, i) => ({
-      deltaSide: i === 16 ? 'BUY' as const : 'SELL' as const,
-      deltaStrengthState: 'NORMAL',
-      directionalProgressATR: i === 16 ? 1.2 : 0.4,
-    }));
-    expect(maybeMarks(bars, null, progress).get(16)?.text).toBe('MAYBE SELL');
-  });
-
-  it('16 Nov 09:00 and 09:15, the rise has stalled and both closes are lower: no buy', () => {
-    const ohlc: Array<[number, number, number, number, number]> = [
-      [5 * 60, 3.145, 3.155, 3.123, 3.127],
-      [5 * 60 + 15, 3.128, 3.142, 3.122, 3.13],
-      [5 * 60 + 30, 3.129, 3.166, 3.125, 3.165],
-      [5 * 60 + 45, 3.165, 3.209, 3.156, 3.197],
-      [6 * 60, 3.197, 3.216, 3.185, 3.194],
-      [6 * 60 + 15, 3.195, 3.211, 3.184, 3.21],
-      [6 * 60 + 30, 3.21, 3.222, 3.195, 3.212],
-      [6 * 60 + 45, 3.211, 3.225, 3.197, 3.21],
-      [7 * 60, 3.209, 3.209, 3.189, 3.202],
-      [7 * 60 + 15, 3.203, 3.205, 3.181, 3.203],
-      [7 * 60 + 30, 3.202, 3.211, 3.173, 3.183],
-      [7 * 60 + 45, 3.183, 3.201, 3.177, 3.188],
-      [8 * 60, 3.188, 3.188, 3.164, 3.164],
-      [8 * 60 + 15, 3.165, 3.176, 3.16, 3.173],
-      [8 * 60 + 30, 3.172, 3.174, 3.157, 3.166],
-      [8 * 60 + 45, 3.166, 3.187, 3.165, 3.181],
-      [9 * 60, 3.181, 3.181, 3.16, 3.166],
-      [9 * 60 + 15, 3.165, 3.165, 3.147, 3.16],
-      [9 * 60 + 30, 3.16, 3.16, 3.14, 3.141],
-    ];
-    const bars: EntryBar[] = ohlc.map(([time, open, high, low, close]) => {
-      const sellCandle = close < open;
-      const heavy = time === 9 * 60 || time === 9 * 60 + 15;
-      const win = heavy ? 997_000 : 400_000;
-      const lose = heavy ? 722_000 : 150_000;
-      return {
-        time,
-        open,
-        high,
-        low,
-        close,
-        totalBuy: sellCandle ? lose : win,
-        totalSell: sellCandle ? win : lose,
-      };
-    });
-    const progress = annotateDeltaProgress(bars);
-    const maybe = maybeMarks(bars, null, progress);
-    const entries = entryMarks(bars, null, progress);
-    for (const time of [9 * 60, 9 * 60 + 15]) {
-      expect(maybe.get(time)?.side).not.toBe('buy');
-      expect(entries.get(time)?.side).not.toBe('buy');
-    }
-  });
-});
-
-describe('entry price', () => {
-  const prior: EntryBar[] = Array.from({ length: 8 }, (_, i) => ({
-    time: i,
-    open: 3.2,
-    high: 3.22,
-    low: 3.18,
-    close: 3.2,
-  }));
-  const bar: EntryBar = { time: 9, open: 3.2, high: 3.23, low: 3.17, close: 3.2 };
-
-  it('puts a buy a little under the close and a sell a little over it', () => {
-    const buy = entryPullbackPrice(bar, prior, 'buy');
-    const sell = entryPullbackPrice(bar, prior, 'sell');
-    expect(buy).toBeLessThan(bar.close);
-    expect(sell).toBeGreaterThan(bar.close);
-    expect(bar.close - buy!).toBeLessThanOrEqual(0.04 * 0.3 + 1e-9);
-    expect(sell! - bar.close).toBeLessThanOrEqual(0.04 * 0.3 + 1e-9);
-  });
-
-  it('still steps under the close when the buy candle closed on its low', () => {
-    const lowClose: EntryBar = { ...bar, low: 3.2, close: 3.2 };
-    const buy = entryPullbackPrice(lowClose, prior, 'buy');
-    expect(buy).toBeLessThan(lowClose.close);
-  });
 });
 
 describe('entryMarks', () => {
@@ -882,124 +679,3 @@ describe('entryMarks', () => {
     expect(marks.has(live)).toBe(false);
   });
 });
-
-function shapeBar(high: number, low: number, close: number, time: number): EntryBar {
-  return { time, open: close, high, low, close };
-}
-
-describe('shape context', () => {
-  const range: EntryBar[] = [
-    shapeBar(10.18, 10.02, 10.16, 0),
-    shapeBar(10.38, 10.2, 10.36, 1),
-    shapeBar(10.22, 10.04, 10.08, 2),
-    shapeBar(10.4, 10.22, 10.34, 3),
-    shapeBar(10.2, 10.02, 10.1, 4),
-    shapeBar(10.39, 10.24, 10.36, 5),
-    shapeBar(10.18, 10.05, 10.12, 6),
-    shapeBar(10.4, 10.22, 10.2, 7),
-  ];
-
-  it('reads a range box and only allows a buy at the bottom and a sell at the top', () => {
-    const top = shapeAt([...range, shapeBar(10.4, 10.22, 10.36, 8)], 8);
-    const bottom = shapeAt([...range, shapeBar(10.2, 10.02, 10.06, 8)], 8);
-    const middle = shapeAt([...range, shapeBar(10.28, 10.12, 10.2, 8)], 8);
-    expect(top.kind).toBe('BOX');
-    expect(top.buyOk).toBe(false);
-    expect(top.sellOk).toBe(true);
-    expect(bottom.buyOk).toBe(true);
-    expect(bottom.sellOk).toBe(false);
-    expect(middle.buyOk).toBe(false);
-    expect(middle.sellOk).toBe(false);
-  });
-
-  it('does not call a staircase a box', () => {
-    const bars: EntryBar[] = [];
-    for (let i = 0; i < 9; i++) {
-      const close = 10 + i * 0.2;
-      bars.push(shapeBar(close + 0.08, close - 0.06, close, i));
-    }
-    expect(shapeAt(bars, 8).kind).not.toBe('BOX');
-  });
-
-  it('reads an M once the close leaves the valley, and keeps buys quiet', () => {
-    const bars = [
-      shapeBar(9.2, 9.0, 9.1, 0),
-      shapeBar(9.4, 9.1, 9.3, 1),
-      shapeBar(9.7, 9.3, 9.6, 2),
-      shapeBar(10.0, 9.5, 9.8, 3),
-      shapeBar(9.7, 9.4, 9.5, 4),
-      shapeBar(9.6, 9.3, 9.4, 5),
-      shapeBar(9.55, 9.2, 9.45, 6),
-      shapeBar(9.7, 9.4, 9.6, 7),
-      shapeBar(9.85, 9.5, 9.8, 8),
-      shapeBar(10.05, 9.6, 9.9, 9),
-      shapeBar(9.7, 9.3, 9.4, 10),
-      shapeBar(9.4, 9.1, 9.15, 11),
-    ];
-    const before = shapeAt(bars.slice(0, 11), 10);
-    const broken = shapeAt(bars, 11);
-    expect(before.kind).not.toBe('M');
-    expect(broken.kind).toBe('M');
-    expect(broken.buyOk).toBe(false);
-    expect(broken.sellOk).toBe(true);
-    expect(broken.fresh).toBe(true);
-    const labels = shapeMarks(bars, null);
-    expect(labels.get(11)?.short).toBe('M');
-  });
-
-  it('reads a W once the close leaves the peak, and keeps sells quiet', () => {
-    const bars = [
-      shapeBar(10.2, 10.0, 10.1, 0),
-      shapeBar(10.1, 9.7, 9.8, 1),
-      shapeBar(9.9, 9.4, 9.5, 2),
-      shapeBar(9.6, 9.0, 9.2, 3),
-      shapeBar(9.7, 9.3, 9.6, 4),
-      shapeBar(9.85, 9.5, 9.7, 5),
-      shapeBar(10.0, 9.7, 9.85, 6),
-      shapeBar(9.8, 9.4, 9.5, 7),
-      shapeBar(9.6, 9.2, 9.3, 8),
-      shapeBar(9.55, 9.05, 9.2, 9),
-      shapeBar(9.7, 9.3, 9.6, 10),
-      shapeBar(10.15, 9.7, 10.05, 11),
-    ];
-    const broken = shapeAt(bars, 11);
-    expect(broken.kind).toBe('W');
-    expect(broken.buyOk).toBe(true);
-    expect(broken.sellOk).toBe(false);
-  });
-
-  it('does not mark the 16 Nov BTC 15m selloff, bounce, or wick turns as a box, M, or W', () => {
-    const bars = btc15m.map(([high, low, close], time) => shapeBar(high, low, close, time));
-    expect(shapeAt(bars, 64).kind).not.toBe('M');
-    expect(shapeAt(bars, 57).kind).not.toBe('W');
-    expect(shapeAt(bars, 70).kind).not.toBe('BOX');
-    expect(shapeAt(bars, 75).kind).not.toBe('BOX');
-    expect(shapeAt(bars, 78).kind).not.toBe('W');
-    const marked = [...shapeMarks(bars, null).entries()].map(([time, mark]) => `${time}:${mark.short}`);
-    expect(marked).toEqual(['28:W']);
-  });
-});
-
-/** BTCUSDT 15m, 15 Nov 15:30 through 16 Nov 11:15 local. High, low, close. */
-const btc15m: Array<[number, number, number]> = [
-  [65387, 65121, 65327], [65496, 65280, 65445], [65529, 65364, 65464], [65547, 65372, 65480],
-  [65587, 65450, 65521], [65777, 65439, 65531], [65542, 65335, 65472], [65535, 65395, 65406],
-  [65406, 65057, 65273], [65514, 64824, 64870], [65000, 64433, 64611], [64947, 64611, 64741],
-  [64833, 64438, 64654], [64771, 64559, 64608], [64763, 64576, 64674], [64788, 64622, 64720],
-  [64720, 64522, 64585], [64778, 64240, 64738], [64916, 64433, 64710], [64714, 64485, 64674],
-  [64800, 64636, 64695], [64903, 64695, 64843], [64843, 64478, 64578], [64585, 64354, 64541],
-  [64640, 64467, 64538], [64782, 64504, 64507], [64662, 64500, 64595], [64710, 64541, 64701],
-  [65208, 64668, 65025], [65028, 64872, 64948], [64968, 64869, 64968], [65007, 64914, 64916],
-  [64916, 64657, 64672], [64940, 64670, 64854], [65100, 64855, 65001], [65174, 64954, 65103],
-  [65141, 64976, 64984], [65011, 64856, 65005], [65020, 64902, 65008], [65340, 64984, 64984],
-  [65176, 64906, 65150], [65240, 65117, 65167], [65247, 65110, 65114], [65206, 65065, 65192],
-  [65475, 65020, 65020], [65176, 64777, 65089], [65358, 64962, 65290], [65350, 65121, 65310],
-  [65366, 65036, 65044], [65088, 64913, 64966], [65065, 64628, 64728], [65029, 64707, 64891],
-  [64951, 64700, 64859], [64916, 64620, 64838], [64964, 64663, 64750], [64850, 64519, 64538],
-  [65000, 64534, 64925], [65330, 64865, 65182], [65334, 65046, 65123], [65228, 64961, 65153],
-  [65209, 65001, 65146], [65210, 65013, 65062], [65066, 64856, 65002], [65130, 64832, 65079],
-  [65158, 64783, 64915], [65099, 64863, 65023], [65027, 64835, 64835], [64844, 64756, 64787],
-  [64787, 64594, 64600], [64888, 64600, 64841], [64864, 64612, 64689], [64707, 64315, 64445],
-  [64549, 64260, 64288], [64486, 64271, 64440], [64654, 64423, 64565], [64731, 64552, 64682],
-  [64800, 64444, 64467], [64766, 64395, 64714], [65029, 64667, 64911], [65048, 64857, 65002],
-];

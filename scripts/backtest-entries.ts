@@ -1,5 +1,5 @@
 /**
- * Backtest the BUY/SELL 1–8 entry marks per state.
+ * Backtest the BUY/SELL 1–4 entry marks per state.
  *
  *   pnpm tsx scripts/backtest-entries.ts [--symbols BTCUSDT,ETHUSDT] [--interval 15m]
  *     [--days 90] [--hold 8] [--fee-bps 5] [--min-stop-atr 0.5] [--market perp|spot]
@@ -252,8 +252,8 @@ async function main(): Promise<void> {
   }
 
   const mid = (minTime + maxTime) / 2;
-  const byKey = [1, 2, 3, 4, 5, 6, 7, 8].flatMap((s) => [`B${s}`, `S${s}`]).map((k) => summarize(k, all.filter((t) => t.key === k), mid));
-  const byState = [1, 2, 3, 4, 5, 6, 7, 8].map((s) => summarize(`State ${s}`, all.filter((t) => t.state === s), mid));
+  const byKey = ['B1', 'S1', 'B2', 'S2', 'B3', 'S3', 'B4', 'S4'].map((k) => summarize(k, all.filter((t) => t.key === k), mid));
+  const byState = [1, 2, 3, 4].map((s) => summarize(`State ${s}`, all.filter((t) => t.state === s), mid));
   const totals = [
     summarize('All marks', all, mid),
     summarize('Baseline: every candle long', baseline.filter((t) => t.side === 'buy'), mid),
