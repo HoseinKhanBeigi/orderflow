@@ -249,6 +249,15 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 7 });
   });
 
+  it('7: 16 Nov 09:15, same sell effort but the close is still lower: no buy', () => {
+    const prev = read({ close: 3.181, deltaSide: 'SELL', delta: -275_000, prog: 0.53, strength: 'NORMAL', agg: -0.2, ...closedLow });
+    const cur = read({
+      close: 3.176, deltaSide: 'SELL', delta: -221_000, prog: 0.19, strength: 'NORMAL', agg: -0.11, pas: 0.53, chip: 'BIDS', ...closedHigh,
+    });
+    const priors = [...sideTries('SELL', 5, { prog: 0.4 }), prev];
+    expect(decideEntry(cur, prev, priors, null)).not.toEqual({ side: 'buy', state: 7 });
+  });
+
   it('6: a side that is still progressing is left alone', () => {
     const prev = read({ deltaSide: 'SELL', prog: 0.96, strength: 'STRONG', agg: -0.27, pas: -0.5, ...closedLow });
     const cur = read({ deltaSide: 'SELL', prog: 0.76, strength: 'NORMAL', agg: -0.15, pas: -0.4, ...closedLow });
@@ -685,6 +694,52 @@ describe('maybe', () => {
       directionalProgressATR: i === 16 ? 1.2 : 0.4,
     }));
     expect(maybeMarks(bars, null, progress).get(16)?.text).toBe('MAYBE SELL');
+  });
+
+  it('16 Nov 09:00 and 09:15, the rise has stalled and both closes are lower: no buy', () => {
+    const ohlc: Array<[number, number, number, number, number]> = [
+      [5 * 60, 3.145, 3.155, 3.123, 3.127],
+      [5 * 60 + 15, 3.128, 3.142, 3.122, 3.13],
+      [5 * 60 + 30, 3.129, 3.166, 3.125, 3.165],
+      [5 * 60 + 45, 3.165, 3.209, 3.156, 3.197],
+      [6 * 60, 3.197, 3.216, 3.185, 3.194],
+      [6 * 60 + 15, 3.195, 3.211, 3.184, 3.21],
+      [6 * 60 + 30, 3.21, 3.222, 3.195, 3.212],
+      [6 * 60 + 45, 3.211, 3.225, 3.197, 3.21],
+      [7 * 60, 3.209, 3.209, 3.189, 3.202],
+      [7 * 60 + 15, 3.203, 3.205, 3.181, 3.203],
+      [7 * 60 + 30, 3.202, 3.211, 3.173, 3.183],
+      [7 * 60 + 45, 3.183, 3.201, 3.177, 3.188],
+      [8 * 60, 3.188, 3.188, 3.164, 3.164],
+      [8 * 60 + 15, 3.165, 3.176, 3.16, 3.173],
+      [8 * 60 + 30, 3.172, 3.174, 3.157, 3.166],
+      [8 * 60 + 45, 3.166, 3.187, 3.165, 3.181],
+      [9 * 60, 3.181, 3.181, 3.16, 3.166],
+      [9 * 60 + 15, 3.165, 3.165, 3.147, 3.16],
+      [9 * 60 + 30, 3.16, 3.16, 3.14, 3.141],
+    ];
+    const bars: EntryBar[] = ohlc.map(([time, open, high, low, close]) => {
+      const sellCandle = close < open;
+      const heavy = time === 9 * 60 || time === 9 * 60 + 15;
+      const win = heavy ? 997_000 : 400_000;
+      const lose = heavy ? 722_000 : 150_000;
+      return {
+        time,
+        open,
+        high,
+        low,
+        close,
+        totalBuy: sellCandle ? lose : win,
+        totalSell: sellCandle ? win : lose,
+      };
+    });
+    const progress = annotateDeltaProgress(bars);
+    const maybe = maybeMarks(bars, null, progress);
+    const entries = entryMarks(bars, null, progress);
+    for (const time of [9 * 60, 9 * 60 + 15]) {
+      expect(maybe.get(time)?.side).not.toBe('buy');
+      expect(entries.get(time)?.side).not.toBe('buy');
+    }
   });
 });
 

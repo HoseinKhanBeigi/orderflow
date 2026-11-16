@@ -17000,6 +17000,11 @@ var process = globalThis.process || { env: {} };
     }
     return row.deltaSide === "BUY" || row.chip === "BUYERS" || row.chip === "BIDS" || row.downside === "BIDS_HOLD" || row.upside === "BUYERS_WIN";
   }
+  function sideShowedUp(cur, prev, side2) {
+    if (cur.deltaSide === side2 && known(cur.agg) && aggLeans(cur, side2)) return true;
+    const moved = cur.absProg != null && cur.absProg >= ENTRY_LITTLE_PROG;
+    return moved && (side2 === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev));
+  }
   function trendContext(recent, trend) {
     const other = trend === "SELL" ? "BUY" : "SELL";
     let effort = 0;
@@ -17080,6 +17085,10 @@ var process = globalThis.process || { env: {} };
   function closeStillDown(cur, prev) {
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
     return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
+  }
+  function closeStillUp(cur, prev) {
+    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+    return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
   }
   function weakBounce(cur, prev, effort) {
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
@@ -17303,7 +17312,8 @@ var process = globalThis.process || { env: {} };
       const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
       const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
       const groups = fight(cur);
-      if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
+      const stillExtending = stalledSide === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+      if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids) && !stillExtending) {
         if (!drifted(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
         return keptInMarket(joining === "BUY" ? "buy" : "sell", 6, market);
       }
@@ -17315,18 +17325,44 @@ var process = globalThis.process || { env: {} };
       const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
       const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
       const fadedFight = prevSide === "BUY" ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === "BUYERS_WIN") : fight(cur).aggSellers && (fight(cur).bids || cur.downside === "SELLERS_WIN");
-      if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
+      const stillExtending = prevSide === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+      if (sameEffort && responseOkBefore && responseFaded && fadedFight && !stillExtending) {
         if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
         return keptInMarket(prevSide === "BUY" ? "sell" : "buy", 7, market);
       }
     }
-    if (prev && trendContext(recent, "SELL") && prevStillTrend(prev, "SELL") && trendFailed(cur, "SELL") && closeCouldnt(cur, prev, "SELL") && trapAllowsFade(recent, cur, "SELL") && levelAllowsFade(recent, cur, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
+    if (trendFails(cur, prev, recent, "SELL") && !(prevSignal && prevSignal.side === "buy")) {
       if (weakBounce(cur, prev, "SELL")) return keptInMarket("sell", 2, market);
+      if (!sideShowedUp(cur, prev, "BUY")) return null;
       return keptInMarket("buy", 8, market);
     }
-    if (prev && trendContext(recent, "BUY") && prevStillTrend(prev, "BUY") && trendFailed(cur, "BUY") && closeCouldnt(cur, prev, "BUY") && trapAllowsFade(recent, cur, "BUY") && levelAllowsFade(recent, cur, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
+    if (trendFails(cur, prev, recent, "BUY") && !(prevSignal && prevSignal.side === "sell")) {
       if (weakBounce(cur, prev, "BUY")) return keptInMarket("buy", 2, market);
+      if (!sideShowedUp(cur, prev, "SELL")) return null;
       return keptInMarket("sell", 8, market);
+    }
+    const pause = pausedFailure(prev, priors);
+    if (pause === "SELL" && !(prevSignal && prevSignal.side === "buy") && sideShowedUp(cur, prev, "BUY") && closeStillUp(cur, prev) && cur.upside === "BUYERS_WIN") {
+      return keptInMarket("buy", 8, market);
+    }
+    if (pause === "BUY" && !(prevSignal && prevSignal.side === "sell") && sideShowedUp(cur, prev, "SELL") && closeStillDown(cur, prev) && cur.downside === "SELLERS_WIN") {
+      return keptInMarket("sell", 8, market);
+    }
+    return null;
+  }
+  function trendFails(cur, prev, recent, trend) {
+    return !!prev && trendContext(recent, trend) && prevStillTrend(prev, trend) && trendFailed(cur, trend) && closeCouldnt(cur, prev, trend) && trapAllowsFade(recent, cur, trend) && levelAllowsFade(recent, cur, trend);
+  }
+  function pausedFailure(prev, priors) {
+    if (!prev || priors.length < ENTRY_CONTEXT_MIN + 1) return null;
+    const before = priors.slice(0, -1);
+    const prevRecent = before.slice(-ENTRY_PRIOR_BARS);
+    const prevPrev = before[before.length - 1] ?? null;
+    for (const trend of ["SELL", "BUY"]) {
+      if (!trendFails(prev, prevPrev, prevRecent, trend)) continue;
+      if (weakBounce(prev, prevPrev, trend)) return null;
+      const other = trend === "SELL" ? "BUY" : "SELL";
+      return sideShowedUp(prev, prevPrev, other) ? null : trend;
     }
     return null;
   }
@@ -17416,10 +17452,11 @@ var process = globalThis.process || { env: {} };
       const history = reads.slice(0, index);
       if (decideEntry(cur, prev, history, null)) continue;
       const market = swingSide(history);
+      const recent = priceDrift(history.slice(-ENTRY_PRIOR_BARS));
       const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
       const buyBounce = cur.deltaSide === "BUY" && cur.upside === "BUYERS_WIN" && extended;
       const sellDip = cur.deltaSide === "SELL" && cur.downside === "SELLERS_WIN" && extended;
-      const side2 = market === "SELL" && (buyBounce || cur.atCeiling || cur.failUp) ? "sell" : market === "BUY" && (sellDip || cur.atFloor || cur.failDown) ? "buy" : null;
+      const side2 = market === "SELL" && recent === "SELL" && (buyBounce || cur.atCeiling || cur.failUp) ? "sell" : market === "BUY" && recent === "BUY" && (sellDip || cur.atFloor || cur.failDown) ? "buy" : null;
       if (!side2) continue;
       const sell = side2 === "sell";
       marks.set(bars[index].time, {

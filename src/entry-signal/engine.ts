@@ -958,7 +958,10 @@ export function decideEntry(
     const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
     const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
     const groups = fight(cur);
-    if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
+    // Progress can fade while the close is still going that way. 16 Nov 09:15
+    // sold less than 09:00, but the close was still lower, and 09:30 fell again.
+    const stillExtending = stalledSide === 'BUY' ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+    if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids) && !stillExtending) {
       if (!drifted(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
       return keptInMarket(joining === 'BUY' ? 'buy' : 'sell', 6, market);
     }
@@ -975,7 +978,10 @@ export function decideEntry(
     const fadedFight = prevSide === 'BUY'
       ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === 'BUYERS_WIN')
       : fight(cur).aggSellers && (fight(cur).bids || cur.downside === 'SELLERS_WIN');
-    if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
+    // The response did not fade if that side still got the close past the previous close.
+    // 16 Nov 09:15: sellers' progress dropped, but the close was still 16 bp lower. 09:30 fell 60 bp.
+    const stillExtending = prevSide === 'BUY' ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+    if (sameEffort && responseOkBefore && responseFaded && fadedFight && !stillExtending) {
       if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
       return keptInMarket(prevSide === 'BUY' ? 'sell' : 'buy', 7, market);
     }
@@ -1165,12 +1171,15 @@ export function maybeMarks(
     const history = reads.slice(0, index);
     if (decideEntry(cur, prev, history, null)) continue;
     const market = swingSide(history);
+    // The 16-candle swing can stay up after the rise has stalled.
+    // 16 Nov 09:00 and 09:15 on NEAR were sell candles in that stall, and the next candle fell.
+    const recent = priceDrift(history.slice(-ENTRY_PRIOR_BARS));
     const extended = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
     const buyBounce = cur.deltaSide === 'BUY' && cur.upside === 'BUYERS_WIN' && extended;
     const sellDip = cur.deltaSide === 'SELL' && cur.downside === 'SELLERS_WIN' && extended;
-    const side: EntrySide | null = market === 'SELL' && (buyBounce || cur.atCeiling || cur.failUp)
+    const side: EntrySide | null = market === 'SELL' && recent === 'SELL' && (buyBounce || cur.atCeiling || cur.failUp)
       ? 'sell'
-      : market === 'BUY' && (sellDip || cur.atFloor || cur.failDown)
+      : market === 'BUY' && recent === 'BUY' && (sellDip || cur.atFloor || cur.failDown)
         ? 'buy'
         : null;
     if (!side) continue;
