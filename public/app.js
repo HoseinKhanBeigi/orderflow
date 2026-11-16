@@ -1547,18 +1547,30 @@ function latestLivePrice(symbol, fallback) {
 }
 
 function fpLayout(cssWidth) {
-  const leftPad = 8;
-  const priceAxisWidth = 70;
-  const candleW = 6;
-  const cellW = 88;
-  const gap = 6;
-  // Resting book ladder sits between the newest bar and the price axis. It is
-  // dropped on narrow charts so the footprint itself always keeps its columns.
-  const railW = cssWidth >= 360 ? (cssWidth >= 720 ? PASSIVE_RAIL_W : 148) : 0;
-  const barWidth = candleW + cellW;
-  const stride = barWidth + gap;
+  const phone = cssWidth < 520;
+  const leftPad = phone ? 4 : 8;
+  const priceAxisWidth = phone ? 58 : 70;
+  const gap = phone ? 4 : 6;
+  const candleW = phone ? 5 : 6;
+  // Resting book ladder sits between the newest bar and the price axis.
+  // A phone keeps that space for candles, so at least three stay on screen.
+  const railW = cssWidth >= 720 ? PASSIVE_RAIL_W : cssWidth >= 520 ? 148 : 0;
   const availW = Math.max(1, cssWidth - priceAxisWidth - railW - leftPad);
-  const visibleBars = Math.max(1, Math.floor(availW / stride));
+  let cellW = phone ? 76 : 88;
+  let stride = candleW + cellW + gap;
+  let visibleBars = Math.max(1, Math.floor(availW / stride));
+  if (phone && visibleBars < 3) {
+    const budget = Math.floor(availW / 3);
+    cellW = Math.max(40, budget - gap - candleW);
+    stride = candleW + cellW + gap;
+    visibleBars = Math.max(1, Math.floor(availW / stride));
+  } else if (phone && visibleBars === 3) {
+    const budget = Math.floor(availW / 3);
+    cellW = Math.max(cellW, budget - gap - candleW);
+    stride = candleW + cellW + gap;
+    visibleBars = Math.max(1, Math.floor(availW / stride));
+  }
+  const barWidth = candleW + cellW;
   return { leftPad, priceAxisWidth, railW, candleW, cellW, barWidth, gap, stride, visibleBars };
 }
 
