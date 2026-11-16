@@ -465,6 +465,17 @@ function trendTrying(row: EntryRead, trend: EffortSide): boolean {
 }
 
 /**
+ * The side taking over actually showed up on this candle: its aggression leans,
+ * or the close moved at least ENTRY_LITTLE_PROG ATR its way.
+ * A flat, two-sided candle after a trend is a pause, not the other side winning.
+ */
+function sideShowedUp(cur: EntryRead, prev: EntryRead | null, side: EffortSide): boolean {
+  if (cur.deltaSide === side && known(cur.agg) && aggLeans(cur, side)) return true;
+  const moved = cur.absProg != null && cur.absProg >= ENTRY_LITTLE_PROG;
+  return moved && (side === 'BUY' ? closeStillUp(cur, prev) : closeStillDown(cur, prev));
+}
+
+/**
  * The 6 candles are that trend. A price drift is enough when that side's book
  * showed up. Without closes, the aggressive side has to lean, with its book,
  * and either move price once or keep leaning for 3 candles.
@@ -598,6 +609,12 @@ function trendFailed(cur: EntryRead, trend: EffortSide): boolean {
 function closeStillDown(cur: EntryRead, prev: EntryRead | null): boolean {
   if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
   return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
+}
+
+/** This close is still higher than the previous close. Buyers are getting price up. */
+function closeStillUp(cur: EntryRead, prev: EntryRead | null): boolean {
+  if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+  return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
 }
 
 function weakBounce(cur: EntryRead, prev: EntryRead | null, effort: EffortSide): boolean {
@@ -967,13 +984,51 @@ export function decideEntry(
   // Trend context. A downtrend is judged by aggressive sellers and the asks:
   // if they no longer get price down, buy on the candle that takes the close.
   // An uptrend is judged by aggressive buyers and the bids, and the failure is a sell.
-  if (prev && trendContext(recent, 'SELL') && prevStillTrend(prev, 'SELL') && trendFailed(cur, 'SELL') && closeCouldnt(cur, prev, 'SELL') && trapAllowsFade(recent, cur, 'SELL') && levelAllowsFade(recent, cur, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
+  // A failure candle where the other side did not show up is a pause, not an entry.
+  // 15 Nov 21:15: flat PAIR candle after the drop, sellers came straight back.
+  if (trendFails(cur, prev, recent, 'SELL') && !(prevSignal && prevSignal.side === 'buy')) {
     if (weakBounce(cur, prev, 'SELL')) return keptInMarket('sell', 2, market);
+    if (!sideShowedUp(cur, prev, 'BUY')) return null;
     return keptInMarket('buy', 8, market);
   }
-  if (prev && trendContext(recent, 'BUY') && prevStillTrend(prev, 'BUY') && trendFailed(cur, 'BUY') && closeCouldnt(cur, prev, 'BUY') && trapAllowsFade(recent, cur, 'BUY') && levelAllowsFade(recent, cur, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
+  if (trendFails(cur, prev, recent, 'BUY') && !(prevSignal && prevSignal.side === 'sell')) {
     if (weakBounce(cur, prev, 'BUY')) return keptInMarket('buy', 2, market);
+    if (!sideShowedUp(cur, prev, 'SELL')) return null;
     return keptInMarket('sell', 8, market);
+  }
+
+  // The candle after that pause. The other side shows up and gets the close: that is the 8.
+  // 13 Nov 14:00 paused, 14:15 buyers came in and took the close.
+  const pause = pausedFailure(prev, priors);
+  if (pause === 'SELL' && !(prevSignal && prevSignal.side === 'buy') && sideShowedUp(cur, prev, 'BUY') && closeStillUp(cur, prev) && cur.upside === 'BUYERS_WIN') {
+    return keptInMarket('buy', 8, market);
+  }
+  if (pause === 'BUY' && !(prevSignal && prevSignal.side === 'sell') && sideShowedUp(cur, prev, 'SELL') && closeStillDown(cur, prev) && cur.downside === 'SELLERS_WIN') {
+    return keptInMarket('sell', 8, market);
+  }
+  return null;
+}
+
+/** The trend lost its close on this candle (state 8 before the other side has to show). */
+function trendFails(cur: EntryRead, prev: EntryRead | null, recent: EntryRead[], trend: EffortSide): boolean {
+  return !!prev && trendContext(recent, trend) && prevStillTrend(prev, trend) && trendFailed(cur, trend)
+    && closeCouldnt(cur, prev, trend) && trapAllowsFade(recent, cur, trend) && levelAllowsFade(recent, cur, trend);
+}
+
+/**
+ * The previous candle was a trend failure that nobody took: state 8 without the other side.
+ * Reads the previous candle against its own setup window, so priors needs one extra candle.
+ */
+function pausedFailure(prev: EntryRead | null, priors: EntryRead[]): EffortSide | null {
+  if (!prev || priors.length < ENTRY_CONTEXT_MIN + 1) return null;
+  const before = priors.slice(0, -1);
+  const prevRecent = before.slice(-ENTRY_PRIOR_BARS);
+  const prevPrev = before[before.length - 1] ?? null;
+  for (const trend of ['SELL', 'BUY'] as const) {
+    if (!trendFails(prev, prevPrev, prevRecent, trend)) continue;
+    if (weakBounce(prev, prevPrev, trend)) return null;
+    const other: EffortSide = trend === 'SELL' ? 'BUY' : 'SELL';
+    return sideShowedUp(prev, prevPrev, other) ? null : trend;
   }
   return null;
 }

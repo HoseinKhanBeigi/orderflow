@@ -395,19 +395,35 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, sellMoved, priors, null)?.state).not.toBe(8);
   });
 
-  it('8: 14:00, weak delta closes back up after sellers and asks could not extend the drop', () => {
+  it('8: 13 Nov 14:00 is a pause, 14:15 buyers take the close and that is the buy', () => {
     const down = (close: number) => read({
       close, deltaSide: 'SELL', prog: 0.2, agg: -0.05, pas: -0.6, chip: 'ASKS', strength: 'WEAK', ...closedLow,
     });
-    const priors = [down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
+    const priors = [down(3.52), down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
     const cur = read({
       close: 3.484, deltaSide: 'BUY', prog: -0.03, strength: 'WEAK', agg: 0.03, pas: 0.14, chip: 'PAIR', ...closedHigh,
     });
-    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 8 });
+    // Flat, two-sided: sellers could not extend, but buyers did not show up either.
+    expect(decideEntry(cur, priors[6]!, priors, null)).toBeNull();
     const later = read({
       close: 3.497, deltaSide: 'BUY', prog: 0.4, strength: 'NORMAL', agg: 0.2, pas: 0.35, chip: 'BUYERS', ...closedHigh,
     });
-    expect(decideEntry(later, cur, [...priors.slice(1), cur], { side: 'buy' })).toBeNull();
+    expect(decideEntry(later, cur, [...priors.slice(1), cur], null)).toEqual({ side: 'buy', state: 8 });
+  });
+
+  it('8: 15 Nov 21:15 pause, then sellers come back: no buy', () => {
+    const down = (close: number) => read({
+      close, deltaSide: 'SELL', prog: 0.2, agg: -0.05, pas: -0.6, chip: 'ASKS', strength: 'WEAK', ...closedLow,
+    });
+    const priors = [down(3.52), down(3.514), down(3.508), down(3.497), down(3.492), down(3.496), down(3.485)];
+    const pause = read({
+      close: 3.486, deltaSide: 'BUY', prog: 0.03, strength: 'NORMAL', agg: 0.04, pas: 0.26, chip: 'PAIR', ...closedHigh,
+    });
+    expect(decideEntry(pause, priors[6]!, priors, null)).toBeNull();
+    const sellersBack = read({
+      close: 3.473, deltaSide: 'SELL', prog: 0.43, strength: 'NORMAL', agg: -0.11, pas: -1, chip: 'SELLERS', ...closedLow,
+    });
+    expect(decideEntry(sellersBack, pause, [...priors.slice(1), pause], null)?.side).not.toBe('buy');
   });
 
   it('8: a drifting downtrend whose asks showed, then buyers take an ordinary close', () => {
