@@ -804,14 +804,21 @@ function shapeBar(high: number, low: number, close: number, time: number): Entry
 }
 
 describe('shape context', () => {
+  const range: EntryBar[] = [
+    shapeBar(10.18, 10.02, 10.16, 0),
+    shapeBar(10.38, 10.2, 10.36, 1),
+    shapeBar(10.22, 10.04, 10.08, 2),
+    shapeBar(10.4, 10.22, 10.34, 3),
+    shapeBar(10.2, 10.02, 10.1, 4),
+    shapeBar(10.39, 10.24, 10.36, 5),
+    shapeBar(10.18, 10.05, 10.12, 6),
+    shapeBar(10.4, 10.22, 10.2, 7),
+  ];
+
   it('reads a range box and only allows a buy at the bottom and a sell at the top', () => {
-    const bars: EntryBar[] = [];
-    for (let i = 0; i < 8; i++) {
-      bars.push(shapeBar(i % 2 === 0 ? 10.4 : 10.28, i % 2 === 0 ? 10.12 : 10, 10.2, i));
-    }
-    const top = shapeAt([...bars, shapeBar(10.4, 10.2, 10.36, 8)], 8);
-    const bottom = shapeAt([...bars, shapeBar(10.2, 10, 10.05, 8)], 8);
-    const middle = shapeAt([...bars, shapeBar(10.3, 10.1, 10.2, 8)], 8);
+    const top = shapeAt([...range, shapeBar(10.4, 10.22, 10.36, 8)], 8);
+    const bottom = shapeAt([...range, shapeBar(10.2, 10.02, 10.06, 8)], 8);
+    const middle = shapeAt([...range, shapeBar(10.28, 10.12, 10.2, 8)], 8);
     expect(top.kind).toBe('BOX');
     expect(top.buyOk).toBe(false);
     expect(top.sellOk).toBe(true);
@@ -819,6 +826,15 @@ describe('shape context', () => {
     expect(bottom.sellOk).toBe(false);
     expect(middle.buyOk).toBe(false);
     expect(middle.sellOk).toBe(false);
+  });
+
+  it('does not call a staircase a box', () => {
+    const bars: EntryBar[] = [];
+    for (let i = 0; i < 9; i++) {
+      const close = 10 + i * 0.2;
+      bars.push(shapeBar(close + 0.08, close - 0.06, close, i));
+    }
+    expect(shapeAt(bars, 8).kind).not.toBe('BOX');
   });
 
   it('reads an M once the close leaves the valley, and keeps buys quiet', () => {
@@ -867,4 +883,39 @@ describe('shape context', () => {
     expect(broken.buyOk).toBe(true);
     expect(broken.sellOk).toBe(false);
   });
+
+  it('does not mark the 16 Nov BTC 15m selloff, bounce, or wick turns as a box, M, or W', () => {
+    const bars = btc15m.map(([high, low, close], time) => shapeBar(high, low, close, time));
+    expect(shapeAt(bars, 64).kind).not.toBe('M');
+    expect(shapeAt(bars, 57).kind).not.toBe('W');
+    expect(shapeAt(bars, 70).kind).not.toBe('BOX');
+    expect(shapeAt(bars, 75).kind).not.toBe('BOX');
+    expect(shapeAt(bars, 78).kind).not.toBe('W');
+    const marked = [...shapeMarks(bars, null).entries()].map(([time, mark]) => `${time}:${mark.short}`);
+    expect(marked).toEqual(['28:W']);
+  });
 });
+
+/** BTCUSDT 15m, 15 Nov 15:30 through 16 Nov 11:15 local. High, low, close. */
+const btc15m: Array<[number, number, number]> = [
+  [65387, 65121, 65327], [65496, 65280, 65445], [65529, 65364, 65464], [65547, 65372, 65480],
+  [65587, 65450, 65521], [65777, 65439, 65531], [65542, 65335, 65472], [65535, 65395, 65406],
+  [65406, 65057, 65273], [65514, 64824, 64870], [65000, 64433, 64611], [64947, 64611, 64741],
+  [64833, 64438, 64654], [64771, 64559, 64608], [64763, 64576, 64674], [64788, 64622, 64720],
+  [64720, 64522, 64585], [64778, 64240, 64738], [64916, 64433, 64710], [64714, 64485, 64674],
+  [64800, 64636, 64695], [64903, 64695, 64843], [64843, 64478, 64578], [64585, 64354, 64541],
+  [64640, 64467, 64538], [64782, 64504, 64507], [64662, 64500, 64595], [64710, 64541, 64701],
+  [65208, 64668, 65025], [65028, 64872, 64948], [64968, 64869, 64968], [65007, 64914, 64916],
+  [64916, 64657, 64672], [64940, 64670, 64854], [65100, 64855, 65001], [65174, 64954, 65103],
+  [65141, 64976, 64984], [65011, 64856, 65005], [65020, 64902, 65008], [65340, 64984, 64984],
+  [65176, 64906, 65150], [65240, 65117, 65167], [65247, 65110, 65114], [65206, 65065, 65192],
+  [65475, 65020, 65020], [65176, 64777, 65089], [65358, 64962, 65290], [65350, 65121, 65310],
+  [65366, 65036, 65044], [65088, 64913, 64966], [65065, 64628, 64728], [65029, 64707, 64891],
+  [64951, 64700, 64859], [64916, 64620, 64838], [64964, 64663, 64750], [64850, 64519, 64538],
+  [65000, 64534, 64925], [65330, 64865, 65182], [65334, 65046, 65123], [65228, 64961, 65153],
+  [65209, 65001, 65146], [65210, 65013, 65062], [65066, 64856, 65002], [65130, 64832, 65079],
+  [65158, 64783, 64915], [65099, 64863, 65023], [65027, 64835, 64835], [64844, 64756, 64787],
+  [64787, 64594, 64600], [64888, 64600, 64841], [64864, 64612, 64689], [64707, 64315, 64445],
+  [64549, 64260, 64288], [64486, 64271, 64440], [64654, 64423, 64565], [64731, 64552, 64682],
+  [64800, 64444, 64467], [64766, 64395, 64714], [65029, 64667, 64911], [65048, 64857, 65002],
+];

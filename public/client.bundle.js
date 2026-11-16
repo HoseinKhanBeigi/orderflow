@@ -16727,8 +16727,12 @@ var process = globalThis.process || { env: {} };
 
   // src/entry-signal/shape.ts
   var BOX_BARS = 8;
-  var PIVOT_LOOK = 24;
-  var SHAPE_HOLD_BARS = 4;
+  var PIVOT_SPAN = 2;
+  var PIVOT_LOOK = 20;
+  var MIN_PIVOT_GAP = 5;
+  var MAX_PIVOT_GAP = 14;
+  var BREAK_WINDOW = 8;
+  var SHAPE_HOLD_BARS = 3;
   var OPEN = { kind: null, note: "", buyOk: true, sellOk: true, fresh: false };
   function shapeAt(bars, index) {
     if (!bars || index < 0 || index >= bars.length) return OPEN;
@@ -16768,7 +16772,7 @@ var process = globalThis.process || { env: {} };
     if (place === "OUT") return null;
     const prev = index > 0 ? boxWindow(bars, index - 1) : null;
     const prevInside = prev != null && placeInBox(bars[index - 1].close, prev) !== "OUT";
-    const note = place === "HIGH" ? "Range box. The close is at the top of the box." : place === "LOW" ? "Range box. The close is at the bottom of the box." : "Range box. The close is in the middle of the box.";
+    const note = place === "HIGH" ? "Range box. Price has been sideways, and the close is at the top." : place === "LOW" ? "Range box. Price has been sideways, and the close is at the bottom." : "Range box. Price has been sideways, and the close is in the middle.";
     return {
       kind: "BOX",
       note,
@@ -16780,25 +16784,47 @@ var process = globalThis.process || { env: {} };
   function boxWindow(bars, index) {
     if (index < BOX_BARS) return null;
     const window = bars.slice(index - BOX_BARS, index);
-    let high = -Infinity;
-    let low = Infinity;
-    for (const bar of window) {
-      if (bar.high > high) high = bar.high;
-      if (bar.low < low) low = bar.low;
-    }
+    const highs = window.map((bar) => bar.high);
+    const lows = window.map((bar) => bar.low);
+    const high = nth(highs, 1, true);
+    const low = nth(lows, 1, false);
     const height = high - low;
-    const scale = meanRange(bars, index);
-    if (!(scale > 0) || height > scale * 3.2 || height < scale * 0.8) return null;
-    const top = low + height * 0.75;
-    const bottom = low + height * 0.25;
-    let highs = 0;
-    let lows = 0;
-    for (const bar of window) {
-      if (bar.high >= top) highs += 1;
-      if (bar.low <= bottom) lows += 1;
+    const scale = medianRange(bars, index);
+    if (!(scale > 0) || height < scale * 1.4 || height > scale * 3) return null;
+    const first = window[0].close;
+    const last = window[window.length - 1].close;
+    if (Math.abs(last - first) > height * 0.28) return null;
+    let widest = 0;
+    for (const bar of window) widest = Math.max(widest, bar.high - bar.low);
+    if (widest > height * 0.5) return null;
+    const top = high - height * 0.18;
+    const bottom = low + height * 0.18;
+    const ceiling = [];
+    const floor = [];
+    let inside = 0;
+    for (let i = 0; i < window.length; i++) {
+      const bar = window[i];
+      if (bar.high >= top) ceiling.push(i);
+      if (bar.low <= bottom) floor.push(i);
+      if (bar.close <= high && bar.close >= low) inside += 1;
     }
-    if (highs < 2 || lows < 2) return null;
+    if (ceiling.length < 2 || floor.length < 2) return null;
+    if (ceiling[ceiling.length - 1] - ceiling[0] < 2) return null;
+    if (floor[floor.length - 1] - floor[0] < 2) return null;
+    if (inside < 6) return null;
+    if (!alternates(ceiling, floor)) return null;
     return { high, low };
+  }
+  function alternates(ceiling, floor) {
+    const points = [
+      ...ceiling.map((index) => ({ index, side: "H" })),
+      ...floor.map((index) => ({ index, side: "L" }))
+    ].sort((a, b) => a.index - b.index || (a.side < b.side ? -1 : 1));
+    let seq = "";
+    for (const point of points) {
+      if (!seq.endsWith(point.side)) seq += point.side;
+    }
+    return seq.includes("LHL") || seq.includes("HLH");
   }
   function placeInBox(close, box) {
     const height = box.high - box.low;
@@ -16815,68 +16841,113 @@ var process = globalThis.process || { env: {} };
     return patternBreak(bars, index, "W");
   }
   function patternBreak(bars, index, kind) {
-    const scale = meanRange(bars, index);
-    if (!(scale > 0)) return null;
-    const from = Math.max(1, index - PIVOT_LOOK);
+    const scale = medianRange(bars, index);
+    if (!(scale > 0) || index < PIVOT_SPAN * 2) return null;
+    const from = Math.max(PIVOT_SPAN, index - PIVOT_LOOK);
     const highs = [];
     const lows = [];
-    for (let i = from; i <= index - 1; i++) {
-      const bar = bars[i];
-      const prev = bars[i - 1];
-      const next = bars[i + 1];
-      if (bar.high > prev.high && bar.high > next.high) highs.push({ index: i, price: bar.high });
-      if (bar.low < prev.low && bar.low < next.low) lows.push({ index: i, price: bar.low });
+    for (let i = from; i <= index - PIVOT_SPAN; i++) {
+      if (isSwing(bars, i, "high")) highs.push({ index: i, price: bars[i].high });
+      if (isSwing(bars, i, "low")) lows.push({ index: i, price: bars[i].low });
     }
     const close = bars[index].close;
     if (kind === "M") {
-      if (highs.length < 2) return null;
-      const right2 = highs[highs.length - 1];
-      const left2 = highs[highs.length - 2];
-      if (index - right2.index > SHAPE_HOLD_BARS) return null;
-      if (Math.abs(left2.price - right2.price) > Math.max(scale * 0.45, right2.price * 3e-3)) return null;
+      const pair2 = lastPair(highs);
+      if (!pair2) return null;
+      const [left2, right2] = pair2;
       const between2 = lows.filter((pivot) => pivot.index > left2.index && pivot.index < right2.index);
       if (!between2.length) return null;
       const neck2 = Math.min(...between2.map((pivot) => pivot.price));
-      if (!(close < neck2)) return null;
-      const prevClose2 = bars[index - 1].close;
+      const depth2 = Math.min(left2.price, right2.price) - neck2;
+      if (!sameLevel(left2.price, right2.price, depth2, scale)) return null;
+      if (!dominant(bars, left2.index, right2.index, "high", left2.price, right2.price, scale)) return null;
+      const brokeAt2 = breakStart(bars, right2.index + 1, index, neck2, "under");
+      if (brokeAt2 < 0) return null;
       return {
         kind: "M",
-        note: "M pattern. Two highs, then the close left the valley between them.",
+        note: "M pattern. Two similar highs, then the close left the dip between them.",
         buyOk: false,
         sellOk: true,
-        fresh: !(prevClose2 < neck2)
+        fresh: !(bars[index - 1].close < neck2)
       };
     }
-    if (lows.length < 2) return null;
-    const right = lows[lows.length - 1];
-    const left = lows[lows.length - 2];
-    if (index - right.index > SHAPE_HOLD_BARS) return null;
-    if (Math.abs(left.price - right.price) > Math.max(scale * 0.45, right.price * 3e-3)) return null;
+    const pair = lastPair(lows);
+    if (!pair) return null;
+    const [left, right] = pair;
     const between = highs.filter((pivot) => pivot.index > left.index && pivot.index < right.index);
     if (!between.length) return null;
     const neck = Math.max(...between.map((pivot) => pivot.price));
-    if (!(close > neck)) return null;
-    const prevClose = bars[index - 1].close;
+    const depth = neck - Math.max(left.price, right.price);
+    if (!sameLevel(left.price, right.price, depth, scale)) return null;
+    if (!dominant(bars, left.index, right.index, "low", left.price, right.price, scale)) return null;
+    const brokeAt = breakStart(bars, right.index + 1, index, neck, "over");
+    if (brokeAt < 0) return null;
     return {
       kind: "W",
-      note: "W pattern. Two lows, then the close left the peak between them.",
+      note: "W pattern. Two similar lows, then the close left the peak between them.",
       buyOk: true,
       sellOk: false,
-      fresh: !(prevClose > neck)
+      fresh: !(bars[index - 1].close > neck)
     };
   }
-  function meanRange(bars, index) {
-    const from = Math.max(0, index - 8);
-    let sum = 0;
-    let n = 0;
-    for (let i = from; i < index; i++) {
-      const span = bars[i].high - bars[i].low;
-      if (span > 0) {
-        sum += span;
-        n += 1;
-      }
+  function isSwing(bars, index, side2) {
+    const price = side2 === "high" ? bars[index].high : bars[index].low;
+    for (let step = 1; step <= PIVOT_SPAN; step++) {
+      const left = bars[index - step];
+      const right = bars[index + step];
+      if (!left || !right) return false;
+      if (side2 === "high") {
+        if (!(price > left.high && price > right.high)) return false;
+      } else if (!(price < left.low && price < right.low)) return false;
     }
-    return n ? sum / n : 0;
+    return true;
+  }
+  function lastPair(pivots) {
+    if (pivots.length < 2) return null;
+    const right = pivots[pivots.length - 1];
+    const left = pivots[pivots.length - 2];
+    const gap = right.index - left.index;
+    if (gap < MIN_PIVOT_GAP || gap > MAX_PIVOT_GAP) return null;
+    return [left, right];
+  }
+  function sameLevel(left, right, depth, scale) {
+    if (!(depth >= scale * 1.3) || !(depth > 0)) return false;
+    const skew = Math.abs(left - right);
+    return skew <= depth * 0.3 && skew <= scale * 0.75;
+  }
+  function dominant(bars, from, to, side2, left, right, scale) {
+    let extreme = side2 === "high" ? -Infinity : Infinity;
+    for (let i = from; i <= to; i++) {
+      const price = side2 === "high" ? bars[i].high : bars[i].low;
+      extreme = side2 === "high" ? Math.max(extreme, price) : Math.min(extreme, price);
+    }
+    const room = scale * 0.35;
+    if (side2 === "high") return extreme - Math.max(left, right) <= room;
+    return Math.min(left, right) - extreme <= room;
+  }
+  function breakStart(bars, from, index, neck, side2) {
+    let brokeAt = -1;
+    for (let i = from; i <= index; i++) {
+      const beyond = side2 === "under" ? bars[i].close < neck : bars[i].close > neck;
+      if (!beyond) brokeAt = -1;
+      else if (brokeAt < 0) brokeAt = i;
+    }
+    if (brokeAt < 0 || brokeAt - from > BREAK_WINDOW || index - brokeAt >= SHAPE_HOLD_BARS) return -1;
+    return brokeAt;
+  }
+  function medianRange(bars, index) {
+    const spans = [];
+    for (let i = Math.max(0, index - 8); i < index; i++) {
+      const span = bars[i].high - bars[i].low;
+      if (span > 0) spans.push(span);
+    }
+    if (!spans.length) return 0;
+    spans.sort((a, b) => a - b);
+    return spans[Math.floor((spans.length - 1) / 2)];
+  }
+  function nth(values, n, high) {
+    const sorted = [...values].sort((a, b) => high ? b - a : a - b);
+    return sorted[Math.min(n, sorted.length - 1)];
   }
 
   // src/entry-signal/engine.ts
