@@ -16725,6 +16725,160 @@ var process = globalThis.process || { env: {} };
     }
   };
 
+  // src/entry-signal/shape.ts
+  var BOX_BARS = 8;
+  var PIVOT_LOOK = 24;
+  var SHAPE_HOLD_BARS = 4;
+  var OPEN = { kind: null, note: "", buyOk: true, sellOk: true, fresh: false };
+  function shapeAt(bars, index) {
+    if (!bars || index < 0 || index >= bars.length) return OPEN;
+    const reversal = reversalAt(bars, index);
+    if (reversal) return reversal;
+    const box = boxAt(bars, index);
+    if (box) return box;
+    return OPEN;
+  }
+  function shapeMarks(bars, liveTime) {
+    const marks = /* @__PURE__ */ new Map();
+    if (!bars || bars.length < BOX_BARS) return marks;
+    const lastIsLive = liveTime != null && bars[bars.length - 1].time === liveTime;
+    const last = lastIsLive ? bars.length - 1 : bars.length;
+    for (let index = BOX_BARS; index < last; index++) {
+      const shape = shapeAt(bars, index);
+      if (!shape.fresh || !shape.kind) continue;
+      const time = bars[index].time;
+      if (time == null) continue;
+      marks.set(time, shapeMark(shape.kind, shape.note));
+    }
+    return marks;
+  }
+  function shapeMark(kind, note) {
+    if (kind === "BOX") {
+      return { kind, text: "BOX", short: "BOX", color: "#94a3b8", tip: note };
+    }
+    if (kind === "M") {
+      return { kind, text: "M", short: "M", color: "#fca5a5", tip: note };
+    }
+    return { kind, text: "W", short: "W", color: "#86efac", tip: note };
+  }
+  function boxAt(bars, index) {
+    const box = boxWindow(bars, index);
+    if (!box) return null;
+    const place = placeInBox(bars[index].close, box);
+    if (place === "OUT") return null;
+    const prev = index > 0 ? boxWindow(bars, index - 1) : null;
+    const prevInside = prev != null && placeInBox(bars[index - 1].close, prev) !== "OUT";
+    const note = place === "HIGH" ? "Range box. The close is at the top of the box." : place === "LOW" ? "Range box. The close is at the bottom of the box." : "Range box. The close is in the middle of the box.";
+    return {
+      kind: "BOX",
+      note,
+      buyOk: place === "LOW",
+      sellOk: place === "HIGH",
+      fresh: !prevInside
+    };
+  }
+  function boxWindow(bars, index) {
+    if (index < BOX_BARS) return null;
+    const window = bars.slice(index - BOX_BARS, index);
+    let high = -Infinity;
+    let low = Infinity;
+    for (const bar of window) {
+      if (bar.high > high) high = bar.high;
+      if (bar.low < low) low = bar.low;
+    }
+    const height = high - low;
+    const scale = meanRange(bars, index);
+    if (!(scale > 0) || height > scale * 3.2 || height < scale * 0.8) return null;
+    const top = low + height * 0.75;
+    const bottom = low + height * 0.25;
+    let highs = 0;
+    let lows = 0;
+    for (const bar of window) {
+      if (bar.high >= top) highs += 1;
+      if (bar.low <= bottom) lows += 1;
+    }
+    if (highs < 2 || lows < 2) return null;
+    return { high, low };
+  }
+  function placeInBox(close, box) {
+    const height = box.high - box.low;
+    if (!(height > 0) || !(close > 0)) return "OUT";
+    if (close > box.high || close < box.low) return "OUT";
+    const t = (close - box.low) / height;
+    if (t >= 0.7) return "HIGH";
+    if (t <= 0.3) return "LOW";
+    return "MID";
+  }
+  function reversalAt(bars, index) {
+    const m = patternBreak(bars, index, "M");
+    if (m) return m;
+    return patternBreak(bars, index, "W");
+  }
+  function patternBreak(bars, index, kind) {
+    const scale = meanRange(bars, index);
+    if (!(scale > 0)) return null;
+    const from = Math.max(1, index - PIVOT_LOOK);
+    const highs = [];
+    const lows = [];
+    for (let i = from; i <= index - 1; i++) {
+      const bar = bars[i];
+      const prev = bars[i - 1];
+      const next = bars[i + 1];
+      if (bar.high > prev.high && bar.high > next.high) highs.push({ index: i, price: bar.high });
+      if (bar.low < prev.low && bar.low < next.low) lows.push({ index: i, price: bar.low });
+    }
+    const close = bars[index].close;
+    if (kind === "M") {
+      if (highs.length < 2) return null;
+      const right2 = highs[highs.length - 1];
+      const left2 = highs[highs.length - 2];
+      if (index - right2.index > SHAPE_HOLD_BARS) return null;
+      if (Math.abs(left2.price - right2.price) > Math.max(scale * 0.45, right2.price * 3e-3)) return null;
+      const between2 = lows.filter((pivot) => pivot.index > left2.index && pivot.index < right2.index);
+      if (!between2.length) return null;
+      const neck2 = Math.min(...between2.map((pivot) => pivot.price));
+      if (!(close < neck2)) return null;
+      const prevClose2 = bars[index - 1].close;
+      return {
+        kind: "M",
+        note: "M pattern. Two highs, then the close left the valley between them.",
+        buyOk: false,
+        sellOk: true,
+        fresh: !(prevClose2 < neck2)
+      };
+    }
+    if (lows.length < 2) return null;
+    const right = lows[lows.length - 1];
+    const left = lows[lows.length - 2];
+    if (index - right.index > SHAPE_HOLD_BARS) return null;
+    if (Math.abs(left.price - right.price) > Math.max(scale * 0.45, right.price * 3e-3)) return null;
+    const between = highs.filter((pivot) => pivot.index > left.index && pivot.index < right.index);
+    if (!between.length) return null;
+    const neck = Math.max(...between.map((pivot) => pivot.price));
+    if (!(close > neck)) return null;
+    const prevClose = bars[index - 1].close;
+    return {
+      kind: "W",
+      note: "W pattern. Two lows, then the close left the peak between them.",
+      buyOk: true,
+      sellOk: false,
+      fresh: !(prevClose > neck)
+    };
+  }
+  function meanRange(bars, index) {
+    const from = Math.max(0, index - 8);
+    let sum = 0;
+    let n = 0;
+    for (let i = from; i < index; i++) {
+      const span = bars[i].high - bars[i].low;
+      if (span > 0) {
+        sum += span;
+        n += 1;
+      }
+    }
+    return n ? sum / n : 0;
+  }
+
   // src/entry-signal/engine.ts
   var ENTRY_LITTLE_PROG = 0.25;
   var ENTRY_REAL_PROG = 0.5;
@@ -16776,6 +16930,15 @@ var process = globalThis.process || { env: {} };
     }
     if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
     return { support, resistance };
+  }
+  var ENTRY_PULLBACK_ATR = 0.15;
+  function entryPullbackPrice(bar, prior, side2) {
+    if (!(bar.close > 0) || !Number.isFinite(bar.high) || !Number.isFinite(bar.low)) return null;
+    const atr = recentBarAtr2(prior, bar);
+    const room = side2 === "buy" ? Math.max(0, bar.close - bar.low) : Math.max(0, bar.high - bar.close);
+    const step = Math.min(Math.max(room * 0.35, atr * ENTRY_PULLBACK_ATR), atr * 0.3);
+    if (!(step > 0)) return bar.close;
+    return side2 === "buy" ? bar.close - step : bar.close + step;
   }
   function recentBarAtr2(prior, bar) {
     const fallback = Math.max(bar.high - bar.low, (bar.close || 1) * 2e-3);
@@ -17375,6 +17538,11 @@ var process = globalThis.process || { env: {} };
     if (pct === 0) return "0%";
     return `${pct > 0 ? "+" : "\u2212"}${Math.abs(pct)}%`;
   }
+  function fmtEntryPrice(n) {
+    const abs = Math.abs(n);
+    const digits = abs >= 1e3 ? 1 : abs >= 100 ? 2 : abs >= 1 ? 3 : abs >= 0.01 ? 5 : 6;
+    return n.toFixed(digits);
+  }
   function fmtNotional(n) {
     if (!known(n)) return "\u2014";
     const abs = Math.abs(n);
@@ -17405,6 +17573,8 @@ var process = globalThis.process || { env: {} };
         }
         continue;
       }
+      const shape = shapeAt(bars, index);
+      if (signal.side === "buy" && !shape.buyOk || signal.side === "sell" && !shape.sellOk) continue;
       const time = bars[index].time;
       const held = signal.side === openSide && (signal.state !== 5 || openState === 5);
       if (!held && !marks.has(time)) {
@@ -17416,15 +17586,20 @@ var process = globalThis.process || { env: {} };
         const trapLine = trapped === faded ? trapped === "SELL" ? "Sell trap" : "Buy trap" : null;
         const seen = signal.state === 1 || signal.state === 4 || signal.state === 5 || signal.state === 8 ? levelSeen([...priors, cur]) : null;
         const levelLine = !seen ? null : buy && seen.floor && !seen.ceiling ? cur.failDown || priors.some((row) => row.failDown) ? "Fail down at the floor" : "Floor held" : !buy && seen.ceiling && !seen.floor ? cur.failUp || priors.some((row) => row.failUp) ? "Fail up at the ceiling" : "Ceiling held" : null;
+        const entryPrice = entryPullbackPrice(bars[index], bars.slice(0, index), signal.side);
+        const priceLine = entryPrice == null ? null : buy ? `Open ${fmtEntryPrice(entryPrice)}, a little under the close` : `Open ${fmtEntryPrice(entryPrice)}, a little over the close`;
         marks.set(time, {
           side: signal.side,
           state: signal.state,
           text: `${word} ${signal.state}`,
           short: `${buy ? "B" : "S"}${signal.state}`,
           color: buy ? "#22c55e" : "#ef4444",
+          price: entryPrice,
           tip: [
             `${word} ${signal.state}`,
             ENTRY_DETAIL[signal.state],
+            ...priceLine ? [priceLine] : [],
+            ...shape.note ? [shape.note] : [],
             ...cant ? [cant] : [],
             ...trapLine ? [trapLine] : [],
             ...levelLine ? [levelLine] : [],
@@ -17943,6 +18118,7 @@ var process = globalThis.process || { env: {} };
     trapMarks,
     levelMarks,
     maybeMarks,
+    shapeMarks,
     ENTRY_DETAIL,
     ENTRY_PRIOR_BARS
   };

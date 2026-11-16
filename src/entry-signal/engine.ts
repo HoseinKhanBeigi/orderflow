@@ -7,6 +7,8 @@
  * Nothing here reads a later candle than the one being marked.
  */
 
+import { shapeAt } from './shape.js';
+
 export const ENTRY_LITTLE_PROG = 0.25;
 export const ENTRY_REAL_PROG = 0.5;
 export const ENTRY_RESPONSE_PROG = 0.8;
@@ -121,6 +123,8 @@ export interface EntryMark extends EntrySignal {
   short: string;
   color: string;
   tip: string;
+  /** A little under the close for a buy, a little over it for a sell. */
+  price: number | null;
 }
 
 /** Chart label for the candle where the trend side's close fails. Not an entry by itself. */
@@ -170,6 +174,23 @@ function priorSwingLevels(prior: EntryBar[]): { support: number | null; resistan
   }
   if (!Number.isFinite(resistance) || !Number.isFinite(support)) return { support: null, resistance: null };
   return { support, resistance };
+}
+
+/** A buy sits this far under the close. A sell sits this far over it. In ATR. */
+export const ENTRY_PULLBACK_ATR = 0.15;
+
+/**
+ * The working entry is a little better than the close.
+ * A buy is under the close. A sell is over the close.
+ * The step is part of the recent ATR, and also part of the way back into this candle.
+ */
+export function entryPullbackPrice(bar: EntryBar, prior: EntryBar[], side: EntrySide): number | null {
+  if (!(bar.close > 0) || !Number.isFinite(bar.high) || !Number.isFinite(bar.low)) return null;
+  const atr = recentBarAtr(prior, bar);
+  const room = side === 'buy' ? Math.max(0, bar.close - bar.low) : Math.max(0, bar.high - bar.close);
+  const step = Math.min(Math.max(room * 0.35, atr * ENTRY_PULLBACK_ATR), atr * 0.3);
+  if (!(step > 0)) return bar.close;
+  return side === 'buy' ? bar.close - step : bar.close + step;
 }
 
 function recentBarAtr(prior: EntryBar[], bar: EntryBar): number {
@@ -1050,6 +1071,12 @@ function fmtSignedPct(n: number | null): string {
   return `${pct > 0 ? '+' : '−'}${Math.abs(pct)}%`;
 }
 
+function fmtEntryPrice(n: number): string {
+  const abs = Math.abs(n);
+  const digits = abs >= 1000 ? 1 : abs >= 100 ? 2 : abs >= 1 ? 3 : abs >= 0.01 ? 5 : 6;
+  return n.toFixed(digits);
+}
+
 function fmtNotional(n: number | null): string {
   if (!known(n)) return '—';
   const abs = Math.abs(n);
@@ -1091,6 +1118,8 @@ export function entryMarks(
       }
       continue;
     }
+    const shape = shapeAt(bars, index);
+    if ((signal.side === 'buy' && !shape.buyOk) || (signal.side === 'sell' && !shape.sellOk)) continue;
     const time = bars[index]!.time;
     const held = signal.side === openSide && (signal.state !== 5 || openState === 5);
     if (!held && !marks.has(time)) {
@@ -1116,15 +1145,24 @@ export function entryMarks(
           : !buy && seen.ceiling && !seen.floor
             ? (cur.failUp || priors.some((row) => row.failUp) ? 'Fail up at the ceiling' : 'Ceiling held')
             : null;
+      const entryPrice = entryPullbackPrice(bars[index]!, bars.slice(0, index), signal.side);
+      const priceLine = entryPrice == null
+        ? null
+        : buy
+          ? `Open ${fmtEntryPrice(entryPrice)}, a little under the close`
+          : `Open ${fmtEntryPrice(entryPrice)}, a little over the close`;
       marks.set(time, {
         side: signal.side,
         state: signal.state,
         text: `${word} ${signal.state}`,
         short: `${buy ? 'B' : 'S'}${signal.state}`,
         color: buy ? '#22c55e' : '#ef4444',
+        price: entryPrice,
         tip: [
           `${word} ${signal.state}`,
           ENTRY_DETAIL[signal.state],
+          ...(priceLine ? [priceLine] : []),
+          ...(shape.note ? [shape.note] : []),
           ...(cant ? [cant] : []),
           ...(trapLine ? [trapLine] : []),
           ...(levelLine ? [levelLine] : []),

@@ -5,8 +5,11 @@ import {
   couldntMarks,
   decideEntry,
   entryMarks,
+  entryPullbackPrice,
   levelMarks,
   maybeMarks,
+  shapeAt,
+  shapeMarks,
   trapMarks,
   type EntryBar,
   type EntryRead,
@@ -743,6 +746,32 @@ describe('maybe', () => {
   });
 });
 
+describe('entry price', () => {
+  const prior: EntryBar[] = Array.from({ length: 8 }, (_, i) => ({
+    time: i,
+    open: 3.2,
+    high: 3.22,
+    low: 3.18,
+    close: 3.2,
+  }));
+  const bar: EntryBar = { time: 9, open: 3.2, high: 3.23, low: 3.17, close: 3.2 };
+
+  it('puts a buy a little under the close and a sell a little over it', () => {
+    const buy = entryPullbackPrice(bar, prior, 'buy');
+    const sell = entryPullbackPrice(bar, prior, 'sell');
+    expect(buy).toBeLessThan(bar.close);
+    expect(sell).toBeGreaterThan(bar.close);
+    expect(bar.close - buy!).toBeLessThanOrEqual(0.04 * 0.3 + 1e-9);
+    expect(sell! - bar.close).toBeLessThanOrEqual(0.04 * 0.3 + 1e-9);
+  });
+
+  it('still steps under the close when the buy candle closed on its low', () => {
+    const lowClose: EntryBar = { ...bar, low: 3.2, close: 3.2 };
+    const buy = entryPullbackPrice(lowClose, prior, 'buy');
+    expect(buy).toBeLessThan(lowClose.close);
+  });
+});
+
 describe('entryMarks', () => {
   const bars = syntheticBars(400);
   const full = entryMarks(bars, null, annotateDeltaProgress(bars));
@@ -767,5 +796,75 @@ describe('entryMarks', () => {
     const live = bars[bars.length - 1]!.time;
     const marks = entryMarks(bars, live, annotateDeltaProgress(bars, { lastIsLive: true }));
     expect(marks.has(live)).toBe(false);
+  });
+});
+
+function shapeBar(high: number, low: number, close: number, time: number): EntryBar {
+  return { time, open: close, high, low, close };
+}
+
+describe('shape context', () => {
+  it('reads a range box and only allows a buy at the bottom and a sell at the top', () => {
+    const bars: EntryBar[] = [];
+    for (let i = 0; i < 8; i++) {
+      bars.push(shapeBar(i % 2 === 0 ? 10.4 : 10.28, i % 2 === 0 ? 10.12 : 10, 10.2, i));
+    }
+    const top = shapeAt([...bars, shapeBar(10.4, 10.2, 10.36, 8)], 8);
+    const bottom = shapeAt([...bars, shapeBar(10.2, 10, 10.05, 8)], 8);
+    const middle = shapeAt([...bars, shapeBar(10.3, 10.1, 10.2, 8)], 8);
+    expect(top.kind).toBe('BOX');
+    expect(top.buyOk).toBe(false);
+    expect(top.sellOk).toBe(true);
+    expect(bottom.buyOk).toBe(true);
+    expect(bottom.sellOk).toBe(false);
+    expect(middle.buyOk).toBe(false);
+    expect(middle.sellOk).toBe(false);
+  });
+
+  it('reads an M once the close leaves the valley, and keeps buys quiet', () => {
+    const bars = [
+      shapeBar(9.2, 9.0, 9.1, 0),
+      shapeBar(9.4, 9.1, 9.3, 1),
+      shapeBar(9.7, 9.3, 9.6, 2),
+      shapeBar(10.0, 9.5, 9.8, 3),
+      shapeBar(9.7, 9.4, 9.5, 4),
+      shapeBar(9.6, 9.3, 9.4, 5),
+      shapeBar(9.55, 9.2, 9.45, 6),
+      shapeBar(9.7, 9.4, 9.6, 7),
+      shapeBar(9.85, 9.5, 9.8, 8),
+      shapeBar(10.05, 9.6, 9.9, 9),
+      shapeBar(9.7, 9.3, 9.4, 10),
+      shapeBar(9.4, 9.1, 9.15, 11),
+    ];
+    const before = shapeAt(bars.slice(0, 11), 10);
+    const broken = shapeAt(bars, 11);
+    expect(before.kind).not.toBe('M');
+    expect(broken.kind).toBe('M');
+    expect(broken.buyOk).toBe(false);
+    expect(broken.sellOk).toBe(true);
+    expect(broken.fresh).toBe(true);
+    const labels = shapeMarks(bars, null);
+    expect(labels.get(11)?.short).toBe('M');
+  });
+
+  it('reads a W once the close leaves the peak, and keeps sells quiet', () => {
+    const bars = [
+      shapeBar(10.2, 10.0, 10.1, 0),
+      shapeBar(10.1, 9.7, 9.8, 1),
+      shapeBar(9.9, 9.4, 9.5, 2),
+      shapeBar(9.6, 9.0, 9.2, 3),
+      shapeBar(9.7, 9.3, 9.6, 4),
+      shapeBar(9.85, 9.5, 9.7, 5),
+      shapeBar(10.0, 9.7, 9.85, 6),
+      shapeBar(9.8, 9.4, 9.5, 7),
+      shapeBar(9.6, 9.2, 9.3, 8),
+      shapeBar(9.55, 9.05, 9.2, 9),
+      shapeBar(9.7, 9.3, 9.6, 10),
+      shapeBar(10.15, 9.7, 10.05, 11),
+    ];
+    const broken = shapeAt(bars, 11);
+    expect(broken.kind).toBe('W');
+    expect(broken.buyOk).toBe(true);
+    expect(broken.sellOk).toBe(false);
   });
 });

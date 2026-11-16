@@ -2524,6 +2524,13 @@ function maybeMarks(bars, liveTime) {
   return impl(bars, liveTime, rows);
 }
 
+/** BOX, M, or W on the candle where that shape first shows. Not an entry by itself. */
+function shapeMarks(bars, liveTime) {
+  const impl = window.OrderFlowClient?.shapeMarks;
+  if (!impl || !bars?.length) return new Map();
+  return impl(bars, liveTime);
+}
+
 function battleVerdictTip(v) {
   const word = (o) => BATTLE_OUTCOME_TEXT[o].full.toLowerCase();
   const stronger = v.stronger === 'EVEN' ? 'pair (within ' + BATTLE_EVEN_GAP_PCT + '%)' : v.stronger === 'UP' ? 'upside' : 'downside';
@@ -5204,6 +5211,7 @@ function drawFootprint(symbol = selectedSymbol) {
   const trapByTime = trapMarks(bars, nowBucket);
   const levelByTime = levelMarks(bars, nowBucket);
   const maybeByTime = maybeMarks(bars, nowBucket);
+  const shapeByTime = shapeMarks(bars, nowBucket);
   const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
@@ -5415,6 +5423,13 @@ function drawFootprint(symbol = selectedSymbol) {
       if (maybeHit) view.microHits.push(maybeHit);
       above += 20;
     }
+    const shape = shapeByTime.get(bar.time);
+    if (shape) {
+      const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - above));
+      const shapeHit = drawCouldntLabel(ctx, shape, cx, y, barWidth - 4);
+      if (shapeHit) view.microHits.push(shapeHit);
+      above += 20;
+    }
     if (couldnt) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - above));
       const couldntHit = drawCouldntLabel(ctx, couldnt, cx, y, barWidth - 4);
@@ -5425,6 +5440,20 @@ function drawFootprint(symbol = selectedSymbol) {
       const y = Math.min(topPad + chartH - 10, Math.max(topPad + 14, yForPrice(bar.high) - above));
       const entryHit = drawCouldntLabel(ctx, entry, cx, y, barWidth - 4);
       if (entryHit) view.microHits.push(entryHit);
+      if (Number.isFinite(entry.price)) {
+        const py = yForPrice(entry.price);
+        if (py >= topPad && py <= topPad + chartH) {
+          ctx.save();
+          ctx.strokeStyle = entry.color;
+          ctx.globalAlpha = 0.9;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(cx - barWidth * 0.42, py);
+          ctx.lineTo(cx + barWidth * 0.42, py);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
     }
     const levelStory = trapByTime.get(bar.time) || levelStoryLabel(bars, startIdx + i);
     const levelMark = levelByTime.get(bar.time);
