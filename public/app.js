@@ -1926,6 +1926,11 @@ function wireBarToFp(w) {
   };
 }
 
+/** A candle built from the live trades. A kline estimate is not one of these. */
+function isRealFootprint(bar) {
+  return bar?.flowSource === 'LIVE' && (bar.totalBuy ?? 0) + (bar.totalSell ?? 0) > 0;
+}
+
 /**
  * Run async work over items with a hard concurrency cap.
  * Avoids bursting 2×N requests when the grid has many coins.
@@ -2224,6 +2229,7 @@ function aggregateFrom1m(symbol, tfMinutes, minTime = 0) {
           sellTrades: 0,
           largestBuy: 0,
           largestSell: 0,
+          flowSource: 'LIVE',
         });
       }
       mergeFootprintBar(out.get(t), bar);
@@ -2246,15 +2252,28 @@ function live1mStore(symbol) {
   return out;
 }
 
+/** Closed candles already shown. The live buffer only keeps the last two, so without this the next candle deletes the one you just read. */
+const fpShownBars = {};
+
+function shownBarKey(symbol, tf) {
+  return historyKey(symbol, tf, selectedExchange);
+}
+
 function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
   const live = tf === 1 ? live1mStore(symbol) : aggregateFrom1m(symbol, tf);
   const hist = fpHistoryEnabled ? getFpHistory(symbol, tf, selectedExchange) : new Map();
   const kline = tf >= 5 ? getFpKlineSeed(symbol, tf) : new Map();
-  if (hist.size === 0 && kline.size === 0 && live.size === 0) return [];
+  const shown = fpShownBars[shownBarKey(symbol, tf)];
+  if (hist.size === 0 && kline.size === 0 && live.size === 0 && !(shown?.size)) return [];
 
   const liveOpenT = fpCandleTime(Date.now(), tf);
   const out = new Map();
   for (const bar of hist.values()) out.set(bar.time, cloneFpBar(bar));
+  if (shown) {
+    for (const bar of shown.values()) {
+      if (!out.has(bar.time)) out.set(bar.time, cloneFpBar(bar));
+    }
+  }
   // History already rolled up every closed minute. Only minutes at or after
   // its cutoff are still ours to add, so the open candle keeps stacking
   // without counting those minutes twice.
@@ -2265,7 +2284,10 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     : [...aggregateFrom1m(symbol, tf, addFrom).values()];
   for (const bar of live.values()) {
     if (bar.time === liveOpenT) continue;
-    if (!out.has(bar.time)) out.set(bar.time, cloneFpBar(bar));
+    const existing = out.get(bar.time);
+    // The live buffer still has this candle, so use the latest trades.
+    // Once the buffer drops it, the copy we already showed stays.
+    if (!existing || (shown?.has(bar.time) && !hist.has(bar.time))) out.set(bar.time, cloneFpBar(bar));
   }
   for (const bar of liveAdd) {
     if (bar.time !== liveOpenT) continue;
@@ -2281,6 +2303,9 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     }
     // Open candle footprint comes from live 1m — do not inject kline proxy into it.
     if (k.time === liveOpenT) continue;
+    // A candle already printed from trades keeps that print. Mixing in a kline
+    // estimate after the close rewrites the buy or sell the chart already showed.
+    if (isRealFootprint(existing)) continue;
     // Closed candles: keep / restore backfill levels when coverage is thin.
     // Never inject UNAVAILABLE / fabricated kline sides into CVD.
     if (
@@ -2302,7 +2327,22 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
       }
     }
   }
+  rememberShownBars(symbol, tf, out, liveOpenT);
   return [...out.values()].sort((a, b) => a.time - b.time);
+}
+
+function rememberShownBars(symbol, tf, bars, liveOpenT) {
+  const key = shownBarKey(symbol, tf);
+  const cache = fpShownBars[key] ?? (fpShownBars[key] = new Map());
+  for (const bar of bars.values()) {
+    if (bar.time >= liveOpenT) continue;
+    const prev = cache.get(bar.time);
+    if (!prev || isRealFootprint(bar)) cache.set(bar.time, cloneFpBar(bar));
+  }
+  if (cache.size > 500) {
+    const times = [...cache.keys()].sort((a, b) => a - b);
+    for (const time of times.slice(0, cache.size - 500)) cache.delete(time);
+  }
 }
 
 /** Keep the open candle and the one before it, so the stack survives each minute. */
@@ -2319,7 +2359,9 @@ function rememberLiveMinute(symbol, exchange, wireBar) {
   for (const key of [...store.keys()]) {
     if (key < keepFrom) store.delete(key);
   }
-  store.set(wireBar.t, wireBarToFp(wireBar));
+  const bar = wireBarToFp(wireBar);
+  bar.flowSource = 'LIVE';
+  store.set(wireBar.t, bar);
 }
 
 function fpCandleTime(ts, tf = chartTfMinutes) {
@@ -5224,7 +5266,12 @@ function drawFootprint(symbol = selectedSymbol) {
   const levelByTime = levelMarks(bars, nowBucket);
   const maybeByTime = maybeMarks(bars, nowBucket);
   const shapeByTime = shapeMarks(bars, nowBucket);
-  const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
+  const entryByTime = attachLiveFuelContext(
+    symbol,
+    holdEntryMarks(symbol, entryMarks(bars, nowBucket, deltaProgress), nowBucket, chartTfMinutes, bars),
+    bars,
+    nowBucket,
+  );
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -6185,6 +6232,44 @@ function entryMarks(bars, liveTime, progress) {
   return impl(bars, liveTime, rows);
 }
 
+/** First buy or sell on a closed candle. A later candle must not rewrite it. */
+const fpEntryStick = new Map();
+
+function entryStickPrefix(symbol, tf) {
+  return `${footprintMarket()}|${symbol}|${selectedExchange}|${tf}|`;
+}
+
+function holdEntryMarks(symbol, marks, liveTime, tf = chartTfMinutes, bars = null) {
+  const prefix = entryStickPrefix(symbol, tf);
+  const realTimes = new Set();
+  for (const bar of bars ?? []) {
+    if (bar.time !== liveTime && isRealFootprint(bar)) realTimes.add(bar.time);
+  }
+  const held = new Map();
+  if (marks) {
+    for (const [time, mark] of marks) {
+      if (time === liveTime) continue;
+      const key = prefix + time;
+      if (realTimes.has(time) && !fpEntryStick.has(key)) fpEntryStick.set(key, { ...mark });
+      held.set(time, fpEntryStick.get(key) ?? mark);
+    }
+  }
+  for (const [key, mark] of fpEntryStick) {
+    if (!key.startsWith(prefix)) continue;
+    const time = Number(key.slice(prefix.length));
+    if (!Number.isFinite(time) || time === liveTime) continue;
+    held.set(time, mark);
+  }
+  if (fpEntryStick.size > 800) {
+    let drop = fpEntryStick.size - 800;
+    for (const key of fpEntryStick.keys()) {
+      fpEntryStick.delete(key);
+      if (--drop <= 0) break;
+    }
+  }
+  return held;
+}
+
 /** Live fuel lead, for the newest state only. Older candles never stored this. */
 function fuelImbalanceLine(symbol) {
   const summary = summaries[symbol];
@@ -6237,7 +6322,7 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   const progress = annotateDeltaProgress(bars, { lastIsLive });
   const index = lastIsLive ? bars.length - 2 : bars.length - 1;
   if (index < ENTRY_PRIOR_BARS) return;
-  const signal = entryMarks(bars, liveTime, progress).get(bars[index].time);
+  const signal = holdEntryMarks(symbol, entryMarks(bars, liveTime, progress), liveTime, tfMinutes).get(bars[index].time);
   if (!signal) return;
 
   const bar = bars[index];
