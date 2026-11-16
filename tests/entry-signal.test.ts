@@ -204,6 +204,47 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, bidsHeld, priors, { side: 'buy' })).toEqual({ side: 'buy', state: 5 });
   });
 
+  it('5: 17:00 is the buy after 16:45 could not extend the sell', () => {
+    const down = (close: number) => read({
+      close,
+      deltaSide: 'SELL',
+      prog: 0.4,
+      agg: -0.2,
+      pas: -0.2,
+      chip: 'ASKS',
+      strength: 'NORMAL',
+      ...closedLow,
+    });
+    const failed = read({
+      close: 3.062,
+      deltaSide: 'SELL',
+      delta: -67_000,
+      prog: 0.15,
+      agg: -0.04,
+      pas: 0.02,
+      chip: 'PAIR',
+      strength: 'NORMAL',
+      upside: 'CONTESTED',
+      downside: 'CONTESTED',
+      failDown: true,
+    });
+    const priors = [down(3.20), down(3.16), down(3.12), down(3.08), down(3.06), failed];
+    const cur = read({
+      close: 3.07,
+      deltaSide: 'BUY',
+      delta: 180_000,
+      prog: 0.22,
+      strength: 'NORMAL',
+      agg: 0.06,
+      pas: -0.2,
+      chip: 'ASKS',
+      upside: 'ASKS_HOLD',
+      downside: 'CONTESTED',
+    });
+    expect(decideEntry(cur, failed, priors, null)).toEqual({ side: 'buy', state: 5 });
+    expect(decideEntry(failed, priors[4]!, priors.slice(0, 5), null)?.side).not.toBe('buy');
+  });
+
   it('5: a sell campaign that kept extending is not a buy', () => {
     const pushed = read({ strength: 'STRONG', deltaSide: 'SELL', prog: 0.9, chip: 'SELLERS', ...closedLow });
     const priors = [pushed, pushed, pushed, pushed, pushed, pushed];
@@ -416,6 +457,40 @@ describe('decideEntry states', () => {
     const priors = [down(3.52), down(3.51), down(3.505), down(3.50), down(3.495), down(3.485)];
     const cur = read({ close: 3.484, deltaSide: 'BUY', prog: 0.12, strength: 'NORMAL', agg: 0.28, pas: 0.14, chip: 'BUYERS', ...closedHigh });
     expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'buy', state: 8 });
+  });
+
+  it('8: 18:15 gives the 18:00 buy back, so that candle is the sell', () => {
+    const up = (close: number, extra: Partial<EntryRead> = {}) => read({
+      close,
+      deltaSide: 'BUY',
+      prog: 0.7,
+      agg: 0.2,
+      pas: -0.25,
+      chip: 'BUYERS',
+      strength: 'NORMAL',
+      ...closedHigh,
+      ...extra,
+    });
+    const priors = [
+      up(3.10),
+      up(3.12, { atFloor: true, failDown: true }),
+      up(3.14),
+      up(3.16),
+      up(3.18),
+      up(3.22),
+    ];
+    const cur = read({
+      close: 3.19,
+      deltaSide: 'SELL',
+      delta: -785_000,
+      prog: 0.7,
+      strength: 'STRONG',
+      agg: -0.2,
+      pas: -0.15,
+      chip: 'SELLERS',
+      ...closedLow,
+    });
+    expect(decideEntry(cur, priors[5]!, priors, null)).toEqual({ side: 'sell', state: 8 });
   });
 
   it('8: a high-delta flip after a sell that just moved is not this context', () => {

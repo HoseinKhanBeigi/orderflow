@@ -113,7 +113,7 @@ The other side already failed, then price responds.
 
 One side kept trying and the book held. The other side takes it.
 
-- **Buy:** downtrend. At least 3 of the 6 are sell delta, at least 2 of those failed to extend or got absorbed, and the candle just before is still that failed sell. Aggressive buyers either win the close with the bids, or they move price while the asks are still on the close.
+- **Buy:** downtrend. At least 3 of the 6 are sell delta, at least 2 of those failed to extend or got absorbed, and the candle just before is still that failed sell. Aggressive buyers either win the close with the bids, or they move price while the asks are still on the close. A buy after the sell candle that could not extend is this buy even when the push is small and the asks are still on it. 16 Nov 16:45 could not extend the sell. 17:00 is the buy. 17:15 does not add another.
 - **Sell:** uptrend. The mirror: sellers win the close with the asks, or they move price while the bids are still on the close.
 
 State 5 can mark even if that side is already open, unless the open mark is already state 5.
@@ -141,9 +141,9 @@ If effort and response are both still growing, there is no fade. Effort that col
 The trend's effort and book no longer move price. The label is the candle where the close turns back.
 
 - **Buy:** downtrend, sellers and asks. The candle just before still belongs to that downtrend. This candle closes back up (buyers win the close). Weak or flat delta still counts. 13 Nov 14:00 is this buy: the six closes before it fell, the asks were in that push, and 14:00 did not extend the drop. A candle that is still sell delta, and only ticks up without a real answer, is not this buy. 14 Nov 19:00 was that pause. It stays a sell.
-- **Sell:** uptrend, buyers and bids. This candle closes back down. The mirror stays a buy when the tape is still buy and the dip is not real.
+- **Sell:** uptrend, buyers and bids. This candle closes back down. The mirror stays a buy when the tape is still buy and the dip is not real. A real sell that takes that close back is still this sell when the resting book on the way up was asks, and when the floor that started the rally is still inside the six. 16 Nov 18:00 was the buy. 18:15 gave that close back, and that candle is the sell.
 
-A high-delta candle is left to states 1–5. The next candle of the same turn is not a second state 8.
+A small high-delta flip stays with states 1–5. The next candle of the same turn is not a second state 8.
 
 ## Order
 

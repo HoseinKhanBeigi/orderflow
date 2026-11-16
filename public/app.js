@@ -1625,6 +1625,7 @@ function resizeFpView(symbol) {
   const w = Math.max(1, Math.floor(host.clientWidth));
   const h = Math.max(1, Math.floor(host.clientHeight));
   view.ctx = mountCanvas(view.canvas, w, h);
+  if (view.hoverCanvas) view.hoverCtx = mountCanvas(view.hoverCanvas, w, h);
   const foot = view.footCanvas;
   const footPane = view.footPane;
   if (foot && footPane?.classList.contains('is-open')) {
@@ -1700,11 +1701,15 @@ function bindFpCanvas(symbol, canvas, { pan = true, scrollHost = null } = {}) {
     canvas.addEventListener('pointercancel', endDrag);
   }
   canvas.addEventListener('pointermove', (e) => {
+    updatePriceHover(symbol, e);
     const view = fpViews.get(symbol);
     if (!view || view.dragging) return;
     showPatternTip(symbol, e);
   });
-  canvas.addEventListener('pointerleave', () => hidePatternTip(symbol));
+  canvas.addEventListener('pointerleave', (e) => {
+    hidePatternTip(symbol);
+    if (e.currentTarget === fpViews.get(symbol)?.canvas) clearPriceHover(symbol);
+  });
 }
 
 function buildFpGrid() {
@@ -1731,7 +1736,9 @@ function buildFpGrid() {
     `;
     const host = card.querySelector('.fp-card-canvas');
     const canvas = document.createElement('canvas');
-    host.appendChild(canvas);
+    const hoverCanvas = document.createElement('canvas');
+    hoverCanvas.className = 'fp-price-hover';
+    host.append(canvas, hoverCanvas);
     const footHost = card.querySelector('[data-fp-foot]');
     const footScroll = document.createElement('div');
     footScroll.className = 'fp-card-foot-scroll';
@@ -1744,6 +1751,10 @@ function buildFpGrid() {
     fpViews.set(coin.symbol, {
       canvas,
       ctx: canvas.getContext('2d'),
+      hoverCanvas,
+      hoverCtx: hoverCanvas.getContext('2d'),
+      hoverY: null,
+      priceScale: null,
       footPane: footHost,
       footScroll,
       timeCanvas,
@@ -4375,6 +4386,65 @@ function hidePatternTip(symbol) {
   view?.card?.querySelector('[data-fp-pattern-tip]')?.classList.add('hidden');
 }
 
+function priceFromChartY(scale, y) {
+  if (!scale || y == null || !Number.isFinite(y)) return null;
+  if (y < scale.topPad || y > scale.topPad + scale.chartH) return null;
+  const price = scale.globalHigh - ((y - scale.topPad) / scale.chartH) * scale.priceRange;
+  return Number.isFinite(price) ? price : null;
+}
+
+function updatePriceHover(symbol, event) {
+  const view = fpViews.get(symbol);
+  if (!view || event.currentTarget !== view.canvas) return;
+  const rect = view.canvas.getBoundingClientRect();
+  view.hoverY = event.clientY - rect.top;
+  drawPriceHover(symbol);
+}
+
+function clearPriceHover(symbol) {
+  const view = fpViews.get(symbol);
+  if (!view) return;
+  view.hoverY = null;
+  drawPriceHover(symbol);
+}
+
+function drawPriceHover(symbol) {
+  const view = fpViews.get(symbol);
+  const canvas = view?.hoverCanvas;
+  const ctx = view?.hoverCtx;
+  if (!canvas || !ctx) return;
+  const W = canvas.width / devicePixelRatio;
+  const H = canvas.height / devicePixelRatio;
+  ctx.clearRect(0, 0, W, H);
+  const scale = view.priceScale;
+  const price = priceFromChartY(scale, view.hoverY);
+  if (price == null) return;
+  const y = view.hoverY;
+  const label = fmtPriceAxis(price);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(226, 232, 240, 0.7)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(scale.leftPad, y);
+  ctx.lineTo(scale.plotRight + scale.railW, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = 'bold 11px JetBrains Mono, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(label).width;
+  const bh = 16;
+  const boxW = Math.max(tw + 10, 52);
+  const boxX = W - boxW - 3;
+  const boxY = Math.max(scale.topPad, Math.min(y - bh / 2, scale.topPad + scale.chartH - bh));
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(boxX, boxY, boxW, bh);
+  ctx.fillStyle = '#0d1117';
+  ctx.fillText(label, boxX + boxW - 5, boxY + bh / 2);
+  ctx.restore();
+}
+
 function applyPatternSnapshot(ev) {
   if (!ev?.symbol || (ev.market && ev.market !== footprintMarket())) return;
   const tfName = tfShort(chartTfMinutes);
@@ -5039,6 +5109,8 @@ function drawFootprint(symbol = selectedSymbol) {
     ctx.fillText('Waiting for footprint…', W / 2, H / 2);
     const meta = view.card?.querySelector('[data-fp-meta]');
     if (meta) meta.textContent = 'loading';
+    view.priceScale = null;
+    drawPriceHover(symbol);
     return;
   }
 
@@ -5059,6 +5131,8 @@ function drawFootprint(symbol = selectedSymbol) {
     ctx.font = '12px Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('No footprint bars yet', W / 2, H / 2);
+    view.priceScale = null;
+    drawPriceHover(symbol);
     return;
   }
 
@@ -5451,6 +5525,9 @@ function drawFootprint(symbol = selectedSymbol) {
   if (livePx) {
     drawChartPriceLine(ctx, yForPrice(livePx), '#60a5fa', `LIVE ${fmtPriceAxis(livePx)}`, leftPad, plotRight + railW);
   }
+
+  view.priceScale = { topPad, chartH, globalHigh, priceRange, leftPad, plotRight, railW };
+  drawPriceHover(symbol);
 
   const storyIdx = Math.max(0, bars.length - (lastIsLive && bars.length > 1 ? 2 : 1));
   const story = bars.length ? strategyStoryForBar(bars, storyIdx) : null;

@@ -465,6 +465,14 @@ body {
   cursor: grab;
 }
 
+.fp-card-canvas canvas.fp-price-hover {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  cursor: none;
+}
+
 .fp-card.focus {
   border-color: rgba(96, 165, 250, 0.65);
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2);
