@@ -2254,19 +2254,32 @@ function live1mStore(symbol) {
 
 /** Closed candles already shown. The live buffer only keeps the last two, so without this the next candle deletes the one you just read. */
 const fpShownBars = {};
+/** Last print of the candle that is still open. When it closes, this print is the one that stays. */
+const fpLiveSnap = new Map();
 
 function shownBarKey(symbol, tf) {
   return historyKey(symbol, tf, selectedExchange);
+}
+
+function sealClosedLiveBars(symbol, tf, liveOpenT) {
+  const id = shownBarKey(symbol, tf);
+  const cache = fpShownBars[id] ?? (fpShownBars[id] = new Map());
+  const prefix = `${id}|`;
+  for (const [key, bar] of fpLiveSnap) {
+    if (!key.startsWith(prefix) || bar.time >= liveOpenT) continue;
+    if (!cache.has(bar.time)) cache.set(bar.time, cloneFpBar(bar));
+    fpLiveSnap.delete(key);
+  }
 }
 
 function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
   const live = tf === 1 ? live1mStore(symbol) : aggregateFrom1m(symbol, tf);
   const hist = fpHistoryEnabled ? getFpHistory(symbol, tf, selectedExchange) : new Map();
   const kline = tf >= 5 ? getFpKlineSeed(symbol, tf) : new Map();
+  const liveOpenT = fpCandleTime(Date.now(), tf);
+  sealClosedLiveBars(symbol, tf, liveOpenT);
   const shown = fpShownBars[shownBarKey(symbol, tf)];
   if (hist.size === 0 && kline.size === 0 && live.size === 0 && !(shown?.size)) return [];
-
-  const liveOpenT = fpCandleTime(Date.now(), tf);
   const out = new Map();
   for (const bar of hist.values()) out.set(bar.time, cloneFpBar(bar));
   if (shown) {
@@ -2284,10 +2297,8 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     : [...aggregateFrom1m(symbol, tf, addFrom).values()];
   for (const bar of live.values()) {
     if (bar.time === liveOpenT) continue;
-    const existing = out.get(bar.time);
-    // The live buffer still has this candle, so use the latest trades.
-    // Once the buffer drops it, the copy we already showed stays.
-    if (!existing || (shown?.has(bar.time) && !hist.has(bar.time))) out.set(bar.time, cloneFpBar(bar));
+    // A candle we already showed stays as that print. Later trades must not rewrite it.
+    if (!out.has(bar.time)) out.set(bar.time, cloneFpBar(bar));
   }
   for (const bar of liveAdd) {
     if (bar.time !== liveOpenT) continue;
@@ -2328,6 +2339,10 @@ function footprintBars(symbol = selectedSymbol, tf = chartTfMinutes) {
     }
   }
   rememberShownBars(symbol, tf, out, liveOpenT);
+  const openBar = out.get(liveOpenT);
+  if (openBar && (openBar.totalBuy ?? 0) + (openBar.totalSell ?? 0) > 0) {
+    fpLiveSnap.set(`${shownBarKey(symbol, tf)}|${liveOpenT}`, cloneFpBar(openBar));
+  }
   return [...out.values()].sort((a, b) => a.time - b.time);
 }
 
@@ -2337,7 +2352,7 @@ function rememberShownBars(symbol, tf, bars, liveOpenT) {
   for (const bar of bars.values()) {
     if (bar.time >= liveOpenT) continue;
     const prev = cache.get(bar.time);
-    if (!prev || isRealFootprint(bar)) cache.set(bar.time, cloneFpBar(bar));
+    if (!prev || (!isRealFootprint(prev) && isRealFootprint(bar))) cache.set(bar.time, cloneFpBar(bar));
   }
   if (cache.size > 500) {
     const times = [...cache.keys()].sort((a, b) => a - b);
@@ -5281,14 +5296,14 @@ function drawFootprint(symbol = selectedSymbol) {
     const half = cellW / 2;
     const cx = x + barWidth / 2;
     const isLiveBar = lastIsLive && i === visible.length - 1;
-    const frEvs = failReclaimEventsForBar(lie, bar.time, frByTime);
-    const microAnn = microByTime.get(bar.time);
+    const frEvs = heldFailReclaim(symbol, bar.time, failReclaimEventsForBar(lie, bar.time, frByTime), isLiveBar);
+    const microAnn = heldTopLabel(symbol, bar.time, microByTime.get(bar.time), isLiveBar);
     const topHit = drawCandleTopLabels(ctx, microAnn, cx, barWidth - 4, frEvs, {
       cvd: flowByTime.get(bar.time)?.cvd ?? null,
     });
     if (topHit?.tip) view.microHits.push(topHit);
     if (topHit?.frHit) view.levelEventHits.push(topHit.frHit);
-    const marker = patternByTime.get(bar.time);
+    const marker = heldPatternMarker(symbol, bar.time, patternByTime.get(bar.time), isLiveBar);
     if (marker) {
       const hit = drawPatternBadge(ctx, marker, cx, topHit?.hasFr ? 72 : 58);
       view.patternHits.push({ ...hit, marker });
@@ -6234,9 +6249,71 @@ function entryMarks(bars, liveTime, progress) {
 
 /** First buy or sell on a closed candle. A later candle must not rewrite it. */
 const fpEntryStick = new Map();
+/** Candles the chart painted while they were still open. */
+const fpSeenLive = new Set();
+/** Top-of-candle label last shown on a live candle. The close does not get a new one. */
+const fpTopStick = new Map();
+const fpPatternStick = new Map();
+const fpFrStick = new Map();
 
 function entryStickPrefix(symbol, tf) {
   return `${footprintMarket()}|${symbol}|${selectedExchange}|${tf}|`;
+}
+
+function candleLabelKey(symbol, time, tf = chartTfMinutes) {
+  return entryStickPrefix(symbol, tf) + time;
+}
+
+function bareTopLabel(ann) {
+  if (!ann) return null;
+  const clean = (s) => (typeof s === 'string' ? s.replaceAll('?', '').trim() : s);
+  const secondary = (ann.secondary || []).map((s) => ({ ...s, short: clean(s.short) }));
+  const primaryShort = clean(ann.primaryShort);
+  const locationShort = clean(ann.locationShort);
+  return {
+    ...ann,
+    primaryShort,
+    locationShort,
+    secondary,
+    provisional: false,
+    tip: [primaryShort, ...secondary.map((s) => s.short), locationShort].filter(Boolean).join(' · '),
+  };
+}
+
+function heldTopLabel(symbol, time, ann, isLive) {
+  const key = candleLabelKey(symbol, time);
+  if (isLive) {
+    fpSeenLive.add(key);
+    const bare = bareTopLabel(ann);
+    if (bare) fpTopStick.set(key, bare);
+    return ann;
+  }
+  if (!fpSeenLive.has(key)) return ann;
+  return fpTopStick.get(key) ?? ann;
+}
+
+function heldPatternMarker(symbol, time, marker, isLive) {
+  const key = candleLabelKey(symbol, time);
+  if (isLive) {
+    if (marker) fpPatternStick.set(key, marker);
+    else fpPatternStick.delete(key);
+    return marker;
+  }
+  if (!fpSeenLive.has(key)) return marker;
+  if (fpPatternStick.has(key)) return fpPatternStick.get(key);
+  if (marker) fpPatternStick.set(key, marker);
+  return fpPatternStick.get(key) ?? marker;
+}
+
+function heldFailReclaim(symbol, time, events, isLive) {
+  const key = candleLabelKey(symbol, time);
+  const list = events || [];
+  if (isLive) {
+    fpFrStick.set(key, list.map((ev) => ({ ...ev, status: ev.status === 'PROVISIONAL' || ev.status === 'FORMING' ? 'CONFIRMED' : ev.status })));
+    return list;
+  }
+  if (!fpSeenLive.has(key)) return list;
+  return fpFrStick.get(key) ?? list;
 }
 
 function holdEntryMarks(symbol, marks, liveTime, tf = chartTfMinutes, bars = null) {
@@ -6250,7 +6327,7 @@ function holdEntryMarks(symbol, marks, liveTime, tf = chartTfMinutes, bars = nul
     for (const [time, mark] of marks) {
       if (time === liveTime) continue;
       const key = prefix + time;
-      if (realTimes.has(time) && !fpEntryStick.has(key)) fpEntryStick.set(key, { ...mark });
+      if ((realTimes.has(time) || fpSeenLive.has(key)) && !fpEntryStick.has(key)) fpEntryStick.set(key, { ...mark });
       held.set(time, fpEntryStick.get(key) ?? mark);
     }
   }
