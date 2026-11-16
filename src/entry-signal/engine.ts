@@ -180,6 +180,33 @@ function priorSwingLevels(prior: EntryBar[]): { support: number | null; resistan
 export const ENTRY_PULLBACK_ATR = 0.15;
 
 /**
+ * A candle under this share of the recent median volume is too thin to take.
+ * The buy or sell read can still be right. It is not a position.
+ */
+export const ENTRY_THIN_VOLUME = 0.45;
+
+export function barQuoteVolume(bar: EntryBar): number {
+  return Math.max(0, bar.totalBuy ?? 0) + Math.max(0, bar.totalSell ?? 0);
+}
+
+/** True when this candle traded well under the median of the prior candles that have volume. */
+export function entryVolumeThin(bars: EntryBar[], index: number): boolean {
+  const vol = barQuoteVolume(bars[index]!);
+  const prior = bars
+    .slice(Math.max(0, index - 16), index)
+    .map(barQuoteVolume)
+    .filter((v) => v > 0);
+  if (prior.length < 6) return false;
+  const scale = medianOf(prior);
+  return scale > 0 && vol < scale * ENTRY_THIN_VOLUME;
+}
+
+function medianOf(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)] ?? 0;
+}
+
+/**
  * The working entry is a little better than the close.
  * A buy is under the close. A sell is over the close.
  * The step is part of the recent ATR, and also part of the way back into this candle.
@@ -687,6 +714,25 @@ function fadeStands(recent: EntryRead[], cur: EntryRead, prev: EntryRead | null,
   return candleFailsSide(cur, prev, side);
 }
 
+/**
+ * The swing has already run, and this candle closed on a new extreme.
+ * 11 Nov 10:00 NEAR: the drop was already in, then the candle closed on its low.
+ * Joining that sell was the low. The mirror is a buy that closes on a new high.
+ */
+function chaseExtreme(cur: EntryRead, priors: EntryRead[], side: EffortSide): boolean {
+  if (swingSide(priors) !== side) return false;
+  if (!known(cur.close) || !known(cur.high) || !known(cur.low)) return false;
+  const range = cur.high - cur.low;
+  if (!(range > 0)) return false;
+  const pos = (cur.close - cur.low) / range;
+  if (side === 'SELL' ? pos > 0.12 : pos < 0.88) return false;
+  const recent = priors.slice(-ENTRY_PRIOR_BARS);
+  const edges = recent.map((row) => side === 'SELL' ? row.low : row.high).filter((n): n is number => known(n));
+  if (!edges.length) return false;
+  const edge = side === 'SELL' ? Math.min(...edges) : Math.max(...edges);
+  return side === 'SELL' ? cur.close < edge : cur.close > edge;
+}
+
 /** A join stays quiet once that side has already lost its close inside the 6. */
 function joinStands(recent: EntryRead[], side: EffortSide): boolean {
   const prior = effortCouldnt(recent, side);
@@ -906,7 +952,7 @@ export function decideEntry(
     const continued = chip && prevSignal && prevSignal.side === side;
     const took = effort === 'BUY' ? buyersOwnClose(cur) : effort === 'SELL' ? sellersOwnClose(cur) : false;
     if (chip && effort && took && cur.chip === chip && priorsOwn(recent, chip) && !continued && passiveAgrees(cur, effort)) {
-      if (!drifted(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort)) return null;
+      if (!drifted(recent, effort) || !joinStands(recent, effort) || !trapAllowsJoin(recent, cur, effort) || !levelAllowsJoin(recent, cur, effort) || chaseExtreme(cur, priors, effort)) return null;
       return keptInMarket(side, 2, market);
     }
   }
@@ -934,11 +980,11 @@ export function decideEntry(
   // setup candles already won that battle. A heavy SELL candle that closed high stays a fade.
   if (cur.highDelta && real) {
     if (sellersOwnClose(cur) && countWins(recent, 'SELLERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'sell')) {
-      if (!drifted(recent, 'SELL') || !joinStands(recent, 'SELL') || !trapAllowsJoin(recent, cur, 'SELL') || !levelAllowsJoin(recent, cur, 'SELL')) return null;
+      if (!drifted(recent, 'SELL') || !joinStands(recent, 'SELL') || !trapAllowsJoin(recent, cur, 'SELL') || !levelAllowsJoin(recent, cur, 'SELL') || chaseExtreme(cur, priors, 'SELL')) return null;
       return keptInMarket('sell', 2, market);
     }
     if (buyersOwnClose(cur) && countWins(recent, 'BUYERS_WIN') >= 2 && !(prevSignal && prevSignal.side === 'buy')) {
-      if (!drifted(recent, 'BUY') || !joinStands(recent, 'BUY') || !trapAllowsJoin(recent, cur, 'BUY') || !levelAllowsJoin(recent, cur, 'BUY')) return null;
+      if (!drifted(recent, 'BUY') || !joinStands(recent, 'BUY') || !trapAllowsJoin(recent, cur, 'BUY') || !levelAllowsJoin(recent, cur, 'BUY') || chaseExtreme(cur, priors, 'BUY')) return null;
       return keptInMarket('buy', 2, market);
     }
   }
@@ -1103,6 +1149,7 @@ export function entryMarks(
   for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
   let openSide: EntrySide | null = null;
   let openState: EntryState | null = null;
+  let thinSide: EntrySide | null = null;
   for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
     const cur = reads[index]!;
     const prev = reads[index - 1]!;
@@ -1112,6 +1159,7 @@ export function entryMarks(
     const stalled = cur.absProg != null && cur.absProg <= ENTRY_LITTLE_PROG
       && ((openSide === 'sell' && cur.downside === 'SELLERS_WIN') || (openSide === 'buy' && cur.upside === 'BUYERS_WIN'));
     if (!signal) {
+      thinSide = null;
       if (stalled || (openSide === 'sell' && cur.upside === 'BUYERS_WIN') || (openSide === 'buy' && cur.downside === 'SELLERS_WIN')) {
         openSide = null;
         openState = null;
@@ -1120,7 +1168,31 @@ export function entryMarks(
     }
     const shape = shapeAt(bars, index);
     if ((signal.side === 'buy' && !shape.buyOk) || (signal.side === 'sell' && !shape.sellOk)) continue;
+    const thin = entryVolumeThin(bars, index);
     const time = bars[index]!.time;
+    if (thin) {
+      if (signal.side !== thinSide && !marks.has(time)) {
+        const buy = signal.side === 'buy';
+        const word = buy ? 'BUY' : 'SELL';
+        marks.set(time, {
+          side: signal.side,
+          state: signal.state,
+          text: `${word} ${signal.state}`,
+          short: `${buy ? 'B' : 'S'}${signal.state}`,
+          color: buy ? '#86efac' : '#fca5a5',
+          price: null,
+          tip: [
+            `${word} ${signal.state}`,
+            ENTRY_DETAIL[signal.state],
+            'Volume is small next to the recent candles, so this is not a position.',
+            ...(shape.note ? [shape.note] : []),
+          ].join('\n'),
+        });
+      }
+      thinSide = signal.side;
+      continue;
+    }
+    thinSide = null;
     const held = signal.side === openSide && (signal.state !== 5 || openState === 5);
     if (!held && !marks.has(time)) {
       const buy = signal.side === 'buy';

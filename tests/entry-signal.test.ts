@@ -6,6 +6,7 @@ import {
   decideEntry,
   entryMarks,
   entryPullbackPrice,
+  entryVolumeThin,
   levelMarks,
   maybeMarks,
   shapeAt,
@@ -679,6 +680,89 @@ describe('state 5 on the chart', () => {
     const marks = entryMarks(bars, null, progress);
     expect(marks.get(6)?.short).toBe('B1');
     expect(marks.get(7)?.short).toBe('B5');
+  });
+
+  it('keeps a small-volume read and withholds the position until volume is back', () => {
+    const bar = (time: number, closeHigh: boolean, sellHeavy: boolean, scale = 1): EntryBar => ({
+      time,
+      open: 100,
+      high: 110,
+      low: 100,
+      close: closeHigh ? 108 : 102,
+      totalBuy: (sellHeavy ? 40 : 65) * scale,
+      totalSell: (sellHeavy ? 60 : 35) * scale,
+    });
+    const row = (side: 'BUY' | 'SELL', strength: string, prog: number) => ({
+      deltaSide: side,
+      deltaStrengthState: strength,
+      directionalProgressATR: prog,
+    });
+    const bars = [
+      bar(0, true, false),
+      bar(1, true, false),
+      bar(2, false, true),
+      bar(3, false, true),
+      bar(4, false, true),
+      bar(5, false, true),
+      bar(6, true, true),
+      bar(7, false, false, 0.2),
+    ];
+    const progress = [
+      row('BUY', 'NORMAL', 0.2),
+      row('BUY', 'NORMAL', 0.2),
+      row('SELL', 'NORMAL', 0.3),
+      row('SELL', 'NORMAL', 0.24),
+      row('SELL', 'NORMAL', 0.24),
+      row('SELL', 'NORMAL', 0.2),
+      row('SELL', 'STRONG', 0.66),
+      row('BUY', 'STRONG', 0.66),
+    ];
+    expect(entryVolumeThin(bars, 7)).toBe(true);
+    expect(entryVolumeThin(bars, 6)).toBe(false);
+    const marks = entryMarks(bars, null, progress);
+    expect(marks.get(6)?.price).toBeGreaterThan(100);
+    expect(marks.get(7)?.short).toBe('B5');
+    expect(marks.get(7)?.price).toBeNull();
+    expect(marks.get(7)?.tip).toContain('Volume is small');
+  });
+});
+
+describe('11 Nov 10:00 NEAR', () => {
+  it('does not join the sell on the candle that closed on a new low', () => {
+    const rows: Array<[number, number, number, number, number, number, number, number]> = [
+      [1680, 3.606, 3.649, 3.604, 3.641, 1786734, 6499531, 875389],
+      [1695, 3.642, 3.643, 3.616, 3.628, 695802, 2523092, 281471],
+      [1710, 3.629, 3.634, 3.606, 3.628, 755643, 2734132, 385727],
+      [1725, 3.627, 3.692, 3.622, 3.685, 2153437, 7892263, 1478246],
+      [1740, 3.684, 3.706, 3.676, 3.691, 2080221, 7676151, 1135069],
+      [1755, 3.69, 3.694, 3.657, 3.657, 1004009, 3689777, 434032],
+      [1770, 3.658, 3.666, 3.623, 3.624, 1031761, 3760470, 504150],
+      [1785, 3.624, 3.652, 3.618, 3.64, 1031570, 3747716, 542765],
+      [1800, 3.639, 3.697, 3.631, 3.694, 1081942, 3969678, 577539],
+      [1815, 3.694, 3.703, 3.679, 3.683, 868803, 3207701, 417546],
+      [1830, 3.683, 3.724, 3.672, 3.713, 1102837, 4086037, 626955],
+      [1845, 3.713, 3.725, 3.709, 3.718, 971969, 3611542, 538017],
+      [1860, 3.719, 3.722, 3.69, 3.715, 1696377, 6282926, 575734],
+      [1875, 3.715, 3.718, 3.689, 3.689, 551800, 2043527, 208187],
+      [1890, 3.689, 3.697, 3.665, 3.672, 497968, 1833053, 162438],
+      [1905, 3.673, 3.687, 3.644, 3.679, 1157375, 4239271, 748871],
+      [1920, 3.68, 3.697, 3.677, 3.69, 481076, 1774772, 241994],
+      [1935, 3.69, 3.69, 3.662, 3.666, 430878, 1584192, 164244],
+      [1950, 3.667, 3.673, 3.642, 3.647, 524823, 1918810, 257364],
+      [1965, 3.647, 3.673, 3.646, 3.656, 565630, 2069063, 294230],
+      [1980, 3.657, 3.664, 3.644, 3.649, 342736, 1251752, 192974],
+      [1995, 3.649, 3.672, 3.643, 3.655, 407991, 1493146, 217233],
+      [2010, 3.656, 3.665, 3.629, 3.632, 698180, 2543193, 342176],
+      [2025, 3.632, 3.64, 3.618, 3.619, 682758, 2477749, 340038],
+      [2040, 3.62, 3.64, 3.594, 3.594, 828929, 2997322, 314756],
+    ];
+    const bars: EntryBar[] = rows.map(([time, open, high, low, close, vol, quote, taker]) => {
+      const buyFrac = Math.min(0.95, Math.max(0.05, taker / vol));
+      const totalBuy = quote * buyFrac;
+      return { time, open, high, low, close, totalBuy, totalSell: quote - totalBuy };
+    });
+    const sell = entryMarks(bars, null, annotateDeltaProgress(bars)).get(2040);
+    expect(sell?.side).not.toBe('sell');
   });
 });
 
