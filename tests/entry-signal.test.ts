@@ -268,6 +268,14 @@ describe('decideEntry states', () => {
     expect(decideEntry(cur, prev, priors, null)).toEqual({ side: 'buy', state: 6 });
   });
 
+  it('6: a buy that still closes higher is not a sell', () => {
+    const movedSell = read({ deltaSide: 'SELL', prog: 0.99, strength: 'STRONG', close: 3.2, ...closedLow });
+    const prev = read({ deltaSide: 'BUY', prog: 0.87, strength: 'STRONG', agg: 0.18, pas: 0.85, chip: 'BUYERS', close: 3.162, ...closedHigh });
+    const cur = read({ deltaSide: 'BUY', prog: 0.24, strength: 'NORMAL', agg: 0.06, pas: 0.2, chip: 'BUYERS', upside: 'BUYERS_WIN', downside: 'BIDS_HOLD', close: 3.167 });
+    const priors = [movedSell, movedSell, read(), read(), read(), prev];
+    expect(decideEntry(cur, prev, priors, { side: 'buy' })?.side).not.toBe('sell');
+  });
+
   it('7: same buy effort, response fades, sell is marked on that candle', () => {
     const prev = read({ deltaSide: 'BUY', delta: 497_000, prog: 0.9, strength: 'STRONG' });
     const cur = read({ deltaSide: 'BUY', delta: 410_000, prog: 0.3, strength: 'STRONG', ...closedHigh });

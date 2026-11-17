@@ -600,6 +600,12 @@ function closeStillDown(cur: EntryRead, prev: EntryRead | null): boolean {
   return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
 }
 
+/** This close is still higher than the previous close. Buyers are getting price up. */
+function closeStillUp(cur: EntryRead, prev: EntryRead | null): boolean {
+  if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+  return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
+}
+
 function weakBounce(cur: EntryRead, prev: EntryRead | null, effort: EffortSide): boolean {
   if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
   // Against the effort, but not a real answer. Progress with the effort is not a bounce.
@@ -991,7 +997,10 @@ export function decideEntry(
     const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
     const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
     const groups = fight(cur);
-    if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
+    // A smaller push is not a fade while that side still gets a higher or lower close.
+    // 17 Nov 05:15 NEAR: buyers closed above 05:00, then price kept rising. Not a sell.
+    const stillExtending = stalledSide === 'BUY' ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+    if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids) && !stillExtending) {
       if (!drifted(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
       return keptInMarket(joining === 'BUY' ? 'buy' : 'sell', 6, market);
     }
@@ -1008,7 +1017,8 @@ export function decideEntry(
     const fadedFight = prevSide === 'BUY'
       ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === 'BUYERS_WIN')
       : fight(cur).aggSellers && (fight(cur).bids || cur.downside === 'SELLERS_WIN');
-    if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
+    const stillExtending = prevSide === 'BUY' ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+    if (sameEffort && responseOkBefore && responseFaded && fadedFight && !stillExtending) {
       if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
       return keptInMarket(prevSide === 'BUY' ? 'sell' : 'buy', 7, market);
     }

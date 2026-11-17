@@ -17081,6 +17081,10 @@ var process = globalThis.process || { env: {} };
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
     return (cur.close - prev.close) / prev.close < -ENTRY_CLOSE_FLAT;
   }
+  function closeStillUp(cur, prev) {
+    if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
+    return (cur.close - prev.close) / prev.close > ENTRY_CLOSE_FLAT;
+  }
   function weakBounce(cur, prev, effort) {
     if (!known(cur.close) || !prev || !known(prev.close) || !(prev.close > 0)) return false;
     if (cur.deltaSide !== effort || cur.prog == null || cur.prog >= 0 || cur.prog <= -ENTRY_REAL_PROG) return false;
@@ -17339,7 +17343,8 @@ var process = globalThis.process || { env: {} };
       const prevMoved = prev.prog != null && prev.prog >= ENTRY_REAL_PROG && aggLeans(prev, stalledSide) && passiveAgrees(prev, stalledSide);
       const otherAlreadyMoved = recent.some((row) => row.deltaSide === joining && row.prog != null && row.prog >= ENTRY_REAL_PROG);
       const groups = fight(cur);
-      if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids)) {
+      const stillExtending = stalledSide === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+      if (prevMoved && otherAlreadyMoved && (groups.asks || groups.bids) && !stillExtending) {
         if (!drifted(recent, stalledSide) || !fadeStands(recent, cur, prev, stalledSide)) return null;
         return keptInMarket(joining === "BUY" ? "buy" : "sell", 6, market);
       }
@@ -17351,7 +17356,8 @@ var process = globalThis.process || { env: {} };
       const responseOkBefore = prev.prog >= ENTRY_REAL_PROG;
       const responseFaded = cur.prog < ENTRY_REAL_PROG && cur.prog < prev.prog * ENTRY_RESPONSE_FADE;
       const fadedFight = prevSide === "BUY" ? fight(cur).aggBuyers && (fight(cur).asks || cur.upside === "BUYERS_WIN") : fight(cur).aggSellers && (fight(cur).bids || cur.downside === "SELLERS_WIN");
-      if (sameEffort && responseOkBefore && responseFaded && fadedFight) {
+      const stillExtending = prevSide === "BUY" ? closeStillUp(cur, prev) : closeStillDown(cur, prev);
+      if (sameEffort && responseOkBefore && responseFaded && fadedFight && !stillExtending) {
         if (!inTrend(recent, prevSide) || !fadeStands(recent, cur, prev, prevSide)) return null;
         return keptInMarket(prevSide === "BUY" ? "sell" : "buy", 7, market);
       }
