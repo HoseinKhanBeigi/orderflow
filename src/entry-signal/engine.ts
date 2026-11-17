@@ -427,20 +427,71 @@ function priceDrift(recent: EntryRead[]): EffortSide | null {
   return null;
 }
 
-/** The last 16 closes. A real swing, not the 6-candle trend. */
-const SWING_BARS = 16;
-const SWING_DRIFT = 0.005;
+/** Candles on each side a swing point has to beat. Confirmed only after the right side has closed. */
+export const SWING_PIVOT_SIDE = 2;
+/** How far back to look for the last two swing highs and lows. */
+const STRUCTURE_LOOKBACK = 64;
 
-function swingSide(prior: EntryRead[]): EffortSide | null {
-  const closes = prior.slice(-SWING_BARS).map((row) => row.close).filter((n): n is number => known(n));
-  if (closes.length < SWING_BARS) return null;
-  const first = closes[0]!;
-  const last = closes[closes.length - 1]!;
-  if (!(first > 0)) return null;
-  const change = (last - first) / first;
-  if (change <= -SWING_DRIFT) return 'SELL';
-  if (change >= SWING_DRIFT) return 'BUY';
-  return null;
+export interface SwingPoint {
+  index: number;
+  price: number;
+}
+
+/**
+ * Confirmed swing highs and lows, oldest first.
+ * A swing high beats the highs of SWING_PIVOT_SIDE candles on each side; equal highs on the
+ * right still count, so a double top keeps the first one. Lows are the mirror.
+ * Only rows already in `rows` are read, so nothing here looks past the last closed candle.
+ */
+export function swingPoints(rows: Array<{ high: number | null; low: number | null }>): { highs: SwingPoint[]; lows: SwingPoint[] } {
+  const highs: SwingPoint[] = [];
+  const lows: SwingPoint[] = [];
+  const k = SWING_PIVOT_SIDE;
+  for (let j = k; j < rows.length - k; j++) {
+    const h = rows[j]!.high;
+    const l = rows[j]!.low;
+    let isHigh = known(h);
+    let isLow = known(l);
+    for (let d = 1; d <= k && (isHigh || isLow); d++) {
+      const left = rows[j - d]!;
+      const right = rows[j + d]!;
+      if (isHigh && (!known(left.high) || !known(right.high) || left.high >= h! || right.high > h!)) isHigh = false;
+      if (isLow && (!known(left.low) || !known(right.low) || left.low <= l! || right.low < l!)) isLow = false;
+    }
+    if (isHigh) highs.push({ index: j, price: h! });
+    if (isLow) lows.push({ index: j, price: l! });
+  }
+  return { highs, lows };
+}
+
+export type SwingStructure = 'UP' | 'DOWN' | 'RANGE';
+
+/**
+ * Market structure from the last two confirmed swing highs and lows.
+ * UP: higher high and higher low. DOWN: lower high and lower low. Anything else is RANGE.
+ * A close through the last swing low ends UP, and a close through the last swing high ends DOWN,
+ * even before the next swing point is confirmed.
+ */
+export function swingStructure(prior: Array<{ high: number | null; low: number | null; close: number | null }>): SwingStructure {
+  const rows = prior.slice(-STRUCTURE_LOOKBACK);
+  const { highs, lows } = swingPoints(rows);
+  if (highs.length < 2 || lows.length < 2) return 'RANGE';
+  const [h1, h2] = highs.slice(-2) as [SwingPoint, SwingPoint];
+  const [l1, l2] = lows.slice(-2) as [SwingPoint, SwingPoint];
+  const close = rows[rows.length - 1]?.close;
+  if (h2.price > h1.price && l2.price > l1.price) {
+    return known(close) && close < l2.price ? 'RANGE' : 'UP';
+  }
+  if (h2.price < h1.price && l2.price < l1.price) {
+    return known(close) && close > h2.price ? 'RANGE' : 'DOWN';
+  }
+  return 'RANGE';
+}
+
+/** Swing structure as the side the market is on, for keptInMarket. RANGE has no side. */
+function structureSide(prior: EntryRead[]): EffortSide | null {
+  const structure = swingStructure(prior);
+  return structure === 'UP' ? 'BUY' : structure === 'DOWN' ? 'SELL' : null;
 }
 
 /**
@@ -887,7 +938,7 @@ export function decideEntry(
 ): EntrySignal | null {
   const recent = cur ? setupContext(priors) : null;
   if (!cur || !recent) return null;
-  const market = swingSide(priors);
+  const market = structureSide(priors);
   const bounce = bounceFailed(recent, prev, cur);
   if (bounce && inTrend(recent, bounce.side === 'sell' ? 'SELL' : 'BUY')) return keptInMarket(bounce.side, bounce.state, market);
   const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;

@@ -6,6 +6,8 @@ import {
   decideEntry,
   entryMarks,
   levelMarks,
+  swingPoints,
+  swingStructure,
   trapMarks,
   type EntryBar,
   type EntryRead,
@@ -51,6 +53,35 @@ function sideTries(side: 'BUY' | 'SELL', n: number, over: Partial<EntryRead> = {
 const closedHigh = { upside: 'BUYERS_WIN', downside: 'BIDS_HOLD' } as const;
 /** Closed low in range: upside ASKS_HOLD, downside SELLERS_WIN. */
 const closedLow = { upside: 'ASKS_HOLD', downside: 'SELLERS_WIN' } as const;
+
+describe('swing structure', () => {
+  /** One candle per value, 0.4 tall around it. */
+  const path = (mids: number[]) => mids.map((m) => ({ high: m + 0.2, low: m - 0.2, close: m }));
+
+  it('higher highs and higher lows are UP', () => {
+    // lows at 10, 11 / highs at 13, 14
+    expect(swingStructure(path([12, 11, 10, 11, 12, 13, 12, 11, 12, 13, 14, 13, 12.5]))).toBe('UP');
+  });
+
+  it('lower highs and lower lows are DOWN', () => {
+    expect(swingStructure(path([12, 13, 14, 13, 12, 11, 12, 13, 12, 11, 10, 11, 11.5]))).toBe('DOWN');
+  });
+
+  it('a straight line has no swing points, so it is RANGE', () => {
+    expect(swingStructure(path(Array.from({ length: 20 }, (_, i) => 10 - i * 0.1)))).toBe('RANGE');
+  });
+
+  it('a close back through the last swing low ends UP', () => {
+    // Same UP path, then the close drops under the last swing low (11 − 0.2).
+    expect(swingStructure(path([12, 11, 10, 11, 12, 13, 12, 11, 12, 13, 14, 13, 12, 10.5]))).toBe('RANGE');
+  });
+
+  it('a swing point is not used until the candles to its right have closed', () => {
+    // The last low (index 9) has only one candle after it, so it is not a swing low yet.
+    const { lows } = swingPoints(path([12, 11, 10, 11, 12, 13, 12, 11, 10.5, 9, 9.5]));
+    expect(lows.map((p) => p.index)).toEqual([2]);
+  });
+});
 
 describe('barBattleVerdict', () => {
   it('reads the close position in range', () => {
@@ -141,10 +172,13 @@ describe('decideEntry states', () => {
   });
 
   it('3: a bounce buy inside a bearish swing stays quiet', () => {
-    const priors = Array.from({ length: 16 }, (_, i) => read({
-      close: 3.4 - i * 0.01,
+    // Falling in legs: swing high 3.42, low 3.39, lower high 3.41, lower low 3.37. Structure is DOWN.
+    const closes = [3.40, 3.41, 3.42, 3.41, 3.40, 3.39, 3.40, 3.41, 3.40, 3.39, 3.38, 3.37, 3.38, 3.385, 3.38, 3.37];
+    const priors = closes.map((close) => read({
+      close, high: close + 0.002, low: close - 0.002,
       deltaSide: 'SELL', strength: 'STRONG', prog: 0.7, agg: -0.4, pas: -0.3,
     }));
+    expect(swingStructure(priors)).toBe('DOWN');
     const cur = read({ strength: 'STRONG', deltaSide: 'BUY', prog: 0.1, agg: 0.25, pas: -0.45, close: 3.24, ...closedLow });
     expect(decideEntry(cur, priors[15]!, priors, null)).toBeNull();
   });
