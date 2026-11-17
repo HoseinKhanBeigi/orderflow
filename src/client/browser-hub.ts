@@ -32,19 +32,7 @@ import {
   failReclaimLabelY,
 } from '../level-interaction/index.js';
 import { DEFAULT_IMBALANCE_RATIO, SpotFlowEngine } from '../spot/index.js';
-import {
-  BookFlowRecorder,
-  ENTRY_DETAIL,
-  ENTRY_PRIOR_BARS,
-  bookContextLabel,
-  bookContextTip,
-  couldntMarks,
-  entryMarks,
-  levelMarks,
-  trapMarks,
-  type BookContext,
-  type BookLevelMark,
-} from '../entry-signal/index.js';
+import { ENTRY_DETAIL, ENTRY_PRIOR_BARS, couldntMarks, entryMarks, levelMarks, trapMarks } from '../entry-signal/index.js';
 
 const WATCHLIST_KEY = 'orderflow.activeWatchlist';
 const FOOTPRINT_PUSH_MS = 250;
@@ -453,8 +441,6 @@ class BrowserOrderFlowHub {
 }
 
 const hub = new BrowserOrderFlowHub();
-/** Live book flows per minute, for the book context under each candle. Kept for this page session only. */
-const bookRecorder = new BookFlowRecorder();
 
 declare global {
   interface Window {
@@ -481,10 +467,6 @@ declare global {
       levelMarks: typeof levelMarks;
       ENTRY_DETAIL: typeof ENTRY_DETAIL;
       ENTRY_PRIOR_BARS: typeof ENTRY_PRIOR_BARS;
-      recordBook: (key: string, nowMs: number, marks: BookLevelMark[]) => void;
-      bookContexts: (key: string, tfMinutes: number) => Map<number, BookContext>;
-      bookContextLabel: typeof bookContextLabel;
-      bookContextTip: typeof bookContextTip;
     };
   }
 }
@@ -510,8 +492,4 @@ globalThis.window.OrderFlowClient = {
   levelMarks,
   ENTRY_DETAIL,
   ENTRY_PRIOR_BARS,
-  recordBook: (key, nowMs, marks) => bookRecorder.update(key, nowMs, marks),
-  bookContexts: (key, tfMinutes) => bookRecorder.contexts(key, tfMinutes),
-  bookContextLabel,
-  bookContextTip,
 };

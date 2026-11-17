@@ -7,8 +7,6 @@
  * Nothing here reads a later candle than the one being marked.
  */
 
-import { bookAllows, bookContextLabel, type BookContext } from './book-context.js';
-
 export const ENTRY_LITTLE_PROG = 0.25;
 export const ENTRY_REAL_PROG = 0.5;
 export const ENTRY_RESPONSE_PROG = 0.8;
@@ -111,8 +109,6 @@ export interface EntryRead {
   failDown: boolean;
   /** Price went through that ceiling and the close came back below it. */
   failUp: boolean;
-  /** What the live order book did during this candle. Null when the candle was not watched live. */
-  book?: BookContext | null;
 }
 
 export interface EntrySignal {
@@ -940,19 +936,6 @@ export function decideEntry(
   priors: EntryRead[],
   prevSignal: { side: EntrySide } | null,
 ): EntrySignal | null {
-  const signal = decideFromCandles(cur, prev, priors, prevSignal);
-  // Live book, when this candle has it: a buy needs bids that are not pulling or giving way,
-  // a join needs the other side not defending. Candles without book data keep the candle rules.
-  if (signal && !bookAllows(cur?.book, signal.side, signal.state)) return null;
-  return signal;
-}
-
-function decideFromCandles(
-  cur: EntryRead | null,
-  prev: EntryRead | null,
-  priors: EntryRead[],
-  prevSignal: { side: EntrySide } | null,
-): EntrySignal | null {
   const recent = cur ? setupContext(priors) : null;
   if (!cur || !recent) return null;
   const market = structureSide(priors);
@@ -1141,18 +1124,13 @@ export function entryMarks(
   bars: EntryBar[],
   liveTime: number | null,
   progress: EntryProgressRow[],
-  book?: ReadonlyMap<number, BookContext> | null,
 ): Map<number, EntryMark> {
   const marks = new Map<number, EntryMark>();
   if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
   const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
   const last = lastIsLive ? bars.length - 1 : bars.length;
   const reads: EntryRead[] = [];
-  for (let i = 0; i < last; i++) {
-    const read = barEntryRead(bars, i, progress);
-    read.book = book?.get(bars[i]!.time) ?? null;
-    reads.push(read);
-  }
+  for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
   let openSide: EntrySide | null = null;
   let openState: EntryState | null = null;
   for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
@@ -1210,7 +1188,6 @@ export function entryMarks(
           `Agg ${fmtSignedPct(cur.agg)} · Pas ${fmtSignedPct(cur.pas)}`,
           `A repl ${fmtNotional(cur.askRepl)} · B repl ${fmtNotional(cur.bidRepl)}`,
           `Upside ${lower(cur.upside)} · downside ${lower(cur.downside)}`,
-          cur.book ? `Book ${bookContextLabel(cur.book)}` : 'Book not watched live',
         ].join('\n'),
       });
     }
