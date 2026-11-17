@@ -1597,9 +1597,9 @@ function snapChartToLive() {
 }
 
 function fpBottomPad(mode = fpDeltaProgressMode) {
-  if (mode === 'OFF') return 276;
-  if (mode === 'EFFORT_RESPONSE') return 366;
-  return 332;
+  if (mode === 'OFF') return 312;
+  if (mode === 'EFFORT_RESPONSE') return 402;
+  return 368;
 }
 
 function mountCanvas(canvas, cssW, cssH) {
@@ -3921,6 +3921,7 @@ const BATTLE_ROWS_Y = 118;
 const BATTLE_ROW_H = 15;
 const REPLENISH_ROWS_Y = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 8;
 const IMBALANCE_ROWS_Y = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
+const PACE_ROWS_Y = IMBALANCE_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 
 /**
  * Resting liquidity that had to come back during the candle.
@@ -4057,6 +4058,86 @@ function drawBarLiquidityImbalance(ctx, imb, cx, y0, maxW) {
       `Bids held ${fmtVolShort(imb.passiveBids)} · asks held ${fmtVolShort(imb.passiveAsks)}`,
       `Aggressive order imbalance ${formatImbalancePct(imb.aggressive)} · ${aggressiveSide} heavier`,
       `Aggressive buys ${fmtVolShort(imb.buy)} · aggressive sells ${fmtVolShort(imb.sell)}`,
+    ].join('\n'),
+  };
+}
+
+/**
+ * Change in the close-split versus the previous candle, in share of volume.
+ * Absorption is the part whose close did not stick. Consumption is the part that did.
+ */
+function barPace(bar, prev) {
+  if (!prev) return null;
+  const split = (row) => {
+    const buy = Math.max(0, row.totalBuy ?? 0);
+    const sell = Math.max(0, row.totalSell ?? 0);
+    const vol = buy + sell;
+    if (vol <= 0) return null;
+    const range = row.high - row.low;
+    const closePos = range > 0 ? Math.min(1, Math.max(0, (row.close - row.low) / range)) : 0.5;
+    const buyShare = buy / vol;
+    const sellShare = sell / vol;
+    return {
+      absorbBuy: buyShare * (1 - closePos),
+      consumeBuy: buyShare * closePos,
+      absorbSell: sellShare * closePos,
+      consumeSell: sellShare * (1 - closePos),
+    };
+  };
+  const cur = split(bar);
+  const before = split(prev);
+  if (!cur || !before) return null;
+  return {
+    absorbBuy: cur.absorbBuy - before.absorbBuy,
+    consumeBuy: cur.consumeBuy - before.consumeBuy,
+    absorbSell: cur.absorbSell - before.absorbSell,
+    consumeSell: cur.consumeSell - before.consumeSell,
+  };
+}
+
+function drawBarPace(ctx, pace, cx, y0, maxW) {
+  if (!pace) return null;
+  const narrow = maxW < 108;
+  const flat = (n) => Math.abs(n) < 0.005;
+  const absFlat = flat(pace.absorbBuy) && flat(pace.absorbSell);
+  const conFlat = flat(pace.consumeBuy) && flat(pace.consumeSell);
+  const rows = [
+    {
+      text: narrow
+        ? `Δa ${formatImbalancePct(pace.absorbSell)}/${formatImbalancePct(pace.absorbBuy)}`
+        : `Δabs S ${formatImbalancePct(pace.absorbSell)} B ${formatImbalancePct(pace.absorbBuy)}`,
+      color: absFlat ? '#94a3b8' : pace.absorbSell >= pace.absorbBuy ? '#fca5a5' : '#fbbf24',
+    },
+    {
+      text: narrow
+        ? `Δc ${formatImbalancePct(pace.consumeSell)}/${formatImbalancePct(pace.consumeBuy)}`
+        : `Δcon Bd ${formatImbalancePct(pace.consumeSell)} Ak ${formatImbalancePct(pace.consumeBuy)}`,
+      color: conFlat ? '#94a3b8' : pace.consumeSell >= pace.consumeBuy ? '#fca5a5' : '#86efac',
+    },
+  ];
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '600 10px JetBrains Mono, monospace';
+  rows.forEach((row, i) => {
+    const y = y0 + i * BATTLE_ROW_H;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.strokeText(row.text, cx, y, maxW - 2);
+    ctx.fillStyle = row.color;
+    ctx.fillText(row.text, cx, y, maxW - 2);
+  });
+  ctx.restore();
+  return {
+    x0: cx - maxW / 2,
+    x1: cx + maxW / 2,
+    y0: y0 - 8,
+    y1: y0 + BATTLE_ROW_H * 2 - 4,
+    tip: [
+      'Change versus the previous candle',
+      `Sell absorbed ${formatImbalancePct(pace.absorbSell)} · buy absorbed ${formatImbalancePct(pace.absorbBuy)}`,
+      `Bids consumed ${formatImbalancePct(pace.consumeSell)} · asks consumed ${formatImbalancePct(pace.consumeBuy)}`,
+      'Positive means that share of the candle grew since the candle before.',
     ].join('\n'),
   };
 }
@@ -4701,7 +4782,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = IMBALANCE_ROWS_Y + BATTLE_ROW_H * 2 + 6;
+const DELTA_LABEL_FIRST_OFFSET = PACE_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -5467,6 +5548,8 @@ function drawFootprint(symbol = selectedSymbol) {
       if (replenishHit) view.footHits.push(replenishHit);
       const imbalanceHit = drawBarLiquidityImbalance(footCtx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4);
       if (imbalanceHit) view.footHits.push(imbalanceHit);
+      const paceHit = drawBarPace(footCtx, barPace(bar, bars[startIdx + i - 1]), cx, footY + PACE_ROWS_Y, barWidth - 4);
+      if (paceHit) view.footHits.push(paceHit);
       const deltaHit = drawDeltaProgressLabels(footCtx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
       if (deltaHit?.tip) view.footHits.push(deltaHit);
     }

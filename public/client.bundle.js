@@ -16972,18 +16972,46 @@ var process = globalThis.process || { env: {} };
     if (change >= 25e-4) return "BUY";
     return null;
   }
-  var SWING_BARS = 16;
-  var SWING_DRIFT = 5e-3;
-  function swingSide(prior) {
-    const closes = prior.slice(-SWING_BARS).map((row) => row.close).filter((n) => known(n));
-    if (closes.length < SWING_BARS) return null;
-    const first = closes[0];
-    const last = closes[closes.length - 1];
-    if (!(first > 0)) return null;
-    const change = (last - first) / first;
-    if (change <= -SWING_DRIFT) return "SELL";
-    if (change >= SWING_DRIFT) return "BUY";
-    return null;
+  var SWING_PIVOT_SIDE = 2;
+  var STRUCTURE_LOOKBACK = 64;
+  function swingPoints(rows) {
+    const highs = [];
+    const lows = [];
+    const k = SWING_PIVOT_SIDE;
+    for (let j = k; j < rows.length - k; j++) {
+      const h = rows[j].high;
+      const l = rows[j].low;
+      let isHigh = known(h);
+      let isLow = known(l);
+      for (let d = 1; d <= k && (isHigh || isLow); d++) {
+        const left = rows[j - d];
+        const right = rows[j + d];
+        if (isHigh && (!known(left.high) || !known(right.high) || left.high >= h || right.high > h)) isHigh = false;
+        if (isLow && (!known(left.low) || !known(right.low) || left.low <= l || right.low < l)) isLow = false;
+      }
+      if (isHigh) highs.push({ index: j, price: h });
+      if (isLow) lows.push({ index: j, price: l });
+    }
+    return { highs, lows };
+  }
+  function swingStructure(prior) {
+    const rows = prior.slice(-STRUCTURE_LOOKBACK);
+    const { highs, lows } = swingPoints(rows);
+    if (highs.length < 2 || lows.length < 2) return "RANGE";
+    const [h1, h2] = highs.slice(-2);
+    const [l1, l2] = lows.slice(-2);
+    const close = rows[rows.length - 1]?.close;
+    if (h2.price > h1.price && l2.price > l1.price) {
+      return known(close) && close < l2.price ? "RANGE" : "UP";
+    }
+    if (h2.price < h1.price && l2.price < l1.price) {
+      return known(close) && close > h2.price ? "RANGE" : "DOWN";
+    }
+    return "RANGE";
+  }
+  function structureSide(prior) {
+    const structure = swingStructure(prior);
+    return structure === "UP" ? "BUY" : structure === "DOWN" ? "SELL" : null;
   }
   function keptInMarket(side2, state, market) {
     const against = market === "SELL" && side2 === "buy" || market === "BUY" && side2 === "sell";
@@ -17251,7 +17279,7 @@ var process = globalThis.process || { env: {} };
   function decideEntry(cur, prev, priors, prevSignal) {
     const recent = cur ? setupContext(priors) : null;
     if (!cur || !recent) return null;
-    const market = swingSide(priors);
+    const market = structureSide(priors);
     const bounce = bounceFailed(recent, prev, cur);
     if (bounce && inTrend(recent, bounce.side === "sell" ? "SELL" : "BUY")) return keptInMarket(bounce.side, bounce.state, market);
     const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
