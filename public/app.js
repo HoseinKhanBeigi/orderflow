@@ -1011,6 +1011,8 @@ function askChangeTip(depth) {
 function updateSummary(s) {
   const market = s.market === 'spot' ? 'spot' : 'perp';
   summariesByMarket[market][s.symbol] = s;
+  const lrWindow = s.windows?.['1m'] ?? s.windows?.['10s'];
+  recordBookSample(market, s.symbol, lrWindow?.liquidityResponse?.levels);
   if (market === 'perp') {
     summaries[s.symbol] = s;
     // Never paint Market Battle for a different coin (stops BTC flash on /sol).
@@ -1248,6 +1250,7 @@ function renderSpotCompare() {
 function ingestSpotFlow(snapshot) {
   if (!snapshot?.symbol) return;
   spotFlowBySymbol[snapshot.symbol] = snapshot;
+  recordBookSample('spot', snapshot.symbol, snapshot.liquidityResponse?.levels);
   const w = spotWindow(snapshot, 1) ?? snapshot.aggregated;
   if (isSpotView()) {
     const el = $(`delta-${snapshot.symbol}`);
@@ -4019,16 +4022,39 @@ function barLiquidityImbalance(bar) {
   };
 }
 
-function drawBarLiquidityImbalance(ctx, imb, cx, y0, maxW) {
+const BOOK_SIDE_COLOR = {
+  DEFENDING: '#60a5fa',
+  STACKING: '#93c5fd',
+  GIVING_WAY: '#f87171',
+  PULLING: '#f472b6',
+  MIXED: '#94a3b8',
+  QUIET: '#64748b',
+};
+
+/** Colour of the book row: the side that is holding, or the side that is leaving. */
+function bookRowColor(book) {
+  const strong = (s) => s === 'DEFENDING' || s === 'STACKING';
+  const weak = (s) => s === 'PULLING' || s === 'GIVING_WAY';
+  if (strong(book.bids) && !strong(book.asks)) return '#60a5fa';
+  if (strong(book.asks) && !strong(book.bids)) return '#fbbf24';
+  if (weak(book.bids) && !weak(book.asks)) return BOOK_SIDE_COLOR.PULLING;
+  if (weak(book.asks) && !weak(book.bids)) return BOOK_SIDE_COLOR.PULLING;
+  return '#94a3b8';
+}
+
+function drawBarLiquidityImbalance(ctx, imb, cx, y0, maxW, book = null) {
   if (!imb) return null;
   const narrow = maxW < 92;
   const passiveSide = imb.passive >= 0 ? 'bids' : 'asks';
   const aggressiveSide = imb.aggressive >= 0 ? 'buys' : 'sells';
+  const bookLabel = book ? window.OrderFlowClient?.bookContextLabel?.(book) : null;
   const rows = [
-    {
-      text: narrow ? `Pas ${formatImbalancePct(imb.passive)}` : `passive ${formatImbalancePct(imb.passive)}`,
-      color: Math.abs(imb.passive) < 0.05 ? '#94a3b8' : imb.passive > 0 ? '#60a5fa' : '#fbbf24',
-    },
+    bookLabel
+      ? { text: bookLabel, color: bookRowColor(book) }
+      : {
+        text: narrow ? `Pas ${formatImbalancePct(imb.passive)}` : `passive ${formatImbalancePct(imb.passive)}`,
+        color: Math.abs(imb.passive) < 0.05 ? '#94a3b8' : imb.passive > 0 ? '#60a5fa' : '#fbbf24',
+      },
     {
       text: narrow ? `Agg ${formatImbalancePct(imb.aggressive)}` : `aggressive ${formatImbalancePct(imb.aggressive)}`,
       color: Math.abs(imb.aggressive) < 0.05 ? '#94a3b8' : imb.aggressive > 0 ? '#86efac' : '#fca5a5',
@@ -4053,6 +4079,7 @@ function drawBarLiquidityImbalance(ctx, imb, cx, y0, maxW) {
     y0: y0 - 8,
     y1: y0 + BATTLE_ROW_H * 2 - 4,
     tip: [
+      ...(bookLabel ? [window.OrderFlowClient.bookContextTip(book), ''] : []),
       `Passive liquidity imbalance ${formatImbalancePct(imb.passive)} · ${passiveSide} heavier`,
       `Bids held ${fmtVolShort(imb.passiveBids)} · asks held ${fmtVolShort(imb.passiveAsks)}`,
       `Aggressive order imbalance ${formatImbalancePct(imb.aggressive)} · ${aggressiveSide} heavier`,
@@ -5269,7 +5296,8 @@ function drawFootprint(symbol = selectedSymbol) {
   const couldntByTime = couldntMarks(bars, nowBucket);
   const trapByTime = trapMarks(bars, nowBucket);
   const levelByTime = levelMarks(bars, nowBucket);
-  const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress), bars, nowBucket);
+  const bookByTime = bookContextsFor(symbol);
+  const entryByTime = attachLiveFuelContext(symbol, entryMarks(bars, nowBucket, deltaProgress, bookByTime), bars, nowBucket);
 
   for (let i = 0; i < visible.length; i++) {
     const bar = visible[i];
@@ -5465,7 +5493,7 @@ function drawFootprint(symbol = selectedSymbol) {
       drawBarBattlePercents(footCtx, barBattlePercents(bar), cx, footY + BATTLE_ROWS_Y, barWidth - 6);
       const replenishHit = drawBarReplenishment(footCtx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
       if (replenishHit) view.footHits.push(replenishHit);
-      const imbalanceHit = drawBarLiquidityImbalance(footCtx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4);
+      const imbalanceHit = drawBarLiquidityImbalance(footCtx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4, bookByTime?.get(bar.time));
       if (imbalanceHit) view.footHits.push(imbalanceHit);
       const deltaHit = drawDeltaProgressLabels(footCtx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
       if (deltaHit?.tip) view.footHits.push(deltaHit);
@@ -6196,11 +6224,25 @@ const ENTRY_PRIOR_BARS = window.OrderFlowClient?.ENTRY_PRIOR_BARS ?? 6;
 const ENTRY_DETAIL = window.OrderFlowClient?.ENTRY_DETAIL ?? {};
 
 /** Closed candles the entry script would have taken. The number is the state. */
-function entryMarks(bars, liveTime, progress) {
+function entryMarks(bars, liveTime, progress, book = null) {
   const impl = window.OrderFlowClient?.entryMarks;
   if (!impl || !bars?.length) return new Map();
   const rows = progress || annotateDeltaProgress(bars, { lastIsLive: bars[bars.length - 1]?.time === liveTime });
-  return impl(bars, liveTime, rows);
+  return impl(bars, liveTime, rows, book);
+}
+
+/** Feeds one live book sample (top levels each side) into the per-minute book flows. */
+function recordBookSample(market, symbol, levels) {
+  const record = window.OrderFlowClient?.recordBook;
+  if (!record || !symbol || !Array.isArray(levels) || !levels.length) return;
+  record(`${market}:${symbol}`, Date.now(), levels);
+}
+
+/** Book context per candle (bar time → context) for candles watched live this session. */
+function bookContextsFor(symbol, tfMinutes = chartTfMinutes) {
+  const contexts = window.OrderFlowClient?.bookContexts;
+  if (!contexts || !symbol) return null;
+  return contexts(`${footprintMarket()}:${symbol}`, tfMinutes);
 }
 
 /** Live fuel lead, for the newest state only. Older candles never stored this. */
@@ -6255,7 +6297,7 @@ function evaluateSymbolAlertsOnTf(symbol, tfMinutes) {
   const progress = annotateDeltaProgress(bars, { lastIsLive });
   const index = lastIsLive ? bars.length - 2 : bars.length - 1;
   if (index < ENTRY_PRIOR_BARS) return;
-  const signal = entryMarks(bars, liveTime, progress).get(bars[index].time);
+  const signal = entryMarks(bars, liveTime, progress, bookContextsFor(symbol, tfMinutes)).get(bars[index].time);
   if (!signal) return;
 
   const bar = bars[index];

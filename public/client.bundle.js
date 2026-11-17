@@ -16725,6 +16725,209 @@ var process = globalThis.process || { env: {} };
     }
   };
 
+  // src/entry-signal/book-context.ts
+  var BOOK_BAND = 5e-3;
+  var REFILL_WINDOW_MS = 3e4;
+  var BOOK_MIN_SAMPLES = 10;
+  var BOOK_HIT = 0.15;
+  var BOOK_DEFEND_REFILL = 0.6;
+  var BOOK_GIVE_REFILL = 0.3;
+  var BOOK_NET_MOVE = 0.25;
+  var MINUTE_MS = 6e4;
+  function emptySide2() {
+    return { depthStart: 0, depthEnd: 0, consumed: 0, cancelled: 0, added: 0, refilled: 0 };
+  }
+  function emptyCandle() {
+    return { bids: emptySide2(), asks: emptySide2(), samples: 0 };
+  }
+  function isConsume(event, side2) {
+    return side2 === "bid" ? event === "CONSUME_BID" || event === "ABSORPTION_BID" : event === "CONSUME_ASK" || event === "ABSORPTION_ASK";
+  }
+  var BookFlowRecorder = class {
+    constructor(maxMinutes = 1440) {
+      this.maxMinutes = maxMinutes;
+    }
+    series = /* @__PURE__ */ new Map();
+    /**
+     * Feed one book sample. `key` separates symbol and market, e.g. "perp:NEARUSDT".
+     * Levels seen for the first time, or that left the near band, produce no flow:
+     * their change cannot be told apart from the band moving with price.
+     */
+    update(key3, nowMs, marks) {
+      if (!marks?.length) return;
+      let bestBid = 0;
+      let bestAsk = Infinity;
+      for (const m of marks) {
+        if (m.restingBid > 0 && m.price > bestBid) bestBid = m.price;
+        if (m.restingAsk > 0 && m.price < bestAsk) bestAsk = m.price;
+      }
+      if (!(bestBid > 0) || !Number.isFinite(bestAsk) || bestAsk < bestBid) return;
+      const mid = (bestBid + bestAsk) / 2;
+      const lo = mid * (1 - BOOK_BAND);
+      const hi = mid * (1 + BOOK_BAND);
+      let state = this.series.get(key3);
+      if (!state) {
+        state = { bids: /* @__PURE__ */ new Map(), asks: /* @__PURE__ */ new Map(), minutes: /* @__PURE__ */ new Map() };
+        this.series.set(key3, state);
+      }
+      const minute = Math.floor(nowMs / MINUTE_MS) * 60;
+      let bucket2 = state.minutes.get(minute);
+      const fresh = !bucket2;
+      if (!bucket2) {
+        bucket2 = emptyCandle();
+        state.minutes.set(minute, bucket2);
+        this.trim(state);
+      }
+      let depthBid = 0;
+      let depthAsk = 0;
+      const seenBid = /* @__PURE__ */ new Set();
+      const seenAsk = /* @__PURE__ */ new Set();
+      for (const m of marks) {
+        if (m.price < lo || m.price > hi) continue;
+        if (m.restingBid > 0 || state.bids.has(m.price)) {
+          seenBid.add(m.price);
+          depthBid += Math.max(0, m.restingBid);
+          this.flow(state.bids, m.price, Math.max(0, m.restingBid), m.event, "bid", nowMs, bucket2.bids);
+        }
+        if (m.restingAsk > 0 || state.asks.has(m.price)) {
+          seenAsk.add(m.price);
+          depthAsk += Math.max(0, m.restingAsk);
+          this.flow(state.asks, m.price, Math.max(0, m.restingAsk), m.event, "ask", nowMs, bucket2.asks);
+        }
+      }
+      for (const price of [...state.bids.keys()]) if (!seenBid.has(price)) state.bids.delete(price);
+      for (const price of [...state.asks.keys()]) if (!seenAsk.has(price)) state.asks.delete(price);
+      if (fresh) {
+        bucket2.bids.depthStart = depthBid;
+        bucket2.asks.depthStart = depthAsk;
+      }
+      bucket2.bids.depthEnd = depthBid;
+      bucket2.asks.depthEnd = depthAsk;
+      bucket2.samples += 1;
+    }
+    flow(levels2, price, size, event, side2, nowMs, out) {
+      const prev = levels2.get(price);
+      if (!prev) {
+        if (size > 0) levels2.set(price, { size, eaten: 0, eatenAt: 0 });
+        return;
+      }
+      const d = size - prev.size;
+      if (d > 0) {
+        out.added += d;
+        if (prev.eaten > 0 && nowMs - prev.eatenAt <= REFILL_WINDOW_MS) {
+          const refill = Math.min(d, prev.eaten);
+          out.refilled += refill;
+          prev.eaten -= refill;
+        }
+      } else if (d < 0) {
+        if (isConsume(event, side2)) {
+          out.consumed += -d;
+          prev.eaten = (nowMs - prev.eatenAt <= REFILL_WINDOW_MS ? prev.eaten : 0) + -d;
+          prev.eatenAt = nowMs;
+        } else {
+          out.cancelled += -d;
+        }
+      }
+      prev.size = size;
+      if (size <= 0 && prev.eaten <= 0) levels2.delete(price);
+    }
+    trim(state) {
+      if (state.minutes.size <= this.maxMinutes) return;
+      const ordered = [...state.minutes.keys()].sort((a, b) => a - b);
+      for (const t of ordered.slice(0, state.minutes.size - this.maxMinutes)) state.minutes.delete(t);
+    }
+    /** Flows rolled up to candles of `tfMinutes`, keyed by candle open time in seconds. */
+    candles(key3, tfMinutes) {
+      const out = /* @__PURE__ */ new Map();
+      const state = this.series.get(key3);
+      if (!state) return out;
+      const span = Math.max(1, Math.round(tfMinutes)) * 60;
+      const minutes = [...state.minutes.keys()].sort((a, b) => a - b);
+      for (const t of minutes) {
+        const m = state.minutes.get(t);
+        const bar = t - t % span;
+        let c = out.get(bar);
+        if (!c) {
+          c = emptyCandle();
+          c.bids.depthStart = m.bids.depthStart;
+          c.asks.depthStart = m.asks.depthStart;
+          out.set(bar, c);
+        }
+        addSide(c.bids, m.bids);
+        addSide(c.asks, m.asks);
+        c.samples += m.samples;
+      }
+      return out;
+    }
+    /** Book context per candle, only for candles watched long enough to read. */
+    contexts(key3, tfMinutes) {
+      const out = /* @__PURE__ */ new Map();
+      for (const [time, c] of this.candles(key3, tfMinutes)) {
+        const ctx = bookContext(c);
+        if (ctx) out.set(time, ctx);
+      }
+      return out;
+    }
+  };
+  function addSide(into, from) {
+    into.depthEnd = from.depthEnd;
+    into.consumed += from.consumed;
+    into.cancelled += from.cancelled;
+    into.added += from.added;
+    into.refilled += from.refilled;
+  }
+  function classifyBookSide(f) {
+    const base = Math.max(f.depthStart, f.depthEnd);
+    if (!(base > 0)) return "QUIET";
+    const hit = f.consumed / base;
+    const refillShare = f.consumed > 0 ? f.refilled / f.consumed : 0;
+    const fresh = f.added - f.refilled;
+    const netPull = (f.cancelled - fresh) / base;
+    if (hit >= BOOK_HIT && refillShare >= BOOK_DEFEND_REFILL) return "DEFENDING";
+    if (hit >= BOOK_HIT && refillShare < BOOK_GIVE_REFILL) return "GIVING_WAY";
+    if (netPull >= BOOK_NET_MOVE) return "PULLING";
+    if (-netPull >= BOOK_NET_MOVE && hit < BOOK_HIT) return "STACKING";
+    if (hit >= BOOK_HIT || Math.abs(netPull) >= BOOK_NET_MOVE / 2) return "MIXED";
+    return "QUIET";
+  }
+  function bookContext(c) {
+    if (!c || c.samples < BOOK_MIN_SAMPLES) return null;
+    return { bids: classifyBookSide(c.bids), asks: classifyBookSide(c.asks), samples: c.samples, flows: c };
+  }
+  var SHORT = {
+    DEFENDING: "DEF",
+    GIVING_WAY: "GIVE",
+    PULLING: "PULL",
+    STACKING: "STACK",
+    MIXED: "MIX",
+    QUIET: "QUIET"
+  };
+  function bookContextLabel(ctx) {
+    return `B ${SHORT[ctx.bids]} \xB7 A ${SHORT[ctx.asks]}`;
+  }
+  function usd(n) {
+    const a = Math.abs(n);
+    if (a >= 1e6) return `${(a / 1e6).toFixed(1)}M`;
+    if (a >= 1e3) return `${Math.round(a / 1e3)}K`;
+    return `${Math.round(a)}`;
+  }
+  function bookContextTip(ctx) {
+    const line = (name, s, f) => `${name} ${s.toLowerCase().replace("_", " ")}: eaten ${usd(f.consumed)} \xB7 refilled ${usd(f.refilled)} \xB7 pulled ${usd(f.cancelled)} \xB7 added ${usd(f.added - f.refilled)} \xB7 depth ${usd(f.depthStart)}\u2192${usd(f.depthEnd)}`;
+    return [
+      "Book (live, near price)",
+      line("Bids", ctx.bids, ctx.flows.bids),
+      line("Asks", ctx.asks, ctx.flows.asks),
+      `${ctx.samples} samples`
+    ].join("\n");
+  }
+  function bookAllows(ctx, side2, state) {
+    if (!ctx) return true;
+    const own = side2 === "buy" ? ctx.bids : ctx.asks;
+    const other = side2 === "buy" ? ctx.asks : ctx.bids;
+    if (state === 2) return other !== "DEFENDING";
+    return own !== "PULLING" && own !== "GIVING_WAY";
+  }
+
   // src/entry-signal/engine.ts
   var ENTRY_LITTLE_PROG = 0.25;
   var ENTRY_REAL_PROG = 0.5;
@@ -16972,18 +17175,46 @@ var process = globalThis.process || { env: {} };
     if (change >= 25e-4) return "BUY";
     return null;
   }
-  var SWING_BARS = 16;
-  var SWING_DRIFT = 5e-3;
-  function swingSide(prior) {
-    const closes = prior.slice(-SWING_BARS).map((row) => row.close).filter((n) => known(n));
-    if (closes.length < SWING_BARS) return null;
-    const first = closes[0];
-    const last = closes[closes.length - 1];
-    if (!(first > 0)) return null;
-    const change = (last - first) / first;
-    if (change <= -SWING_DRIFT) return "SELL";
-    if (change >= SWING_DRIFT) return "BUY";
-    return null;
+  var SWING_PIVOT_SIDE = 2;
+  var STRUCTURE_LOOKBACK = 64;
+  function swingPoints(rows) {
+    const highs = [];
+    const lows = [];
+    const k = SWING_PIVOT_SIDE;
+    for (let j = k; j < rows.length - k; j++) {
+      const h = rows[j].high;
+      const l = rows[j].low;
+      let isHigh = known(h);
+      let isLow = known(l);
+      for (let d = 1; d <= k && (isHigh || isLow); d++) {
+        const left = rows[j - d];
+        const right = rows[j + d];
+        if (isHigh && (!known(left.high) || !known(right.high) || left.high >= h || right.high > h)) isHigh = false;
+        if (isLow && (!known(left.low) || !known(right.low) || left.low <= l || right.low < l)) isLow = false;
+      }
+      if (isHigh) highs.push({ index: j, price: h });
+      if (isLow) lows.push({ index: j, price: l });
+    }
+    return { highs, lows };
+  }
+  function swingStructure(prior) {
+    const rows = prior.slice(-STRUCTURE_LOOKBACK);
+    const { highs, lows } = swingPoints(rows);
+    if (highs.length < 2 || lows.length < 2) return "RANGE";
+    const [h1, h2] = highs.slice(-2);
+    const [l1, l2] = lows.slice(-2);
+    const close = rows[rows.length - 1]?.close;
+    if (h2.price > h1.price && l2.price > l1.price) {
+      return known(close) && close < l2.price ? "RANGE" : "UP";
+    }
+    if (h2.price < h1.price && l2.price < l1.price) {
+      return known(close) && close > h2.price ? "RANGE" : "DOWN";
+    }
+    return "RANGE";
+  }
+  function structureSide(prior) {
+    const structure = swingStructure(prior);
+    return structure === "UP" ? "BUY" : structure === "DOWN" ? "SELL" : null;
   }
   function keptInMarket(side2, state, market) {
     const against = market === "SELL" && side2 === "buy" || market === "BUY" && side2 === "sell";
@@ -17249,9 +17480,14 @@ var process = globalThis.process || { env: {} };
     return true;
   }
   function decideEntry(cur, prev, priors, prevSignal) {
+    const signal = decideFromCandles(cur, prev, priors, prevSignal);
+    if (signal && !bookAllows(cur?.book, signal.side, signal.state)) return null;
+    return signal;
+  }
+  function decideFromCandles(cur, prev, priors, prevSignal) {
     const recent = cur ? setupContext(priors) : null;
     if (!cur || !recent) return null;
-    const market = swingSide(priors);
+    const market = structureSide(priors);
     const bounce = bounceFailed(recent, prev, cur);
     if (bounce && inTrend(recent, bounce.side === "sell" ? "SELL" : "BUY")) return keptInMarket(bounce.side, bounce.state, market);
     const real = cur.prog != null && cur.prog >= ENTRY_REAL_PROG;
@@ -17392,13 +17628,17 @@ var process = globalThis.process || { env: {} };
     if (abs >= 1e3) return `${Math.round(abs / 1e3)}K`;
     return `${Math.round(abs)}`;
   }
-  function entryMarks(bars, liveTime, progress) {
+  function entryMarks(bars, liveTime, progress, book) {
     const marks = /* @__PURE__ */ new Map();
     if (!bars || bars.length < ENTRY_PRIOR_BARS + 1) return marks;
     const lastIsLive = liveTime != null && bars[bars.length - 1]?.time === liveTime;
     const last = lastIsLive ? bars.length - 1 : bars.length;
     const reads = [];
-    for (let i = 0; i < last; i++) reads.push(barEntryRead(bars, i, progress));
+    for (let i = 0; i < last; i++) {
+      const read = barEntryRead(bars, i, progress);
+      read.book = book?.get(bars[i].time) ?? null;
+      reads.push(read);
+    }
     let openSide = null;
     let openState = null;
     for (let index = ENTRY_PRIOR_BARS; index < last; index++) {
@@ -17440,7 +17680,8 @@ var process = globalThis.process || { env: {} };
             ...levelLine ? [levelLine] : [],
             `Agg ${fmtSignedPct(cur.agg)} \xB7 Pas ${fmtSignedPct(cur.pas)}`,
             `A repl ${fmtNotional(cur.askRepl)} \xB7 B repl ${fmtNotional(cur.bidRepl)}`,
-            `Upside ${lower(cur.upside)} \xB7 downside ${lower(cur.downside)}`
+            `Upside ${lower(cur.upside)} \xB7 downside ${lower(cur.downside)}`,
+            cur.book ? `Book ${bookContextLabel(cur.book)}` : "Book not watched live"
           ].join("\n")
         });
       }
@@ -17903,6 +18144,7 @@ var process = globalThis.process || { env: {} };
     }
   };
   var hub = new BrowserOrderFlowHub();
+  var bookRecorder = new BookFlowRecorder();
   globalThis.window.OrderFlowClient = {
     getConfig: () => hub.getConfig(),
     start: () => hub.start(),
@@ -17923,7 +18165,11 @@ var process = globalThis.process || { env: {} };
     trapMarks,
     levelMarks,
     ENTRY_DETAIL,
-    ENTRY_PRIOR_BARS
+    ENTRY_PRIOR_BARS,
+    recordBook: (key3, nowMs, marks) => bookRecorder.update(key3, nowMs, marks),
+    bookContexts: (key3, tfMinutes) => bookRecorder.contexts(key3, tfMinutes),
+    bookContextLabel,
+    bookContextTip
   };
 })();
 //# sourceMappingURL=client.bundle.js.map
