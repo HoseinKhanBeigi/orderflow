@@ -3920,8 +3920,7 @@ const BATTLE_COUNT_Y = 100;
 const BATTLE_ROWS_Y = 118;
 const BATTLE_ROW_H = 15;
 const REPLENISH_ROWS_Y = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 8;
-const IMBALANCE_ROWS_Y = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
-const PACE_ROWS_Y = IMBALANCE_ROWS_Y + BATTLE_ROW_H * 2 + 6;
+const PACE_ROWS_Y = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 
 /**
  * Resting liquidity that had to come back during the candle.
@@ -3990,76 +3989,6 @@ function formatImbalancePct(imbalance) {
   if (pct === 0) return '0%';
   const sign = pct > 0 ? '+' : '−';
   return `${sign}${Math.abs(pct)}%`;
-}
-
-/**
- * Two imbalances on the candle itself.
- * Aggressive: market buy orders vs market sell orders, (buy − sell) / (buy + sell).
- * Passive: resting bids that held vs resting asks that held.
- * Bids held = aggressive sells that did not push the close down.
- * Asks held = aggressive buys that did not lift the close.
- * Positive passive = bids heavier. Positive aggressive = buyers heavier.
- */
-function barLiquidityImbalance(bar) {
-  const buy = Math.max(0, bar.totalBuy ?? 0);
-  const sell = Math.max(0, bar.totalSell ?? 0);
-  const vol = buy + sell;
-  if (vol <= 0) return null;
-  const range = bar.high - bar.low;
-  const closePos = range > 0 ? Math.min(1, Math.max(0, (bar.close - bar.low) / range)) : 0.5;
-  const passiveBids = sell * closePos;
-  const passiveAsks = buy * (1 - closePos);
-  const passiveTotal = passiveBids + passiveAsks;
-  return {
-    buy,
-    sell,
-    passiveBids,
-    passiveAsks,
-    passive: passiveTotal > 0 ? (passiveBids - passiveAsks) / passiveTotal : 0,
-    aggressive: (buy - sell) / vol,
-  };
-}
-
-function drawBarLiquidityImbalance(ctx, imb, cx, y0, maxW) {
-  if (!imb) return null;
-  const narrow = maxW < 92;
-  const passiveSide = imb.passive >= 0 ? 'bids' : 'asks';
-  const aggressiveSide = imb.aggressive >= 0 ? 'buys' : 'sells';
-  const rows = [
-    {
-      text: narrow ? `Pas ${formatImbalancePct(imb.passive)}` : `passive ${formatImbalancePct(imb.passive)}`,
-      color: Math.abs(imb.passive) < 0.05 ? '#94a3b8' : imb.passive > 0 ? '#60a5fa' : '#fbbf24',
-    },
-    {
-      text: narrow ? `Agg ${formatImbalancePct(imb.aggressive)}` : `aggressive ${formatImbalancePct(imb.aggressive)}`,
-      color: Math.abs(imb.aggressive) < 0.05 ? '#94a3b8' : imb.aggressive > 0 ? '#86efac' : '#fca5a5',
-    },
-  ];
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '600 10px JetBrains Mono, monospace';
-  rows.forEach((row, i) => {
-    const y = y0 + i * BATTLE_ROW_H;
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-    ctx.strokeText(row.text, cx, y, maxW - 2);
-    ctx.fillStyle = row.color;
-    ctx.fillText(row.text, cx, y, maxW - 2);
-  });
-  ctx.restore();
-  return {
-    x0: cx - maxW / 2,
-    x1: cx + maxW / 2,
-    y0: y0 - 8,
-    y1: y0 + BATTLE_ROW_H * 2 - 4,
-    tip: [
-      `Passive liquidity imbalance ${formatImbalancePct(imb.passive)} · ${passiveSide} heavier`,
-      `Bids held ${fmtVolShort(imb.passiveBids)} · asks held ${fmtVolShort(imb.passiveAsks)}`,
-      `Aggressive order imbalance ${formatImbalancePct(imb.aggressive)} · ${aggressiveSide} heavier`,
-      `Aggressive buys ${fmtVolShort(imb.buy)} · aggressive sells ${fmtVolShort(imb.sell)}`,
-    ].join('\n'),
-  };
 }
 
 /**
@@ -4759,10 +4688,22 @@ function formatDispBp(bps) {
   return `${sign}${abs >= 10 ? abs.toFixed(0) : abs.toFixed(1)} bp`;
 }
 
-function formatCvdLabel(cvd) {
-  if (!Number.isFinite(cvd)) return 'CVD —';
-  const sign = cvd > 0 ? '+' : cvd < 0 ? '−' : '';
-  return `CVD ${sign}${fmtVolShort(Math.abs(cvd))}`;
+/** Close versus the previous candle's close, as a share of that close. */
+function closeVsPrevRatio(close, prevClose) {
+  const c = Number(close);
+  const p = Number(prevClose);
+  if (!Number.isFinite(c) || !Number.isFinite(p) || !(p > 0)) return null;
+  return (c - p) / p;
+}
+
+function formatCloseVsPrev(ratio) {
+  if (!Number.isFinite(ratio)) return '—';
+  const pct = ratio * 100;
+  if (Math.abs(pct) < 0.005) return '0%';
+  const sign = pct > 0 ? '+' : '−';
+  const abs = Math.abs(pct);
+  const digits = abs >= 10 ? 1 : 2;
+  return `${sign}${abs.toFixed(digits)}%`;
 }
 
 const DELTA_PROGRESS_CFG = {
@@ -5509,26 +5450,30 @@ function drawFootprint(symbol = selectedSymbol) {
         footCtx.fillText(dispLabel, cx, footY + 28, barWidth - 2);
 
         const hasFlow = metrics.dataQuality !== 'UNAVAILABLE';
+        footCtx.font = '800 16px JetBrains Mono, monospace';
         if (hasFlow) {
-          footCtx.font = '800 16px JetBrains Mono, monospace';
           footCtx.fillStyle = metrics.delta >= 0 ? '#86efac' : '#fca5a5';
           const dSign = metrics.delta >= 0 ? '+' : '−';
           footCtx.fillText(`Δ ${dSign}${fmtVolShort(Math.abs(metrics.delta))}`, cx, footY + 44, barWidth - 2);
-          footCtx.font = '600 10px JetBrains Mono, monospace';
-          footCtx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
-          footCtx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
         } else {
-          const seriesHasFlow = flowMetrics.some((m) => m.dataQuality !== 'UNAVAILABLE');
-          footCtx.font = '800 16px JetBrains Mono, monospace';
           footCtx.fillStyle = '#64748b';
           footCtx.fillText('Δ —', cx, footY + 44, barWidth - 2);
-          footCtx.font = '600 10px JetBrains Mono, monospace';
-          if (seriesHasFlow) {
-            footCtx.fillStyle = metrics.cvd >= 0 ? '#86efac' : '#fca5a5';
-            footCtx.fillText(formatCvdLabel(metrics.cvd), cx, footY + 60, barWidth - 2);
-          } else {
-            footCtx.fillText('CVD —', cx, footY + 60, barWidth - 2);
-          }
+        }
+        const prevBar = startIdx + i > 0 ? bars[startIdx + i - 1] : null;
+        const closeNow = liveEdge ? livePx : bar.close;
+        const vsPrev = closeVsPrevRatio(closeNow, prevBar?.close);
+        footCtx.font = '600 10px JetBrains Mono, monospace';
+        footCtx.fillStyle = vsPrev == null || Math.abs(vsPrev) < 0.00005 ? '#94a3b8' : vsPrev > 0 ? '#86efac' : '#fca5a5';
+        footCtx.fillText(vsPrev == null ? '—' : `vs ${formatCloseVsPrev(vsPrev)}`, cx, footY + 60, barWidth - 2);
+        if (vsPrev != null) {
+          const prevPx = Number(prevBar.close);
+          view.footHits.push({
+            x0: cx - barWidth / 2,
+            x1: cx + barWidth / 2,
+            y0: footY + 52,
+            y1: footY + 68,
+            tip: `Close versus the previous close\n${fmtPriceAxis(prevPx)} → ${fmtPriceAxis(closeNow)}\n${formatCloseVsPrev(vsPrev)}`,
+          });
         }
         footCtx.globalAlpha = 1;
       }
@@ -5546,8 +5491,6 @@ function drawFootprint(symbol = selectedSymbol) {
       drawBarBattlePercents(footCtx, barBattlePercents(bar), cx, footY + BATTLE_ROWS_Y, barWidth - 6);
       const replenishHit = drawBarReplenishment(footCtx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
       if (replenishHit) view.footHits.push(replenishHit);
-      const imbalanceHit = drawBarLiquidityImbalance(footCtx, barLiquidityImbalance(bar), cx, footY + IMBALANCE_ROWS_Y, barWidth - 4);
-      if (imbalanceHit) view.footHits.push(imbalanceHit);
       const paceHit = drawBarPace(footCtx, barPace(bar, bars[startIdx + i - 1]), cx, footY + PACE_ROWS_Y, barWidth - 4);
       if (paceHit) view.footHits.push(paceHit);
       const deltaHit = drawDeltaProgressLabels(footCtx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
