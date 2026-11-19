@@ -1597,9 +1597,9 @@ function snapChartToLive() {
 }
 
 function fpBottomPad(mode = fpDeltaProgressMode) {
-  if (mode === 'OFF') return 312;
-  if (mode === 'EFFORT_RESPONSE') return 402;
-  return 368;
+  if (mode === 'OFF') return 244;
+  if (mode === 'EFFORT_RESPONSE') return 334;
+  return 300;
 }
 
 function mountCanvas(canvas, cssW, cssH) {
@@ -3916,10 +3916,9 @@ function drawCandleTopLabels(ctx, ann, cx, maxW, frEvents = [], frExtras = {}) {
 }
 
 const BATTLE_CHIP_Y = 82;
-const BATTLE_COUNT_Y = 100;
-const BATTLE_ROWS_Y = 118;
 const BATTLE_ROW_H = 15;
-const REPLENISH_ROWS_Y = BATTLE_ROWS_Y + BATTLE_ROW_H * 4 + 8;
+const PACE_ROW_H = 20;
+const REPLENISH_ROWS_Y = 104;
 const PACE_ROWS_Y = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 
 /**
@@ -4026,31 +4025,26 @@ function barPace(bar, prev) {
 
 function drawBarPace(ctx, pace, cx, y0, maxW) {
   if (!pace) return null;
-  const narrow = maxW < 108;
   const flat = (n) => Math.abs(n) < 0.005;
   const absFlat = flat(pace.absorbBuy) && flat(pace.absorbSell);
   const conFlat = flat(pace.consumeBuy) && flat(pace.consumeSell);
   const rows = [
     {
-      text: narrow
-        ? `Δa ${formatImbalancePct(pace.absorbSell)}/${formatImbalancePct(pace.absorbBuy)}`
-        : `Δabs S ${formatImbalancePct(pace.absorbSell)} B ${formatImbalancePct(pace.absorbBuy)}`,
+      text: `ΔA ${formatImbalancePct(pace.absorbSell)}/${formatImbalancePct(pace.absorbBuy)}`,
       color: absFlat ? '#94a3b8' : pace.absorbSell >= pace.absorbBuy ? '#fca5a5' : '#fbbf24',
     },
     {
-      text: narrow
-        ? `Δc ${formatImbalancePct(pace.consumeSell)}/${formatImbalancePct(pace.consumeBuy)}`
-        : `Δcon Bd ${formatImbalancePct(pace.consumeSell)} Ak ${formatImbalancePct(pace.consumeBuy)}`,
+      text: `ΔC ${formatImbalancePct(pace.consumeSell)}/${formatImbalancePct(pace.consumeBuy)}`,
       color: conFlat ? '#94a3b8' : pace.consumeSell >= pace.consumeBuy ? '#fca5a5' : '#86efac',
     },
   ];
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = '600 10px JetBrains Mono, monospace';
+  ctx.font = '800 15px JetBrains Mono, monospace';
   rows.forEach((row, i) => {
-    const y = y0 + i * BATTLE_ROW_H;
-    ctx.lineWidth = 3;
+    const y = y0 + i * PACE_ROW_H;
+    ctx.lineWidth = 4;
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
     ctx.strokeText(row.text, cx, y, maxW - 2);
     ctx.fillStyle = row.color;
@@ -4060,8 +4054,8 @@ function drawBarPace(ctx, pace, cx, y0, maxW) {
   return {
     x0: cx - maxW / 2,
     x1: cx + maxW / 2,
-    y0: y0 - 8,
-    y1: y0 + BATTLE_ROW_H * 2 - 4,
+    y0: y0 - 10,
+    y1: y0 + PACE_ROW_H * 2 - 4,
     tip: [
       'Change versus the previous candle',
       `Sell absorbed ${formatImbalancePct(pace.absorbSell)} · buy absorbed ${formatImbalancePct(pace.absorbBuy)}`,
@@ -4069,32 +4063,6 @@ function drawBarPace(ctx, pace, cx, y0, maxW) {
       'Positive means that share of the candle grew since the candle before.',
     ].join('\n'),
   };
-}
-
-function battleRowLabel(row, narrow) {
-  const name = narrow
-    ? ({ resistance: 'res', 'buy absorbed': 'buy', 'sell absorbed': 'sell', support: 'sup' }[row.text] ?? row.text)
-    : row.text;
-  return `${name} ${row.pct}%`;
-}
-
-function drawBarBattlePercents(ctx, rows, cx, y0, maxW) {
-  if (!rows?.length) return;
-  const narrow = maxW < 78;
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(cx - maxW / 2, y0 - 9, maxW, BATTLE_ROW_H * rows.length + 4);
-  ctx.clip();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  rows.forEach((row, i) => {
-    const y = y0 + i * BATTLE_ROW_H;
-    ctx.font = row.strong ? '700 10px Inter, system-ui, sans-serif' : '500 10px Inter, system-ui, sans-serif';
-    ctx.globalAlpha = row.strong ? 1 : 0.45;
-    ctx.fillStyle = row.color;
-    ctx.fillText(battleRowLabel(row, narrow), cx, y, maxW - 2);
-  });
-  ctx.restore();
 }
 
 function drawBarBattleVerdict(ctx, verdict, cx, y, maxW) {
@@ -4723,7 +4691,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = PACE_ROWS_Y + BATTLE_ROW_H * 2 + 6;
+const DELTA_LABEL_FIRST_OFFSET = PACE_ROWS_Y + PACE_ROW_H * 2 + 6;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -5480,15 +5448,6 @@ function drawFootprint(symbol = selectedSymbol) {
 
       const verdictHit = drawBarBattleVerdict(footCtx, barBattleVerdict(bar), cx, footY + BATTLE_CHIP_Y, barWidth - 6);
       if (verdictHit) view.footHits.push(verdictHit);
-      const runHit = drawBattleRunCount(
-        footCtx,
-        noteBattleRun(symbol, bar, chartTfMinutes, selectedExchange, fpCandleTime(Date.now(), chartTfMinutes)),
-        cx,
-        footY + BATTLE_COUNT_Y,
-        barWidth - 6,
-      );
-      if (runHit) view.footHits.push(runHit);
-      drawBarBattlePercents(footCtx, barBattlePercents(bar), cx, footY + BATTLE_ROWS_Y, barWidth - 6);
       const replenishHit = drawBarReplenishment(footCtx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
       if (replenishHit) view.footHits.push(replenishHit);
       const paceHit = drawBarPace(footCtx, barPace(bar, bars[startIdx + i - 1]), cx, footY + PACE_ROWS_Y, barWidth - 4);
