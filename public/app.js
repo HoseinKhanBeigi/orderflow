@@ -3917,9 +3917,7 @@ function drawCandleTopLabels(ctx, ann, cx, maxW, frEvents = [], frExtras = {}) {
 
 const BATTLE_CHIP_Y = 82;
 const BATTLE_ROW_H = 15;
-const PACE_ROW_H = 20;
 const REPLENISH_ROWS_Y = 104;
-const PACE_ROWS_Y = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 
 /**
  * Resting liquidity that had to come back during the candle.
@@ -3988,81 +3986,6 @@ function formatImbalancePct(imbalance) {
   if (pct === 0) return '0%';
   const sign = pct > 0 ? '+' : '−';
   return `${sign}${Math.abs(pct)}%`;
-}
-
-/**
- * Change in the close-split versus the previous candle, in share of volume.
- * Absorption is the part whose close did not stick. Consumption is the part that did.
- */
-function barPace(bar, prev) {
-  if (!prev) return null;
-  const split = (row) => {
-    const buy = Math.max(0, row.totalBuy ?? 0);
-    const sell = Math.max(0, row.totalSell ?? 0);
-    const vol = buy + sell;
-    if (vol <= 0) return null;
-    const range = row.high - row.low;
-    const closePos = range > 0 ? Math.min(1, Math.max(0, (row.close - row.low) / range)) : 0.5;
-    const buyShare = buy / vol;
-    const sellShare = sell / vol;
-    return {
-      absorbBuy: buyShare * (1 - closePos),
-      consumeBuy: buyShare * closePos,
-      absorbSell: sellShare * closePos,
-      consumeSell: sellShare * (1 - closePos),
-    };
-  };
-  const cur = split(bar);
-  const before = split(prev);
-  if (!cur || !before) return null;
-  return {
-    absorbBuy: cur.absorbBuy - before.absorbBuy,
-    consumeBuy: cur.consumeBuy - before.consumeBuy,
-    absorbSell: cur.absorbSell - before.absorbSell,
-    consumeSell: cur.consumeSell - before.consumeSell,
-  };
-}
-
-function drawBarPace(ctx, pace, cx, y0, maxW) {
-  if (!pace) return null;
-  const flat = (n) => Math.abs(n) < 0.005;
-  const absFlat = flat(pace.absorbBuy) && flat(pace.absorbSell);
-  const conFlat = flat(pace.consumeBuy) && flat(pace.consumeSell);
-  const rows = [
-    {
-      text: `ΔA ${formatImbalancePct(pace.absorbSell)}/${formatImbalancePct(pace.absorbBuy)}`,
-      color: absFlat ? '#94a3b8' : pace.absorbSell >= pace.absorbBuy ? '#fca5a5' : '#fbbf24',
-    },
-    {
-      text: `ΔC ${formatImbalancePct(pace.consumeSell)}/${formatImbalancePct(pace.consumeBuy)}`,
-      color: conFlat ? '#94a3b8' : pace.consumeSell >= pace.consumeBuy ? '#fca5a5' : '#86efac',
-    },
-  ];
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '800 15px JetBrains Mono, monospace';
-  rows.forEach((row, i) => {
-    const y = y0 + i * PACE_ROW_H;
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-    ctx.strokeText(row.text, cx, y, maxW - 2);
-    ctx.fillStyle = row.color;
-    ctx.fillText(row.text, cx, y, maxW - 2);
-  });
-  ctx.restore();
-  return {
-    x0: cx - maxW / 2,
-    x1: cx + maxW / 2,
-    y0: y0 - 10,
-    y1: y0 + PACE_ROW_H * 2 - 4,
-    tip: [
-      'Change versus the previous candle',
-      `Sell absorbed ${formatImbalancePct(pace.absorbSell)} · buy absorbed ${formatImbalancePct(pace.absorbBuy)}`,
-      `Bids consumed ${formatImbalancePct(pace.consumeSell)} · asks consumed ${formatImbalancePct(pace.consumeBuy)}`,
-      'Positive means that share of the candle grew since the candle before.',
-    ].join('\n'),
-  };
 }
 
 function drawBarBattleVerdict(ctx, verdict, cx, y, maxW) {
@@ -4691,7 +4614,7 @@ const DELTA_PROGRESS_CFG = {
   effortResponseHighPercentile: 80,
   effortResponseLowPercentile: 20,
 };
-const DELTA_LABEL_FIRST_OFFSET = PACE_ROWS_Y + PACE_ROW_H * 2 + 6;
+const DELTA_LABEL_FIRST_OFFSET = REPLENISH_ROWS_Y + BATTLE_ROW_H * 2 + 6;
 const DELTA_LABEL_LINE_H = 11;
 const FP_DELTA_PROGRESS_KEY = 'fpDeltaProgressMode';
 
@@ -5450,8 +5373,6 @@ function drawFootprint(symbol = selectedSymbol) {
       if (verdictHit) view.footHits.push(verdictHit);
       const replenishHit = drawBarReplenishment(footCtx, barReplenishment(bar), cx, footY + REPLENISH_ROWS_Y, barWidth - 4);
       if (replenishHit) view.footHits.push(replenishHit);
-      const paceHit = drawBarPace(footCtx, barPace(bar, bars[startIdx + i - 1]), cx, footY + PACE_ROWS_Y, barWidth - 4);
-      if (paceHit) view.footHits.push(paceHit);
       const deltaHit = drawDeltaProgressLabels(footCtx, deltaByTime.get(bar.time), cx, footY, barWidth - 2);
       if (deltaHit?.tip) view.footHits.push(deltaHit);
     }
